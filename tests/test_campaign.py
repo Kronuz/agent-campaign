@@ -512,7 +512,8 @@ class Usage(CampaignCase):
 
     def test_codex_runs_are_attributed_by_task_name_when_the_prompt_is_encrypted(self) -> None:
         self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low")
-        names = ("adventurer_fix_artificer", "paladin_fix_security", "fix_security", "night_fix_v2", "fixer", "builder")
+        names = ("adventurer_fix_artificer", "paladin_fix_security", "fix_security", "night_fix_v2", "night_security")
+        names += ("fixer", "builder")
         for task in names:
             log = self.codex_log("agent", task)  # no parent log: the launch prompt is unreadable
             log.write_text(log.read_text().replace("/root/builder", f"/root/{task}").replace('"builder"', f'"{task}"'))
@@ -525,12 +526,14 @@ class Usage(CampaignCase):
                 "paladin_fix_security": ("paladin", "fix", "", "security"),
                 "fix_security": ("paladin", "fix", "", "security"),  # a lens marks a paladin
                 "night_fix_v2": ("adventurer", "fix", "", ""),  # the quest's id as a whole word
+                "night_security": ("paladin", "-", "", "security"),  # a role, but no quest named
                 "fixer": ("unattributed", "-", "", ""),  # part of a word is not guessed at
                 "builder": ("unattributed", "-", "", ""),
             },
         )
         out = self.ok(self.home, "usage").out
         self.assertIn("(unattributed)", out)
+        self.assertFalse([x for x in out.splitlines() if x.startswith("- ")], out)  # one label for no quest
         self.assertIn("unattributed builder gpt-6-astra high", out)
 
     def test_codex_legacy_cumulative_snapshots_and_old_logs(self) -> None:

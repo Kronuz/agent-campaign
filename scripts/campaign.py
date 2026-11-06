@@ -2041,9 +2041,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
         f"and waited {span(sum(j['waited'] for j in jobs))}"
     )
     if runs:
-        table(
-            "by quest", lambda r: "(unattributed)" if r["quest"] == "-" and r["role"] == "unattributed" else r["quest"]
-        )
+        table("by quest", lambda r: "(unattributed)" if r["quest"] == "-" else r["quest"])
         table(
             "by role, class, model and effort",
             lambda r: " ".join(
@@ -2061,12 +2059,13 @@ def cmd_usage(a: argparse.Namespace) -> int:
         )
     if jobs:
         quests = sorted({j["quest"] for j in jobs})
-        width = max(len("jobs by quest"), *map(len, quests))
-        print(f"\n{'jobs by quest':<{width}} jobs     ran  waited")
+        labels = {q: "(no quest)" if q == "-" else q for q in quests}
+        width = max(len("jobs by quest"), *map(len, labels.values()))
+        print(f"\n{'jobs by quest':<{width}}  jobs     ran  waited")
         for q in quests:
             js = [j for j in jobs if j["quest"] == q]
             print(
-                f"{q:<{width}} {len(js):>4} {span(sum(j['ran'] for j in js)):>7} {span(sum(j['waited'] for j in js)):>7}"
+                f"{labels[q]:<{width}}  {len(js):>4} {span(sum(j['ran'] for j in js)):>7} {span(sum(j['waited'] for j in js)):>7}"
             )
     for s in u["game_master"]:
         print(
