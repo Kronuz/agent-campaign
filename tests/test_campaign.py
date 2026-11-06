@@ -679,8 +679,8 @@ class Integration(CampaignCase):
 
 class Sidebar(CampaignCase):
     def test_the_sidebar_follows_the_state_and_sends_only_changes(self) -> None:
-        calls = self.root / "report-calls"
-        fake = self.root / "bin" / "report"
+        calls = self.root / "cmux-calls"
+        fake = self.root / "bin" / "cmux"
         fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
         fake.chmod(0o755)
         self.env["CMUX_WORKSPACE_ID"] = "ws-test"
@@ -702,8 +702,8 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md", "--milestone", "M2")
         self.ok(self.home, "start", "a")
         log = calls.read_text()
-        self.assertIn("set|0/1|demo M1: 0 of 1 quests landed|", log)
-        self.assertIn("status|campaign-a|a: active|hammer|", log)
+        self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)
+        self.assertIn("set-status|campaign-a|a: active|--icon|hammer|", log)
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")
@@ -711,9 +711,9 @@ class Sidebar(CampaignCase):
         self.verified("a")
         self.ok(self.home, "land", "a")
         log = calls.read_text()
-        self.assertIn("notify|Landed a|", log)
-        self.assertIn("unstatus|campaign-a|", log)
-        self.assertIn("set|0/1|demo M2: 0 of 1 quests landed · ready: b|", log)
+        self.assertIn("notify|--title|Landed a|--body|", log)
+        self.assertIn("clear-status|campaign-a|", log)
+        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · ready: b|", log)
         self.env.pop("CMUX_WORKSPACE_ID")
         calls.write_text("")
         self.ok(self.home, "set", "b", "status=blocked", "reason=owner")

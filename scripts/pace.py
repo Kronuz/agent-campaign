@@ -7,14 +7,13 @@ Each harness is read from what it records on this machine, without a network req
   claude   5-hour and weekly windows from the snapshot a Claude Code status line writes
            (~/.scratch/quota/claude.json)
 
-  pace [claude|copilot|codex|all]   each window: use, recent burn, and exhaustion against reset
-
-QUOTA_HARNESS picks the default, QUOTA_STALE (900 s) marks old samples, QUOTA_NOW fixes the clock.
-CAMPAIGN_CODEX_LOGS, CAMPAIGN_COPILOT_LOGS and QUOTA_SNAPSHOT override where each is read.
+For each window it prints the use, the recent burn, and when that burn would exhaust it against
+the reset.
 """
 
 from __future__ import annotations
 
+import argparse
 import calendar
 import contextlib
 import hashlib
@@ -29,6 +28,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+EPILOG = """\
+environment:
+  QUOTA_HARNESS          the default harness (default all)
+  QUOTA_STALE            seconds after which a sample is marked old (default 900)
+  QUOTA_NOW              fixes the clock (tests)
+  CAMPAIGN_CODEX_LOGS    Codex's session logs (default ~/.codex/sessions)
+  CAMPAIGN_COPILOT_LOGS  Copilot CLI's session state (default ~/.copilot/session-state)
+  QUOTA_SNAPSHOT         the Claude Code snapshot (default ~/.scratch/quota/claude.json)
+"""
 HARNESSES = ("claude", "copilot", "codex")
 ORDER = ("5h", "weekly", "month")
 
@@ -277,14 +285,21 @@ def report(harness: str) -> tuple[bool, str]:
     return root.exists(), describe(samples, now, stale) if samples else missing
 
 
-def main(argv: list[str]) -> int:
-    harness = argv[0] if argv else os.environ.get("QUOTA_HARNESS") or "all"
-    if harness in ("-h", "--help", "help"):
-        print(__doc__.strip())
-        return 0
-    if harness not in (*HARNESSES, "all") or len(argv) > 1:
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
+def parser() -> argparse.ArgumentParser:
+    raw = argparse.RawDescriptionHelpFormatter
+    ap = argparse.ArgumentParser(prog="pace", description=__doc__, epilog=EPILOG, formatter_class=raw)
+    ap.add_argument(
+        "harness",
+        nargs="?",
+        choices=(*HARNESSES, "all"),
+        default=os.environ.get("QUOTA_HARNESS") or "all",
+        help="whose quota (default $QUOTA_HARNESS, else all installed)",
+    )
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    harness = parser().parse_args(argv).harness
     if harness != "all":
         print(report(harness)[1])
         return 0
@@ -294,4 +309,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

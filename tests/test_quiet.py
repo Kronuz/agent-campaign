@@ -110,6 +110,11 @@ class Quiet(unittest.TestCase):
         p.communicate(timeout=30)
         self.assertEqual(p.returncode, 3)
 
+    def test_the_command_keeps_its_own_options(self) -> None:
+        p = self.quiet("light", "o", "1", "options", "--", "sh", "-c", 'echo "[$*]"', "sh", "-h", "--light", "--", "x")
+        out, err = p.communicate(timeout=30)
+        self.assertEqual((p.returncode, out), (0, "[-h --light -- x]\n"), err)
+
     def test_long_strict_holds_are_refused(self) -> None:
         p = self.quiet("strict", "s", "31", "too long", "--", "true")
         _, err = p.communicate(timeout=30)

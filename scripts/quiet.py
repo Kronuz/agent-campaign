@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 """quiet: share one machine between agents' builds, tests and measurements.
 
-Holds are files in ~/.scratch/quiet/, one KEY=VALUE per line. Levels: light (builds, tests, fuzz;
-a few at once, nice 19), strict (a measurement pinned to its own cores, light work beside it),
-exclusive (a measurement alone on the machine). `quiet --help` is the manual. A hold lives while
-its process runs and before its deadline; dead or expired holds are removed on sight.
+Levels:
+  light      Builds, tests, fuzz. A few run at once (a quarter of the CPUs), at nice 19.
+             While a strict hold runs they use only the cores it leaves free.
+  strict     A measurement on its own cores (the upper half). One at a time; light
+             work keeps running on the other half. Expect some noise from the shared
+             cache and memory bandwidth.
+  exclusive  A measurement with the machine to itself: waits for every hold and for
+             the load to settle, and nothing else starts until it ends. Use it for
+             cache-sensitive A/Bs and numbers you publish.
+
+NAME names the hold, MINUTES bounds it (it also ends when CMD exits), WHAT says what it is for.
+The level is recorded in the hold, so every agent's quiet honors it. A strict or exclusive hold
+lasts at most QUIET_MAX_MIN minutes (30), and its command is stopped at the deadline (exit 124):
+a measurement never runs on unheld. A light command keeps running unheld past its deadline unless
+QUIET_KILL=1. Holds are files in ~/.scratch/quiet/; dead or expired ones are removed on sight.
+`quiet COMMAND --help` documents each command.
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import fcntl
 import os
@@ -23,49 +36,20 @@ from collections.abc import Collection, Iterator
 from pathlib import Path
 from types import FrameType
 
-USAGE = """\
-quiet: share one machine between agents' builds, tests and measurements.
+import report
 
-Usage:
-  quiet LEVEL NAME MINUTES WHAT -- CMD...   wait for a turn at LEVEL, then run CMD
-  quiet run NAME MINUTES WHAT -- CMD...     the same, at $QUIET_LEVEL (default strict)
-  quiet hold NAME MINUTES WHAT [PID]        hold the machine exclusively until released,
-                                            the deadline, or PID exits
-  quiet release NAME                        end a hold
-  quiet list                                show the live holds: level, what, who, until
-  quiet check                               exit 0 free; 2 busy, work can still start;
-                                            1 blocked: exclusive hold or disk full
-  quiet wait [--light]                      block until free (--light: until light
-                                            work can start)
+EPILOG = """Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU machines
+can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light holds (SIGSTOP)
+while it runs and resumes them after. Local VMs: on Linux, strict also moves qemu VMs (QUIET_VM
+names the measured one), so a measurement inside a VM can be strict; elsewhere VM threads can't
+be pinned, so use exclusive.
 
-Levels:
-  light      Builds, tests, fuzz. A few run at once (a quarter of the CPUs), at nice 19.
-             While a strict hold runs they use only the cores it leaves free.
-  strict     A measurement on its own cores (the upper half). One at a time; light
-             work keeps running on the other half. Expect some noise from the shared
-             cache and memory bandwidth.
-  exclusive  A measurement with the machine to itself: waits for every hold and for
-             the load to settle, and nothing else starts until it ends. Use it for
-             cache-sensitive A/Bs and numbers you publish.
-
-NAME names the hold, MINUTES bounds it (it also ends when CMD exits), WHAT says what
-it is for. The level is recorded in the hold, so every agent's quiet honors it.
-A strict or exclusive hold lasts at most QUIET_MAX_MIN minutes (30), and its command
-is stopped at the deadline (exit 124): a measurement never runs on unheld. A light
-command keeps running unheld past its deadline unless QUIET_KILL=1.
-
-Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU
-machines can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light
-holds (SIGSTOP) while it runs and resumes them after.
-Local VMs: on Linux, strict also moves qemu VMs (QUIET_VM names the measured one), so a
-measurement inside a VM can be strict; elsewhere VM threads can't be pinned, so use exclusive.
-
-Examples:
+examples:
   quiet light build 30 "cargo test" -- cargo test -j4
   quiet strict smoke 20 "detector smoke" -- ./smoke.sh
   quiet exclusive ab 20 "gate A/B" -- ./bench.sh
 
-Environment:
+environment:
   QUIET_LEVEL          level for `run` (light, strict, exclusive; default strict)
   QUIET_STRICT_CPUS    the strict core set (default: upper half of the physical cores,
                        SMT siblings together, e.g. 4-7)
@@ -84,7 +68,7 @@ Environment:
   QUIET_DISK_MIN_GB    no new hold below this free disk (default 5)
   QUIET_DISK_WARN_GB   `check` warns below this (default 20)
   QUIET_WHO            holder name in `list` (default: user, directory, parent pid)
-  QUIET_NOTIFY_AFTER   notify (via `report`) when a run hold took this many seconds or
+  QUIET_NOTIFY_AFTER   notify (via report) when a run hold took this many seconds or
                        more (default 300); its sidebar pill shows queued, then running
   QUIET_DIR            state directory (default ~/.scratch/quiet)
 
@@ -594,28 +578,19 @@ def pin_vms(hold: Path, cpus: str) -> None:
         vm_move(hold, complement(cpus), others)
 
 
-# Sidebar pills and notifications through report (cmux, else the desktop); a no-op without it.
+# Sidebar pills and notifications through report (cmux, else the desktop).
 # Each pill has a marker in pills/ naming its run's pid, so a pill whose run died without its
 # cleanup (SIGKILL) is cleared on sight, like a dead hold.
-
-
-def report(*args: str, ws: str | None = None) -> None:
-    exe = shutil.which("report")
-    if not exe:
-        return
-    environ = dict(os.environ) if ws is None else {**os.environ, "CMUX_WORKSPACE_ID": ws}
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([exe, *args], env=environ, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
 
 
 def pill(name: str, minutes: int, value: str, icon: str) -> None:
     until = int(time.time()) + 60 * (minutes + 120)
     put(DIR / "pills" / name, [("pid", os.getpid()), ("until", until), ("ws", os.environ.get("CMUX_WORKSPACE_ID", ""))])
-    report("status", f"quiet-{name}", value, icon)
+    report.status(f"quiet-{name}", value, icon)
 
 
 def unpill(name: str) -> None:
-    report("unstatus", f"quiet-{name}")
+    report.unstatus(f"quiet-{name}")
     (DIR / "pills" / name).unlink(missing_ok=True)
 
 
@@ -627,7 +602,7 @@ def reap_pills() -> None:
                 continue
             info = read(path)
             if not live(info):
-                report("unstatus", f"quiet-{path.name}", ws=get(info, "ws"))
+                report.unstatus(f"quiet-{path.name}", get(info, "ws"))
                 path.unlink(missing_ok=True)
 
 
@@ -723,25 +698,18 @@ def finished(name: str, what: str, code: int, started: float) -> None:
     unpill(name)
     if secs >= int(env("QUIET_NOTIFY_AFTER", "300")):
         result = "done" if code == 0 else f"failed (exit {code})"
-        report("notify", f"quiet {name}: {result}", f"{what} after {secs // 60}m{secs % 60}s")
+        report.notify(f"quiet {name}: {result}", f"{what} after {secs // 60}m{secs % 60}s")
 
 
-def minutes_arg(text: str) -> int | None:
+def positive(text: str) -> int:
     if re.fullmatch(r"[0-9]+", text) and int(text) > 0:
         return int(text)
-    print(f"quiet: MINUTES must be a positive integer, not '{text}'", file=sys.stderr)
-    return None
+    raise argparse.ArgumentTypeError(f"must be a positive integer, not '{text}'")
 
 
-def run(level: str, exclusive: bool, args: list[str]) -> int:
-    if len(args) < 3:
-        print(USAGE, end="", file=sys.stderr)
-        return 2
-    name, text, what, *cmd = args
-    cmd = cmd[1:] if cmd[:1] == ["--"] else cmd
-    minutes = minutes_arg(text)
-    if minutes is None:
-        return 2
+def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
+    name, minutes, what = a.name, a.minutes, a.what
+    cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
     longest = int(env("QUIET_MAX_MIN", "30"))
     if level == "strict" and minutes > longest:
         print(
@@ -850,53 +818,100 @@ def check() -> int:
     return code
 
 
-def main(argv: list[str]) -> int:
-    (DIR / "pills").mkdir(parents=True, exist_ok=True)
-    verb, args = (argv[0], argv[1:]) if argv else ("", [])
-    if verb in ("light", "strict", "exclusive"):  # quiet LEVEL NAME ...: whatever the environment says
-        return run("light" if verb == "light" else "strict", verb == "exclusive", args)
+def level_from_env() -> tuple[str, bool]:
     level = env("QUIET_LEVEL", "strict")
-    if verb in ("run", "hold") and level not in ("light", "strict", "exclusive"):
+    if level not in ("light", "strict", "exclusive"):
         print(f"quiet: QUIET_LEVEL must be light, strict or exclusive, not '{level}'", file=sys.stderr)
-        return 2
-    if verb == "run":
-        return run("light" if level == "light" else "strict", level == "exclusive", args)
-    if verb == "hold" and len(args) >= 3:
-        minutes = minutes_arg(args[1])
-        if minutes is None:
-            return 2
-        with locked():
-            write_hold(
-                args[0],
-                minutes,
-                args[2],
-                int(args[3]) if len(args) > 3 else 0,
-                "light" if level == "light" else "strict",
-            )
-        return 0
-    if verb == "release" and args:
-        drop(DIR / args[0])
-        return 0
-    if verb == "_watch" and len(args) == 3:  # the pause watchdog, started by run
-        return watch(Path(args[0]), int(args[1]), int(args[2]))
-    if verb == "check":
-        return check()
-    if verb == "list":
-        show_holds(True)
-        show_waiting()
-        return 0
-    if verb == "wait":
-        while True:
-            state = show_holds(False)
-            if state == 1 or (state == 2 and args[:1] == ["--light"]):
-                return 0
-            time.sleep(30)
-    if verb in ("-h", "--help", "help"):
-        print(USAGE, end="")
-        return 0
-    print(USAGE, end="", file=sys.stderr)
-    return 2
+        sys.exit(2)
+    return ("light" if level == "light" else "strict"), level == "exclusive"
+
+
+def cmd_run(a: argparse.Namespace) -> int:
+    if a.command == "run":
+        return run(*level_from_env(), a)
+    return run("light" if a.command == "light" else "strict", a.command == "exclusive", a)
+
+
+def cmd_hold(a: argparse.Namespace) -> int:
+    with locked():
+        write_hold(a.name, a.minutes, a.what, a.pid, level_from_env()[0])
+    return 0
+
+
+def cmd_release(a: argparse.Namespace) -> int:
+    drop(DIR / a.name)
+    return 0
+
+
+def cmd_list(_a: argparse.Namespace) -> int:
+    show_holds(True)
+    show_waiting()
+    return 0
+
+
+def cmd_check(_a: argparse.Namespace) -> int:
+    return check()
+
+
+def cmd_watch(a: argparse.Namespace) -> int:
+    return watch(a.hold, a.pid, a.until)
+
+
+def cmd_wait(a: argparse.Namespace) -> int:
+    while True:
+        state = show_holds(False)
+        if state == 1 or (state == 2 and a.light):
+            return 0
+        time.sleep(30)
+
+
+def parser() -> argparse.ArgumentParser:
+    raw = argparse.RawDescriptionHelpFormatter
+    ap = argparse.ArgumentParser(prog="quiet", description=__doc__, epilog=EPILOG, formatter_class=raw)
+    sub = ap.add_subparsers(dest="command", required=True)
+    runs = {
+        "light": "wait for a light turn (builds, tests, fuzz), then run CMD at nice 19",
+        "strict": "wait for a strict turn (a measurement on its own cores), then run CMD",
+        "exclusive": "wait until the machine is quiet, then run CMD alone",
+        "run": "the same, at $QUIET_LEVEL (default strict)",
+    }
+    for verb, text in runs.items():
+        p = sub.add_parser(verb, help=text, description=text)
+        p.add_argument("name", metavar="NAME", help="the hold's name")
+        p.add_argument("minutes", metavar="MINUTES", type=positive, help="its bound")
+        p.add_argument("what", metavar="WHAT", help="what it is for, shown by list")
+        p.add_argument("cmd", metavar="-- CMD", nargs=argparse.REMAINDER, help="the command and its arguments")
+        p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("hold", help="hold the machine until released, the deadline, or PID exits")
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("minutes", metavar="MINUTES", type=positive)
+    p.add_argument("what", metavar="WHAT")
+    p.add_argument("pid", metavar="PID", type=int, nargs="?", default=0)
+    p.set_defaults(fn=cmd_hold)
+    p = sub.add_parser("release", help="end a hold")
+    p.add_argument("name", metavar="NAME")
+    p.set_defaults(fn=cmd_release)
+    p = sub.add_parser("list", help="show the live holds and waiting requests: level, what, who, until")
+    p.set_defaults(fn=cmd_list)
+    help_check = "exit 0 free; 2 busy, work can still start; 1 blocked: exclusive hold or disk full"
+    p = sub.add_parser("check", help=help_check, description=help_check)
+    p.set_defaults(fn=cmd_check)
+    p = sub.add_parser("wait", help="block until free")
+    p.add_argument("--light", action="store_true", help="until light work can start")
+    p.set_defaults(fn=cmd_wait)
+    p = sub.add_parser("_watch")  # the pause watchdog, started by run
+    p.add_argument("hold", type=Path)
+    p.add_argument("pid", type=int)
+    p.add_argument("until", type=int)
+    p.set_defaults(fn=cmd_watch)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    (DIR / "pills").mkdir(parents=True, exist_ok=True)
+    return int(args.fn(args))
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())

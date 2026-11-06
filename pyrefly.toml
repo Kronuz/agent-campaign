@@ -1,8 +1,8 @@
 # Type checking for the campaign tool and its tests: strict, on the oldest supported Python.
 preset = "strict"
 python-version = "3.9"
-project-includes = ["scripts/campaign.py", "scripts/pace.py", "scripts/quiet.py", "tests/*.py"]
-search-path = ["tests"]
+project-includes = ["scripts/*.py", "tests/*.py"]
+search-path = ["scripts", "tests"]
 
 [errors]
 # typing.override needs Python 3.12; the tool supports 3.9 without third-party packages.

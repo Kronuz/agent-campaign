@@ -18,6 +18,7 @@ from typing import Any
 SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
 QUIET = SKILL / "scripts" / "quiet.py"
+sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
 
 
 def session_members(sids: set[int]) -> list[int]:

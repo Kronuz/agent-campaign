@@ -20,7 +20,7 @@ exercised on this machine.
 
 ## Agent types
 
-`agents/adventurer.md` and `paladin.md` are the source, linked into `~/.claude/agents`. `scripts/sync-agents.sh`
+`agents/adventurer.md` and `paladin.md` are the source, linked into `~/.claude/agents`. `scripts/sync-agents.py`
 generates the Copilot and Codex files from them; `--check` reports drift. A new or edited type loads
 when a session starts; until then, launch a general-purpose agent with the type's body prepended
 and its model and effort set.

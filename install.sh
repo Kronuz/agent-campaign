@@ -27,7 +27,7 @@ if [ -d "$HOME/.claude" ]; then
 		link "$repo" "$HOME/.claude/skills/campaign"
 	for agent in "$repo"/agents/*.md; do link "$agent" "$HOME/.claude/agents/$(basename "$agent")"; done
 fi
-for tool in campaign:campaign.py quiet:quiet.py pace:pace.py report:report.sh; do
+for tool in campaign:campaign.py quiet:quiet.py pace:pace.py report:report.py; do
 	link "$repo/scripts/${tool#*:}" "$HOME/.local/bin/${tool%%:*}"
 done
 for old in "$HOME"/.local/bin/*; do  # a tool this repository renamed or removed leaves a dangling link
@@ -36,9 +36,9 @@ for old in "$HOME"/.local/bin/*; do  # a tool this repository renamed or removed
 	if [ -n "$check" ]; then echo "stale: $old"; bad=1; else rm "$old" && echo "removed $old"; fi
 done
 if [ -n "$check" ]; then
-	"$repo/scripts/sync-agents.sh" --check || bad=1
+	"$repo/scripts/sync-agents.py" --check || bad=1
 else
-	"$repo/scripts/sync-agents.sh"
+	"$repo/scripts/sync-agents.py"
 fi
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "add ~/.local/bin to PATH" >&2 ;; esac
 exit $bad

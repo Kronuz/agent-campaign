@@ -9,10 +9,10 @@
 
 | Check | Result |
 |---|---|
-| `ruff check` and `ruff format` (skill's `ruff.toml`) on `campaign.py`, `quiet.py`, `pace.py` and the tests | clean |
+| `ruff check` and `ruff format` (skill's `ruff.toml`) on every tool in `scripts/` and the tests | clean |
 | `pyrefly check` (strict preset, Python 3.9 target) | 0 errors |
-| `shellcheck -S warning` on `report.sh`, `sync-agents.sh`, `install.sh` | clean |
-| `sync-agents.sh --check` (Copilot and Codex files match the sources) | clean; the Codex TOML parses with `tomllib` |
+| `shellcheck -S warning` on `install.sh`, the only shell script | clean |
+| `sync-agents.py --check` (Copilot and Codex files match the sources) | clean; the Codex TOML parses with `tomllib`; output byte-identical to the shell version's but for its mark |
 
 ## Executable tests
 

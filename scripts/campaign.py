@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
+import report
+
 SKILL = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL / "templates"
 META = "docs/campaign"
@@ -451,14 +453,10 @@ def register(name: str, home: Path) -> None:
         entry.write_text(f"{home}\n")
 
 
-def report(*args: str) -> None:
-    """The patron's sidebar (cmux, through `report`); silent outside cmux and never fails a command."""
-    if not os.environ.get("CMUX_WORKSPACE_ID"):
-        return
-    tool = shutil.which("report")
-    argv = [tool] if tool else ["bash", str(SKILL / "scripts" / "report.sh")]
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run([*argv, *args], capture_output=True, timeout=10)
+def notify(title: str, body: str) -> None:
+    """A notice in the patron's cmux feed; silent outside cmux."""
+    if os.environ.get("CMUX_WORKSPACE_ID"):
+        report.notify(title, body)
 
 
 def sidebar(c: Campaign) -> None:
@@ -503,16 +501,17 @@ def sidebar(c: Campaign) -> None:
         seen = json.loads(cache.read_text()).get(workspace, {})
     for key in seen.keys() - want.keys():
         if key == "bar":
-            report("clear")
+            report.clear()
         else:
-            report("unstatus", key.split(":", 1)[1])
+            report.unstatus(key.split(":", 1)[1])
     for key, value in want.items():
         if seen.get(key) == value:
             continue
         if key == "bar":
-            report("set", *value.split("\t", 1))
+            done, label = value.split("\t", 1)
+            report.progress(report.fraction(done), label)
         else:
-            report("status", key.split(":", 1)[1], value, "map" if key == "status:campaign" else "hammer")
+            report.status(key.split(":", 1)[1], value, "map" if key == "status:campaign" else "hammer")
     with contextlib.suppress(OSError, json.JSONDecodeError):
         views = json.loads(cache.read_text()) if cache.exists() else {}
         views[workspace] = want
@@ -760,7 +759,7 @@ def cmd_set(a: argparse.Namespace) -> int:
             + " ".join(a.assignments + [f"check={x}" for x in a.check] + [f"later={x}" for x in a.later])
         )
         if any(x == "status=blocked" for x in a.assignments):
-            report("notify", f"Blocked: {a.id}", p.get("reason", ""))
+            notify(f"Blocked: {a.id}", p.get("reason", ""))
     print(f"{a.id}: {p['status']}")
     return 0
 
@@ -1091,7 +1090,7 @@ def cmd_land(a: argparse.Namespace) -> int:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
         p["updated"] = stamp()
         c.save(message + f" at {landed[:12]}")
-        report("notify", f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
+        notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
         if a.push:
             for where in dict.fromkeys([checkout, c.home]):
                 pushed = subprocess.run(
