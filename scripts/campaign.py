@@ -2019,9 +2019,17 @@ def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
     return jid, False
 
 
+def mtime(path: Path) -> float | None:
+    """A file's modification time, or None when it is gone (its owner may remove it at any moment)."""
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
 def worker_alive() -> bool:
-    beat = jobs_dir() / ".worker" / "heartbeat"
-    return beat.exists() and time.time() - beat.stat().st_mtime < STALE
+    beat = mtime(jobs_dir() / ".worker" / "heartbeat")
+    return beat is not None and time.time() - beat < STALE
 
 
 def spawn(args: list[str], log: Path) -> subprocess.Popen[bytes]:
@@ -2282,15 +2290,16 @@ def reap() -> None:
         if st.get("state") != "running":
             continue
         beat = d / "heartbeat"
-        last = beat.stat().st_mtime if beat.exists() else 0.0
+        last = mtime(beat) or 0.0
         if time.time() - last < STALE:
             continue
         lock = d / "reaping"
         try:
             lock.mkdir()
         except FileExistsError:
-            if time.time() - lock.stat().st_mtime < 60:
-                continue
+            held = mtime(lock)
+            if held is None or time.time() - held < 60:
+                continue  # another reaper holds it, or just finished
         try:
             if load_job(d)["state"] != st:
                 continue
