@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Generator
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -1522,7 +1523,197 @@ def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
     return runs, sessions
 
 
-USAGE_READERS = {"copilot": copilot_runs}  # harness -> reader(since) -> (agent runs, game master sessions)
+def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
+    """Read thread-local cumulative usage; cached/reasoning tokens are subsets, not additions."""
+    root = Path(
+        os.environ.get("CAMPAIGN_CODEX_LOGS")
+        or Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
+    )
+    threads: dict[str, Json] = {}
+    launches: dict[tuple[str, str], str] = {}
+
+    def timestamp(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+
+    for log in sorted(root.rglob("rollout-*.jsonl")):
+        if log.stat().st_mtime < since:
+            continue
+        meta: Json = {}
+        what: Json | None = None
+        model, effort, began, ended = "", "", "", ""
+        records: dict[str, Json] = {}
+        cumulative: Json = {}
+        turns: dict[str, Json] = {}
+        starts: dict[str, float] = {}
+        durations: dict[tuple[str, str], float] = {}
+        calls = 0
+        with log.open(errors="replace") as f:
+            for line in f:
+                if not any(
+                    key in line
+                    for key in (
+                        '"session_meta"',
+                        '"turn_context"',
+                        '"token_usage_record"',
+                        '"token_count"',
+                        '"task_started"',
+                        '"task_complete"',
+                        '"function_call"',
+                        '"agent_message"',
+                        '"role":"user"',
+                        '"role": "user"',
+                    )
+                ):
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict) or not isinstance(e.get("payload"), dict):
+                    continue
+                kind, d, at = e.get("type"), e["payload"], e.get("timestamp", "")
+                if kind == "session_meta":
+                    meta = d
+                    began = d.get("timestamp") or at
+                elif kind == "turn_context":
+                    model = d.get("model") or model
+                    effort = d.get("effort") or d.get("reasoning_effort") or effort
+                    turns[d.get("turn_id", "")] = {"model": model, "effort": effort}
+                elif kind == "token_usage_record":
+                    # A response may be recorded again after a retry; replace, never sum it twice.
+                    ident = d.get("response_id")
+                    if ident:
+                        records[ident] = {
+                            "usage": d.get("usage") or {},
+                            "model": model,
+                            "effort": effort,
+                            "turn": d.get("turn_id", ""),
+                            "at": at,
+                        }
+                    ended = at
+                elif kind == "event_msg":
+                    if d.get("type") == "token_count" and isinstance(d.get("info"), dict):
+                        cumulative = d["info"].get("total_token_usage") or cumulative
+                        ended = at
+                    elif d.get("type") == "task_started":
+                        starts[d.get("turn_id", "")] = timestamp(at)
+                    elif d.get("type") == "task_complete":
+                        turn = d.get("turn_id", "")
+                        config = turns.get(turn, {"model": model, "effort": effort})
+                        key = (config["model"], config["effort"])
+                        durations[key] = durations.get(key, 0.0) + max(
+                            0.0, timestamp(at) - starts.pop(turn, timestamp(at))
+                        )
+                        ended = at
+                elif kind == "response_item":
+                    if d.get("type") == "function_call":
+                        calls += 1
+                        if d.get("name", "").split(".")[-1] == "spawn_agent":
+                            try:
+                                args = json.loads(d.get("arguments") or "{}")
+                            except (ValueError, TypeError):
+                                continue
+                            if isinstance(args, dict):
+                                launches[(meta.get("id", ""), args.get("task_name", ""))] = args.get(
+                                    "message", args.get("prompt", "")
+                                )
+                    elif what is None and (d.get("type") == "agent_message" or d.get("role") == "user"):
+                        prompt = "".join(c.get("text", "") for c in d.get("content", []) if isinstance(c, dict))
+                        what = launch(prompt)
+        ident = meta.get("id")
+        if not ident:
+            continue
+        groups: dict[tuple[str, str], Json] = {}
+        for record in records.values():
+            config = turns.get(record["turn"], record)
+            key = (config["model"], config["effort"])
+            g = groups.setdefault(key, {"tokens": 0, "cached_input_tokens": 0, "output_tokens": 0})
+            u = record["usage"]
+            g["tokens"] += int(
+                u.get("total_tokens", int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)) or 0
+            )
+            for field in ("cached_input_tokens", "output_tokens"):
+                g[field] += int(u.get(field) or 0)
+        if not records:
+            groups[(model, effort)] = {
+                "tokens": int(
+                    cumulative.get(
+                        "total_tokens",
+                        int(cumulative.get("input_tokens") or 0) + int(cumulative.get("output_tokens") or 0),
+                    )
+                    or 0
+                ),
+                "cached_input_tokens": int(cumulative.get("cached_input_tokens") or 0),
+                "output_tokens": int(cumulative.get("output_tokens") or 0),
+            }
+        for turn, start in starts.items():
+            config = turns.get(turn, {"model": model, "effort": effort})
+            key = (config["model"], config["effort"])
+            durations[key] = durations.get(key, 0.0) + max(0.0, timestamp(ended) - start)
+        source = meta.get("source") or {}
+        spawn: Json = source.get("subagent", {}).get("thread_spawn", {}) if isinstance(source, dict) else {}
+        threads[ident] = {
+            "meta": meta,
+            "parent": meta.get("parent_thread_id") or spawn.get("parent_thread_id", ""),
+            "path": meta.get("agent_path") or spawn.get("agent_path", ""),
+            "what": what,
+            "groups": groups,
+            "durations": durations,
+            "began": began,
+            "ended": ended,
+            "calls": calls,
+        }
+    runs: list[Json] = []
+    sessions: list[Json] = []
+    for ident, t in threads.items():
+        meta, parent = t["meta"], t["parent"]
+        sid = meta.get("session_id") or parent or ident
+        attribution: Json = {}
+        if parent:
+            path = t["path"]
+            # This installation encrypts agent messages, but plaintext harnesses retain attribution.
+            prompt = launches.get((parent, path), launches.get((parent, path.rsplit("/", 1)[-1]), ""))
+            what = launch(prompt) or t["what"]
+            if what is None:
+                what = {
+                    "name": "",
+                    "home": meta.get("cwd", ""),
+                    "quest": "-",
+                    "role": "unattributed",
+                    "class": "",
+                    "lens": "",
+                }
+            attribution = what
+        for (model, effort), totals in t["groups"].items():
+            row = {
+                "harness": "codex",
+                "session": sid,
+                "agent": ident,
+                "path": t["path"],
+                "model": model,
+                "effort": effort,
+                "began": t["began"],
+                "ended": t["ended"],
+                "cost": 0.0,
+                "cost_available": False,
+                "tool_calls": t["calls"],
+                **totals,
+                "seconds": t["durations"].get((model, effort), max(0.0, timestamp(t["ended"]) - timestamp(t["began"]))),
+            }
+            if parent:
+                runs.append({**row, **attribution})
+            else:
+                sessions.append({**row, "session": ident, "home": meta.get("cwd", "")})
+    return runs, sessions
+
+
+USAGE_READERS = {
+    "copilot": copilot_runs,
+    "codex": codex_runs,
+}  # harness -> reader(since) -> (agent runs, game master sessions)
 
 
 def usage(c: Campaign) -> Json:
@@ -1539,6 +1730,12 @@ def usage(c: Campaign) -> Json:
         r
         for r in runs
         if r["name"] == c.state["campaign"] or (r["home"] and Path(r["home"]).expanduser().resolve() == home)
+    ]
+    related = {(r["harness"], r["session"]) for r in runs}
+    sessions = [
+        s
+        for s in sessions
+        if (s["harness"], s["session"]) in related or (s.get("home") and Path(s["home"]).expanduser().resolve() == home)
     ]
     jobs: list[Json] = []
     for j in all_jobs():
@@ -1608,7 +1805,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
             "(the whole session, which may include other work)"
         )
     print(
-        f"\nread: {', '.join(USAGE_READERS)}; tokens are cumulative (context rereads included), cost in each harness's own unit"
+        f"\nread: {', '.join(USAGE_READERS)}; tokens are cumulative (context rereads included), cost in each harness's own unit; Codex cost unavailable (reported as 0)"
     )
     return 0
 

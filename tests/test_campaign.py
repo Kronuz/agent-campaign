@@ -406,6 +406,82 @@ class Campaigns(CampaignCase):
 
 
 class Usage(CampaignCase):
+    def codex_log(self, fixture: str, name: str) -> Path:
+        source = Path(__file__).parent / "fixtures" / f"codex-{fixture}.jsonl"
+        log = self.root / "codex/2026/11/05" / f"rollout-{name}.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(source.read_text().replace("HOME", str(self.home)) + "not json\n")
+        return log
+
+    def test_codex_real_shapes_attribute_tokens_without_counting_snapshots_twice(self) -> None:
+        self.codex_log("lead", "lead")
+        self.codex_log("agent", "agent")
+        u = json.loads(self.ok(self.home, "usage", "--json").out)
+        (run,) = u["runs"]
+        self.assertEqual((run["role"], run["class"], run["quest"]), ("adventurer", "Artificer", "fix"))
+        self.assertEqual(
+            (run["model"], run["effort"], run["tokens"], run["seconds"]), ("gpt-6-astra", "high", 1200, 120)
+        )
+        self.assertEqual((run["cached_input_tokens"], run["output_tokens"], run["cost"]), (800, 200, 0))
+        (lead,) = u["game_master"]
+        self.assertEqual(
+            (lead["tokens"], lead["seconds"], lead["model"], lead["effort"]), (550, 180, "gpt-6.1-sol", "medium")
+        )
+        self.assertIn("Codex cost unavailable", self.ok(self.home, "usage").out)
+
+    def test_codex_encrypted_launch_is_unattributed_and_unrelated_leads_are_excluded(self) -> None:
+        self.codex_log("agent", "opaque")
+        other = self.codex_log("lead", "other")
+        other.write_text(other.read_text().replace(str(self.home), str(self.root / "elsewhere")))
+        u = json.loads(self.ok(self.home, "usage", "--json").out)
+        (run,) = u["runs"]
+        self.assertEqual((run["role"], run["quest"], run["tokens"]), ("unattributed", "-", 1200))
+        # This parent is related by thread id even though its cwd differs.
+        self.assertEqual(len(u["game_master"]), 1)
+        other.write_text(other.read_text().replace('"lead"', '"unrelated"'))
+        self.assertEqual(json.loads(self.ok(self.home, "usage", "--json").out)["game_master"], [])
+
+    def test_codex_legacy_cumulative_snapshots_and_old_logs(self) -> None:
+        log = self.codex_log("agent", "fallback")
+        lines = [line for line in log.read_text().splitlines() if '"token_usage_record"' not in line]
+        log.write_text("\n".join(lines) + "\n{truncated")
+        (run,) = json.loads(self.ok(self.home, "usage", "--json").out)["runs"]
+        self.assertEqual(run["tokens"], 1200)
+        os.utime(log, (0, 0))
+        self.assertEqual(json.loads(self.ok(self.home, "usage", "--json").out)["runs"], [])
+
+    def test_codex_model_effort_changes_keep_separate_usage_and_active_time(self) -> None:
+        log = self.codex_log("agent", "models")
+        events = [json.loads(line) for line in log.read_text().splitlines() if line.startswith("{")]
+        events += [
+            {
+                "type": "event_msg",
+                "timestamp": "2026-11-05T12:00:00Z",
+                "payload": {"type": "task_started", "turn_id": "next"},
+            },
+            {"type": "turn_context", "payload": {"turn_id": "next", "model": "gpt-6.1-sol", "effort": "medium"}},
+            {
+                "type": "token_usage_record",
+                "timestamp": "2026-11-05T12:01:00Z",
+                "payload": {
+                    "turn_id": "next",
+                    "response_id": "resp-next",
+                    "usage": {"input_tokens": 20, "output_tokens": 5},
+                },
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-11-05T12:01:00Z",
+                "payload": {"type": "task_complete", "turn_id": "next"},
+            },
+        ]
+        log.write_text("".join(json.dumps(e) + "\n" for e in events))
+        runs = json.loads(self.ok(self.home, "usage", "--json").out)["runs"]
+        self.assertEqual(
+            sorted((r["model"], r["tokens"], r["seconds"]) for r in runs),
+            [("gpt-6-astra", 1200, 120), ("gpt-6.1-sol", 25, 60)],
+        )
+
     def copilot_session(self, name: str, launches: list[tuple[str, str, float]], lead_cost: float) -> Path:
         """A Copilot session log in its real event shapes: (prompt, agent id, cost) per launch."""
         events: list[Any] = []

@@ -90,6 +90,8 @@ class CampaignCase(unittest.TestCase):
             GIT_COMMITTER_NAME="Test",
             GIT_COMMITTER_EMAIL="test@example.com",
         )
+        self.env["CAMPAIGN_CODEX_LOGS"] = str(self.root / "codex")
+        self.env["CAMPAIGN_COPILOT_LOGS"] = str(self.root / "copilot")
         self.env["PATH"] = f"{self.root / 'bin'}:{self.env['PATH']}"
         (self.root / "bin").mkdir()
         (self.root / "bin" / "quiet").symlink_to(QUIET)  # this checkout's quiet, not the installed one

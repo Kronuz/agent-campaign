@@ -15,6 +15,7 @@ Usage:
 
 HARNESS is claude, copilot, codex or all (default: QUOTA_HARNESS, else all).
 A snapshot older than QUOTA_STALE seconds (900) is reported as old.
+Codex reads local CODEX_HOME/sessions logs (default ~/.codex/sessions).
 
 pace informs decisions (will this batch exhaust the week before the milestone?). Unused
 quota is not a reason to start work.
@@ -28,12 +29,26 @@ if [ "$harness" = all ]; then  # one line per harness with a snapshot, each pace
 	case "${1:-}" in -h | --help | help) usage; exit 0 ;; esac
 	found=0
 	for h in claude copilot codex; do
-		[ -f "$qdir/$h.json" ] || continue
+		[ "$h" = codex ] || [ -f "$qdir/$h.json" ] || continue
 		found=1
 		QUOTA_HARNESS=$h bash "$0" "$@" | sed "s/^/$h: /"
 	done
 	[ $found = 1 ] || echo "no snapshot: a harness's status line writes one (Claude Code's or Copilot CLI's)"
 	exit 0
+fi
+if [ "$harness" = codex ]; then
+	case "${1:-}" in
+	-h | --help | help) usage; exit 0 ;;
+	"") ;;
+	*) usage >&2; exit 2 ;;
+	esac
+	pace_source=${BASH_SOURCE[0]}
+	while [ -L "$pace_source" ]; do
+		pace_dir=$(cd -P "$(dirname "$pace_source")" && pwd)
+		pace_source=$(readlink "$pace_source")
+		[[ "$pace_source" = /* ]] || pace_source="$pace_dir/$pace_source"
+	done
+	exec python3 "$(dirname "$pace_source")/codex_quota.py"
 fi
 snap="${QUOTA_SNAPSHOT:-$qdir/$harness.json}"
 stale=${QUOTA_STALE:-900}
