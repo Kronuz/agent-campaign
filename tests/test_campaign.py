@@ -432,7 +432,20 @@ class Usage(CampaignCase):
     def test_codex_encrypted_launch_is_unattributed_and_unrelated_leads_are_excluded(self) -> None:
         self.codex_log("agent", "opaque")
         other = self.codex_log("lead", "other")
-        other.write_text(other.read_text().replace(str(self.home), str(self.root / "elsewhere")))
+        events = []
+        for line in other.read_text().splitlines():
+            if not line.startswith("{"):
+                continue
+            event = json.loads(line)
+            payload = event["payload"]
+            if payload.get("type") == "function_call":
+                arguments = json.loads(payload["arguments"])
+                arguments["message"] = "SCRUBBED_ENCRYPTED_PROMPT"
+                payload["arguments"] = json.dumps(arguments)
+            events.append(event)
+        other.write_text(
+            "".join(json.dumps(e) + "\n" for e in events).replace(str(self.home), str(self.root / "elsewhere"))
+        )
         u = json.loads(self.ok(self.home, "usage", "--json").out)
         (run,) = u["runs"]
         self.assertEqual((run["role"], run["quest"], run["tokens"]), ("unattributed", "-", 1200))

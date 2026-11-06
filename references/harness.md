@@ -14,7 +14,7 @@ exercised on this machine.
 | Game master waits for jobs without tokens | `campaign wait ...` as a background Bash command; the game master is re-invoked when it exits | `campaign wait ...` in an async shell; completion notifies the game master | Run `campaign wait` through `exec_command`; retain its session id and await `write_stdin`, without model sampling during the wait. Verified 2026-11-05: bounded wait returned exit 3 after 50 seconds while the job continued |
 | Subagent waits for a job | one `campaign wait --timeout 600`, then ends its turn (a subagent that ends its turn is finished; nothing wakes it) | the same (a background command's notice does not wake a subagent) | the same |
 | Periodic report | a scheduled job, recreated each session | `manage_schedule` with a cron, recreated each session | This session exposes no scheduler; use campaign state/sidebar and report at turn boundaries (verified 2026-11-05) |
-| Usage (`campaign usage`) | not read yet | `~/.copilot/session-state/*/events.jsonl`: per agent, the `task` prompt, model, effort, cost, tokens, time (verified 2026-11-05) | not read yet |
+| Usage (`campaign usage`) | not read yet | `~/.copilot/session-state/*/events.jsonl`: per agent, the `task` prompt, model, effort, cost, tokens, time (verified 2026-11-05) | Rollout logs: launch, model/effort, tokens/time and lead totals; encrypted launches unattributed, cost unavailable (2026-11-05) |
 | Skills location | `~/.claude/skills` (linked to `~/.agents/skills`) | `~/.agents/skills` | `~/.agents/skills`, symlink and loaded skill verified 2026-11-05 |
 
 ## Agent types
@@ -40,14 +40,21 @@ and its model and effort set.
 
 ## Codex mapping and runtime checks
 
-Verified 2026-11-05 against this session's tool schema and local model catalog. The strongest
-(Opus) role maps to `gpt-6-astra`; Sonnet Scout/Squire work maps to `gpt-6.1-sol` at medium.
-Use medium to high for ordinary implementation, high for Sage/Artificer/Bard and paladins,
-and max for Wizard or a design about to freeze. These are role assignments, not a comparative
-benchmark. Sol at medium and Astra at high both launched (2026-11-05,
-`docs/campaign-2/codex-trial.md`). The generated files intentionally omit `model`, inheriting the session model. A named file's
-model or effort overrides launch arguments, so use the body fallback for a class-specific effort
-that differs from the file. Preserve `max` in generation; do not silently lower it.
+Measured 2026-11-05: the resumed interval consumed 10.34M cumulative tokens, 51.5% in the game
+master; three Astra/high developers consumed 5.01M. Quota weights are unknown. These are operating
+hypotheses pending comparable completed work, not model rankings (`docs/codex-trial.md`).
+
+| Class/role | Codex starting point |
+|---|---|
+| Implementation, Scout, Squire, Bard | Sol medium; one implementation trial before parallel expansion |
+| Sage, Artificer, paladin | Sol high; Astra high for a concrete unresolved mechanism or independent ruling |
+| Wizard, design freeze | Astra high; max only for a bounded question that warrants it |
+| Game master | Sol medium, small context; measured separately from developers |
+
+Generated types inherit the model; file effort overrides launch settings. Use the body fallback
+for a different class effort. Sol/medium and Astra/high launches work; named loading remains
+unexercised. Preserve max when requested. `pace codex` reports both windows and burn/exhaustion
+relative to reset; stale samples are marked. Cost zero means unavailable, never free.
 
 Verified 2026-11-05: global guidance is `$CODEX_HOME/AGENTS.override.md`, otherwise `AGENTS.md`
 (default `~/.codex`). The terminal exposes

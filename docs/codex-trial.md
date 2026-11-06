@@ -49,3 +49,41 @@ A bounded `campaign wait --timeout 50` returned exit 3 while its job continued. 
 ## Next
 
 Finish Dense pages builders, readers, deltas and safe old-format refusal/refetch. Reconcile the queued 100K/5M runs and native checks, then run the complete feature's correctness/performance and decoder-safety reviews before the architect's final merge ruling. Update this report with actual landing and check-wait times when they exist.
+
+## Usage and quota follow-up (2026-11-05)
+
+The extracted `agent-campaign` repository adds Codex readers on branch `codex`. The retired dotfiles branch had no unpublished changes. Its three commits were already on GitHub; no additional patch needs carrying over.
+
+`campaign usage --json` now reads this campaign's rollout logs. A 21:09 PST snapshot reports:
+
+| Logged run | Role/class from recorded assignment | Model / effort | Cumulative tokens | Active wall time |
+|---|---|---|---:|---:|
+| dense_fullbuild_v2 | Adventurer / ordinary implementation | Astra / high | 2,126,093 | 274.918 s |
+| dense_reads_v2 | Adventurer / ordinary implementation | Astra / high | 2,666,200 | 340.396 s |
+| dense_deltas_v2 | Adventurer / ordinary implementation | Astra / high | 216,171 | 36.629 s |
+| codex_pace (this follow-up) | Adventurer / Squire | Sol / medium | 628,697 | 185.259 s |
+| Game master, whole session | Lead / no class | Sol / medium | 68,025,214 | 5,302.766 s |
+
+The role/class labels in this table come from the recorded assignments in this campaign's conversation. CLI output honestly marks these historical agent launches `unattributed`: this Codex installation encrypts their message bodies. Parent spawn and child agent-message shapes are supported when plaintext is available; the reader passes that text unchanged to `launch()`. It does not infer a class from a nickname. A scrubbed real-shape fixture exercises the plaintext case and encrypted fallback.
+
+The game-master row includes work before adoption and this follow-up. Of its 68.03M tokens, 66,421,248 are cached input (97.6%). Cached input is a subset, not extra tokens; reasoning output is likewise not added twice. Codex supplies no monetary cost, so the tool reports cost unavailable as zero. These token totals cannot be converted into dollars or quota weights from the available logs.
+
+For the actual resumed interval, 2026-11-05 23:01:00 to 23:11:00 UTC (15:01 to 15:11 PST), the same response records show:
+
+| Role / class | Model / effort | Tokens | Share |
+|---|---|---:|---:|
+| Game master / no class | Sol / medium | 5,326,861 | 51.5% |
+| Full-build adventurer / ordinary | Astra / high | 2,126,093 | 20.6% |
+| Reader adventurer / ordinary | Astra / high | 2,666,200 | 25.8% |
+| Delta adventurer / ordinary | Astra / high | 216,171 | 2.1% |
+| Total | | 10,335,325 | 100% |
+
+The interval is computed from timestamped `token_usage_record.usage` entries, deduplicated by response id, rather than adding cumulative `token_count` snapshots. Raw rollout content stays local. The first root quota sample in that interval was 14% at 23:01:00 UTC; the reader's quota reached 100% at 23:10:11 UTC. The window was already partly consumed. The logs do not identify how much quota each model's tokens cost, so blaming the exhaustion entirely on Astra would exceed the evidence.
+
+The larger avoidable contributor is the lead's long, repeatedly read context: 5.33M tokens in ten minutes, including 5,256,064 cached input. Three simultaneous developers added 5.01M. The full-build developer produced passing targeted jobs; reader qualification was still incomplete, and delta hit the limit after 37 seconds. There is no comparable Sol implementation run proving a quality or efficiency advantage for either model.
+
+The next experiment is one Sol/medium implementation adventurer with a compact journal assignment. Measure completed criteria, tokens and active time before expanding concurrency. Use Sol/high for a specific difficult design, optimization or review question; reserve Astra/high for an unresolved mechanism or independent ruling. Wizard/design-freeze max remains a bounded exception. Bard, Scout and Squire start at Sol/medium. The lead stays Sol/medium and must reduce its own context overhead. These recommendations replace the untested assumption that ordinary implementation should always use Astra/high.
+
+`pace codex` reads both quota windows without network requests. At 21:10 PST it reported 5h 9% used, a 97.39 percentage-point/hour recent burn and exhaustion in 56 minutes from the sample, before reset at 2026-11-06 10:04 UTC. Weekly use was 65%, with a short-sample 11.92 point/hour burn and exhaustion before its reset. Percentages are quantized and the recent samples cover only minutes; these are forecasts, not guarantees. No further parallel launch follows that forecast.
+
+The reader selects event timestamps across logs, ignores premium events with null windows, preserves reset identities, handles partial appended lines and caches offsets. Expired/stale observations are labeled. The shared skill gains no new instruction rule; its existing Usage row and Codex mapping carry the harness changes within the word budget.
