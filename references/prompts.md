@@ -9,7 +9,7 @@ agent with an explicit model and effort (SKILL.md, "The party"), its quest in th
 You are the adventurer for quest <ID> of campaign <name> (<home repo path>).
 Class: <none | Sage | Wizard | Artificer | Scout | Bard | Squire>; your method is its section in
 the skill's references/classes.md.
-Worktree <path>, branch quest/<ID> (or quest/<ID>--<task>).
+Worktree <path>, branch quest/<campaign>/<ID> (or quest/<campaign>/<ID>--<task>).
 Assignment: <implement | investigate then fix | design then build | optimize | document | mechanical change>.
 Quest: <home>/.campaign/<campaign>/quests/<ID>.md (outcome, criteria, contracts; the game master's, never edit it).
 Journal: .campaign/<campaign>/journal/<ID>.md in your worktree; keep it current and commit it with your work.
@@ -44,7 +44,7 @@ effort. For a question with no fix expected, drop the quest lines and submit job
 
 ```
 You are a scout in a scouting party for campaign <name> (<home repo path>), on quest <ID>: worktree
-<path>, branch quest/<ID>, file set <globs>. Your one question: <why is row R N× slower than X / does
+<path>, branch quest/<campaign>/<ID>, file set <globs>. Your one question: <why is row R N× slower than X / does
 <area> handle <boundary, error path, concurrency case> / what breaks <behavior>?>. Evidence so far:
 <the measurement or probe at main <sha>, with numbers>. Start in: <files>. Must stay identical:
 <outputs, digests, on-disk bytes>.

@@ -113,7 +113,7 @@ platform. Slow CI workflows can be made non-gating the same way
 
 ## Run a quest
 
-1. `campaign start ID` creates `quest/ID` in its own worktree with a journal. Launch an adventurer
+1. `campaign start ID` creates `quest/<campaign>/ID` in its own worktree with a journal. Launch an adventurer
    with the "Adventurer" prompt (`references/prompts.md`); run quests in parallel only when they
    are ready, disjoint and not waiting on the same machine.
 2. The adventurer works in its worktree, keeps its journal current, and produces evidence as jobs:

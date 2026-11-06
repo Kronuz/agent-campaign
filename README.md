@@ -90,7 +90,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
 | `campaign migrate` | moves an older campaign's `docs/campaign/` to `.campaign/<name>/`, once no quest is in flight |
 | `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
-| `campaign start ID` | creates `quest/ID` in its own worktree, with a journal |
+| `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
 | `campaign accept ID LENS` | records a paladin's verdict for the quest's current content |
 | `campaign land ID` | lands the quest when every check and review holds for the exact code |

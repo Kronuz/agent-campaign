@@ -17,7 +17,7 @@ are, as history; nothing rewrites them.
 | `pace advise` targets and the two-agent floor | `pace` reports only |
 | `lease` (AWS) | Removed; campaign provisions nothing |
 | `docs/reviews/<subject>-<kind>.md`, finding IDs per kind | `.campaign/<name>/reviews/<quest>-<lens>.md`, one findings table |
-| Branch prefixes `phase*/`, `design/`, `explore/`, `fix/`, ... | `quest/<id>` and `quest/<id>--<task>` (add `quest/**` to CI push triggers) |
+| Branch prefixes `phase*/`, `design/`, `explore/`, `fix/`, ... | `quest/<name>/<id>` and `quest/<name>/<id>--<task>` (add `quest/**` to CI push triggers) |
 
 ## Install
 
@@ -70,8 +70,8 @@ Then follow SKILL.md, "Start a campaign".
    ```sh
    campaign new <id> --title "<ledger title>" --risk <low|normal|high|critical> \
        --files '<globs the branch touches>' --check 'unit=<the fast test command>'
-   git branch quest/<id> <old-branch>      # same commits, new name; the old branch stays
-   campaign start <id>                   # reuses quest/<id> and adds a worktree and journal
+   git branch quest/<name>/<id> <old-branch>   # same commits, new name; the old branch stays
+   campaign start <id>                      # reuses quest/<name>/<id>, adds a worktree and journal
    ```
    Copy the ledger's done criteria into the quest file as A1, A2, ...; copy "Doing", "Next" and "Blocked
    on" into the journal. Link the old ledger and reviews from the quest file.
