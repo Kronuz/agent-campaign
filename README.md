@@ -127,11 +127,12 @@ the research, the architecture and the validation.
 ## Building and testing
 
 ```sh
-cd tests && python3 -m unittest     # about six minutes
+cd tests && python3 run.py          # about three minutes, four tests at a time
 ruff check scripts tests && pyrefly check
 ```
 
-Run the suite inside a `quiet light` hold when other agents share the machine.
+Run the suite inside a `quiet light` hold when other agents share the machine. `run.py -j 1`
+runs one test at a time, and `python3 -m unittest` still works.
 
 ## License
 

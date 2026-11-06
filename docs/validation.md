@@ -16,12 +16,13 @@
 
 ## Executable tests
 
-`home/.agents/skills/campaign/tests`, run with `python3 -m unittest` from that directory. Each test
-builds throwaway repositories with their own job queue and `quiet` directory.
+`home/.agents/skills/campaign/tests`, run with `python3 run.py` from that directory (or
+`python3 -m unittest`, one test at a time). Each test builds throwaway repositories with their own
+job queue and `quiet` directory.
 
 | Suite | Covers |
 |---|---|
-| `test_campaign` | quest creation and starting, dependency kinds and cycles, the single-writer guard, status transitions, ownership at start and at landing, edits to the game master's files, file overlap reports, evidence at the exact code (and kept across journal-only commits), failing checks, landed code equal to tested code, rebases after `main` moves, review acceptance (approve, changes with confirming jobs, reject, waivers, drift, changed quest file, upstream changes for high risk), review counts, increments, the GitHub CI gate (stub `gh`), `--push` to a bare remote, the cmux sidebar (the real `report`, stub `cmux`), interrupted landings (completed and cleared), deleted and unrecorded branches, contracts with two providers, cleanup |
+| `test_campaign` | quest creation and starting, progress from criteria and evidence, dependency kinds and cycles, the single-writer guard, status transitions, ownership at start and at landing, edits to the game master's files, file overlap reports, evidence at the exact code (and kept across journal-only commits), failing checks, landed code equal to tested code, rebases after `main` moves, review acceptance (approve, changes with confirming jobs, reject, waivers, drift, changed quest file, upstream changes for high risk), review counts, increments, the GitHub CI gate (stub `gh`), `--push` to a bare remote, the cmux sidebar (the real `report`, stub `cmux`), interrupted landings (completed and cleared), deleted and unrecorded branches, contracts with two providers, cleanup |
 | `test_jobs` | identity (the submitted commit while the branch moves on, reuse, toolchain fingerprint, refs into other repositories, `--sync`), scheduling (`--after`, skips, priority, the worker's lifetime), limits (no-hold timeouts, measurement deadlines, the 30-minute cap, helpers killed with their job, cancel), crashes (lost runner reaped with its orphans and retried, interrupted without retries, a result recorded before the runner died, a stale runner fenced off), contention (Scenario G) |
 | `test_quiet` | deadline stop and exit code 124, waiting requests in `quiet list`, exit codes passing through, the 30-minute cap, the hold outliving a command that ignores TERM, a starving build served before a queued measurement, bounded commands under a CPU burner per core, a TERM to `quiet` stopping its command's group and freeing the hold, `QUIET_PAUSE` stopping light work and resuming it; on Linux, strict and light holds on disjoint cores and qemu vCPU threads moved and restored (fake VMs with `CPU n/KVM` threads) |
 | `test_scenarios` | Scenarios A-F, H, I from the brief and a scouting party, end to end |
@@ -204,6 +205,30 @@ repository can hold several; branches are `quest/<campaign>/<id>` and worktrees
 `<repo>-wt/<campaign>/<id>`; jobs, wait records and sidebar pills are keyed by campaign. Older
 campaigns keep `docs/campaign/` until `campaign migrate`; their jobs keep the home as their tag, so
 jobs submitted before the upgrade still wake their game master.
+
+## Parallel tests and quest progress
+
+`tests/run.py` runs each test in its own process, four at once (the most a shared machine allows a
+test suite), then the tests marked `alone` one at a time: the CPU-load and contention tests, which
+time the machine, and the qemu pinning test, because a strict hold moves every qemu process of the
+user, including another test's fake VMs. Every other test isolates its repositories, queue and
+`quiet` directory, so the order does not matter. Most of the remaining time is waiting, not work:
+the crash tests wait out a 10-second stale threshold and Scenario F about 18 s.
+
+| Host | Interpreter | Tests | One at a time | Four at once |
+|---|---|---|---|---|
+| macOS | Python 3.9.6 | 102 | 356 s (95 tests) | 169 s |
+| macOS | Python 3.15 | 102 | 545 s (95 tests) | 179 s |
+| Linux | Python 3.9.19 | 102 | 229 s (95 tests) | 92 s |
+| Linux | Python 3.15 | 102 | 215 s (95 tests) | 88 s |
+
+`campaign status` shows each quest's progress: the acceptance criteria in its quest file that its
+journal's Evidence table names with evidence, the journal's next step, and the campaign's share
+(landed quests whole, the rest by criteria met). Bars use `CAMPAIGN_BAR`'s two characters (default
+`█░`, which every terminal font has; `#-` when the output cannot encode them), and color only on a
+terminal without `NO_COLOR`. The jobs line counts the jobs at the quest's code that finished and
+those that ended badly. Both tests fail against the previous `campaign.py`, and the bar assertion
+fails when `CAMPAIGN_BAR` is ignored.
 
 ## Not run
 

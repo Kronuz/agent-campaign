@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,12 @@ SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
 QUIET = SKILL / "scripts" / "quiet.py"
 sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
+
+
+def alone(test: Callable[..., None]) -> Callable[..., None]:
+    """Marks a test that loads the whole machine or times it: run.py runs it with nothing beside it."""
+    test.__dict__["alone"] = True
+    return test
 
 
 def session_members(sids: set[int]) -> list[int]:

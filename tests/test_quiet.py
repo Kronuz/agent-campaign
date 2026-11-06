@@ -14,6 +14,8 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+from harness import alone
+
 QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.py"
 LINUX = sys.platform == "linux"
 NCPU = os.cpu_count() or 1
@@ -85,6 +87,7 @@ class Quiet(unittest.TestCase):
         self.assertNotIn("late", out)
         self.assertIn("invalid", err)
 
+    @alone
     def test_bounded_commands_finish_normally_under_cpu_load(self) -> None:
         """Starved commands must not be reported as past their deadline (a timer race seen under load)."""
         env = dict(self.env, QUIET_KILL="1", QUIET_LIGHT_SLOTS="8", QUIET_MINUTE="60")
@@ -212,6 +215,7 @@ class Quiet(unittest.TestCase):
         self.assertEqual(json.loads(strict_out), list(range(NCPU // 2, NCPU)))
         self.assertEqual(json.loads(light_out), list(range(NCPU // 2)))
 
+    @alone  # any strict hold beside it would move its fake VMs too
     @unittest.skipUnless(LINUX and NCPU >= 4, "VM threads are pinned on Linux")
     def test_strict_moves_vm_threads_and_restores_them(self) -> None:
         mine = [p for p in Path("/proc").iterdir() if p.name.isdigit() and p.stat().st_uid == os.getuid()]

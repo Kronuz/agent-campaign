@@ -223,6 +223,8 @@ class Crashes(CampaignCase):
 
 
 class Contention(CampaignCase):
+    alone = True  # times builds against an exclusive benchmark
+
     def test_builds_and_an_exclusive_benchmark_never_overlap(self) -> None:
         """Scenario G: two builds and an exclusive benchmark compete; nobody polls."""
         log = self.root / "timeline"
