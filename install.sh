@@ -27,8 +27,13 @@ if [ -d "$HOME/.claude" ]; then
 		link "$repo" "$HOME/.claude/skills/campaign"
 	for agent in "$repo"/agents/*.md; do link "$agent" "$HOME/.claude/agents/$(basename "$agent")"; done
 fi
-for tool in campaign:campaign.py quiet:quiet.sh pace:pace.py report:report.sh blockers:blockers.sh; do
+for tool in campaign:campaign.py quiet:quiet.sh pace:pace.py report:report.sh; do
 	link "$repo/scripts/${tool#*:}" "$HOME/.local/bin/${tool%%:*}"
+done
+for old in "$HOME"/.local/bin/*; do  # a tool this repository renamed or removed leaves a dangling link
+	[ -L "$old" ] && [ ! -e "$old" ] || continue
+	case $(readlink "$old") in "$repo"/*) ;; *) continue ;; esac
+	if [ -n "$check" ]; then echo "stale: $old"; bad=1; else rm "$old" && echo "removed $old"; fi
 done
 if [ -n "$check" ]; then
 	"$repo/scripts/sync-agents.sh" --check || bad=1

@@ -73,7 +73,7 @@ git clone https://github.com/Kronuz/agent-campaign.git ~/code/agent-campaign
 ```
 
 `install.sh` links the skill into `~/.agents/skills/campaign` (and `~/.claude/skills`), the tools
-`campaign`, `quiet`, `pace`, `report` and `blockers` into `~/.local/bin`, and the agent types into
+`campaign`, `quiet`, `pace` and `report` into `~/.local/bin`, and the agent types into
 `~/.claude/agents`, and generates the Copilot and Codex agent files for the harnesses installed. It
 never replaces a file it did not link; `install.sh --check` reports what is missing. Agent types
 load when a session starts.

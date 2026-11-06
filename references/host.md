@@ -5,7 +5,7 @@ Every command has `--help`.
 
 ## Install
 
-`install.sh` links `campaign`, `quiet`, `pace`, `report` and `blockers` into `~/.local/bin` and
+`install.sh` links `campaign`, `quiet`, `pace` and `report` into `~/.local/bin` and
 the agent types into every installed harness; it never replaces a file it did not link. If one is
 missing, run `install.sh` again (ask the patron before removing anything in its way). Without it, run
 `python3 <skill>/scripts/campaign.py` and `bash <skill>/scripts/quiet.sh` directly. `campaign`
@@ -96,7 +96,8 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   `QUIET_VM=<pid or pattern> quiet strict ...` pins the VM's threads to the strict cores; on macOS
   use `exclusive`.
 - **Remote hosts** run their own `quiet` and their own job queue (install this repository there, or
-  copy the two scripts); a remote job takes no local hold.
+  copy the two scripts); a remote job takes no local hold. Check one through its session:
+  `etctl run SESSION 'quiet check; quiet list'`.
 
 ## Several campaigns
 
@@ -121,5 +122,3 @@ campaigns' state.
   milestone's quests), the `campaign` pill (the whole project) and a `campaign-<id>` pill per
   quest in flight, sending only what changed; landings and blocks notify. `quiet` adds a pill
   per hold, in the workspace that submitted the job, and notifies when a hold ran 5 minutes or more.
-- **`blockers [--watch MIN] [--remote NAME=SESSION]`** (optional) reports holds past their limits,
-  starved requests, overload and low disk across hosts, waking the game master only on a new problem.
