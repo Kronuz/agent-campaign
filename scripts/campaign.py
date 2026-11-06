@@ -731,6 +731,23 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
+def migration_blockers(c: Campaign) -> tuple[list[str], list[str]]:
+    """(quests in flight, jobs queued or running): what keeps an older campaign from moving."""
+    busy = sorted(pid for pid, p in c.quests.items() if p["status"] in ("active", "review", "blocked"))
+    pending = sorted(
+        j["id"] for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
+    )
+    return busy, pending
+
+
+def migration_wait(c: Campaign) -> str:
+    """When `campaign migrate` can run: now (""), or after what."""
+    busy, pending = migration_blockers(c)
+    if busy:
+        return f" once no quest is in flight (now: {', '.join(busy)})"
+    return " once its jobs finish" if pending else ""
+
+
 def cmd_migrate(_a: argparse.Namespace) -> int:
     """Moves an older campaign's files to .campaign/NAME in one commit. Quests in flight carry
     journals at the old path on their branches, and the campaign's pending jobs carry its old tag,
@@ -740,16 +757,11 @@ def cmd_migrate(_a: argparse.Namespace) -> int:
         if c.meta != LEGACY_META:
             print(f"campaign {c.name} already keeps its files in {c.meta}")
             return 0
-        busy = sorted(pid for pid, p in c.quests.items() if p["status"] in ("active", "review", "blocked"))
+        busy, pending = migration_blockers(c)
         if busy:
             die(
                 f"quests in flight keep journals in {LEGACY_META} on their branches: land or drop {', '.join(busy)} first"
             )
-        pending = sorted(
-            j["id"]
-            for j in all_jobs()
-            if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
-        )
         if pending:
             die(f"jobs {', '.join(pending)} are queued or running under the old layout: `campaign wait` for them first")
         if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
@@ -1265,7 +1277,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         out.append(
             (
                 "warning",
-                f"this campaign keeps its files in {LEGACY_META}: `campaign migrate` moves them to {META}/{c.name} once no quest is active, in review or blocked and none of its jobs is queued or running (it refuses until then)",
+                f"this campaign keeps its files in {LEGACY_META}: run `campaign migrate`" + migration_wait(c),
             )
         )
     if c.state.get("landing"):
@@ -1417,6 +1429,9 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         s: sum(1 for j in mine if j["state"].get("state") == s and (s in ("queued", "running") or at_head(j)))
         for s in ("queued", "running", "failed", "timeout", "interrupted")
     }
+    view["failed"] = [
+        job_summary(j) for j in mine if j["state"].get("state") in ("failed", "timeout", "interrupted") and at_head(j)
+    ]
     view["landed"] = [x["commit"][:12] + ("" if x.get("final") else " (increment)") for x in p["landed"]]
     later = [load_job(jobs_dir() / j)["state"].get("state", "missing") for x in p["landed"] for j in x.get("later", [])]
     if later:
@@ -1526,7 +1541,7 @@ def cmd_status(a: argparse.Namespace) -> int:
         print(f"\n{v['id']}  {v['status']}  {v['risk']}  {v['title']}")
         if "branch" in v:
             print(
-                f"  branch {v['branch']} at {v['head']} ({v['ahead']} ahead; main has {v['behind']} code commits it lacks)"
+                f"  branch {v['branch']} at {v['head']} ({v['ahead']} ahead; main has {v['behind']} code commit{'' if v['behind'] == 1 else 's'} it lacks)"
             )
             for name, w in v["journal"].items():
                 dirty = "worktree missing" if w["dirty"] < 0 else f"{w['dirty']} uncommitted" if w["dirty"] else "clean"
@@ -1541,6 +1556,11 @@ def cmd_status(a: argparse.Namespace) -> int:
                 "  jobs: "
                 + ", ".join(f"{n} {k}" + ("" if k in ("queued", "running") else " at head") for k, n in busy.items())
             )
+        for f in v["failed"]:
+            code = "" if f["exit"] is None else f" (exit {f['exit']})"
+            print(f"    {f['job']}  {f['state']}{code}  {f['what']}")
+        if v["failed"]:
+            print("    at the code the quest has now; only its checks gate landing (`campaign job log ID`)")
         if v["landed"]:
             print("  landed: " + ", ".join(v["landed"]))
         if v.get("deferred"):
