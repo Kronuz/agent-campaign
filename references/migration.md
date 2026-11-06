@@ -8,7 +8,7 @@ are, as history; nothing rewrites them.
 | 1.x | 2.0 |
 |---|---|
 | 14 agent types (explorer, developer, validator, performance engineer, researcher, designer, maintenance engineer, tech writer, code reviewer, security reviewer, architect, rechecker, proof auditor, quartermaster) | `adventurer` and `paladin`; the assignment and the lens carry the difference |
-| Workstream ledgers (`docs/status/<ws>.md`), status index, exploration log, `INDEX.md`, status lines, book outline | `docs/campaign/state.json` (through `campaign`), quest files, journals on branches; status is derived by `campaign status` |
+| Workstream ledgers (`docs/status/<ws>.md`), status index, exploration log, `INDEX.md`, status lines, book outline | `.campaign/<name>/state.json` (through `campaign`), quest files, journals on branches; status is derived by `campaign status` |
 | Review tiers with floor, adjust, defaults and a proof audit | Four risk levels; one review per needed lens per quest |
 | Rechecker after fixes | The game master reruns the paladin's probes as jobs and runs `campaign accept --jobs` |
 | Lead, owner, workstream, contributor, reviewer, explorer, ledger, sources and calibration | Game master, patron, quest, adventurer, paladin, scout, journal, lore: the same jobs, named for the campaign the skill is named after |
@@ -16,7 +16,7 @@ are, as history; nothing rewrites them.
 | `quiet` holds taken by waiting agents | Jobs; strict and exclusive commands now stop at their deadline (exit 124) and holds over 30 minutes are refused |
 | `pace advise` targets and the two-agent floor | `pace` reports only |
 | `lease` (AWS) | Removed; campaign provisions nothing |
-| `docs/reviews/<subject>-<kind>.md`, finding IDs per kind | `docs/campaign/reviews/<quest>-<lens>.md`, one findings table |
+| `docs/reviews/<subject>-<kind>.md`, finding IDs per kind | `.campaign/<name>/reviews/<quest>-<lens>.md`, one findings table |
 | Branch prefixes `phase*/`, `design/`, `explore/`, `fix/`, ... | `quest/<id>` and `quest/<id>--<task>` (add `quest/**` to CI push triggers) |
 
 ## Install
@@ -57,7 +57,7 @@ build waits; with no other sessions running, install machine-wide instead.
 
 ```sh
 cd <repo>                       # the main checkout of the campaign's home repository
-campaign init --name <name>     # writes docs/campaign/PLAN.md and state.json, commits them
+campaign init --name <name>     # writes .campaign/<name>/PLAN.md and state.json, commits them
 ```
 
 Then follow SKILL.md, "Start a campaign".
@@ -76,7 +76,7 @@ Then follow SKILL.md, "Start a campaign".
    Copy the ledger's done criteria into the quest file as A1, A2, ...; copy "Doing", "Next" and "Blocked
    on" into the journal. Link the old ledger and reviews from the quest file.
 4. A review the 1.x branch already passed counts: copy its verdict into
-   `docs/campaign/reviews/<id>-<lens>.md` (`Verdict:` and `Commit:` lines, a link to the original)
+   `.campaign/<name>/reviews/<id>-<lens>.md` (`Verdict:` and `Commit:` lines, a link to the original)
    and `campaign accept` it. A review not yet run follows the 2.0 risk table.
 5. Landed workstreams need no quest. Queued ones become `campaign new` quests.
 6. `campaign check` should report no errors; `campaign status` is the new status index. The old
@@ -86,4 +86,4 @@ Then follow SKILL.md, "Start a campaign".
 
 Reinstall 1.x as it was installed (its installer restores its own links, `lease` included), remove
 the `campaign` link and the `adventurer` and `paladin` agent types by hand, and restart sessions.
-Projects keep both sets of files; `docs/campaign/` is ignored by 1.x.
+Projects keep both sets of files; `.campaign/` is ignored by 1.x.

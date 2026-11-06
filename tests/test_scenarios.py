@@ -24,7 +24,7 @@ class Scenarios(CampaignCase):
         p = self.quest("fix-off-by-one")
         self.assertEqual(p["lenses"], [])
         self.assertEqual(p["accepted"], {})
-        self.assertFalse((self.home / "docs/campaign/reviews").exists())
+        self.assertFalse((self.home / ".campaign/demo/reviews").exists())
         self.assertEqual(p["status"], "landed")
 
     def test_b_a_medium_feature_gets_one_integrated_review(self) -> None:
@@ -48,13 +48,13 @@ class Scenarios(CampaignCase):
         self.commit(self.wt("search--index"), {"lib/util.py": "INDEX = {}\n"}, "index")
         self.commit(self.wt("search--query"), {"app.py": "import lib.util\nprint('query')\n"}, "query")
         party = self.wt("search")
-        self.git(party, "merge", "-q", "--no-edit", "quest/search--index")  # the game master integrates the tasks
-        self.git(party, "merge", "-q", "--no-edit", "quest/search--query")
+        self.git(party, "merge", "-q", "--no-edit", "quest/demo/search--index")  # the game master integrates the tasks
+        self.git(party, "merge", "-q", "--no-edit", "quest/demo/search--query")
         self.verified("search")
         self.review("search", "correctness", "APPROVE")
         self.ok(self.home, "accept", "search", "correctness")
         self.ok(self.home, "land", "search")
-        reviews = list((self.home / "docs/campaign/reviews").glob("*.md"))
+        reviews = list((self.home / ".campaign/demo/reviews").glob("*.md"))
         self.assertEqual([r.name for r in reviews], ["search-correctness.md"])
         self.assertEqual(sorted(self.quest("search")["tasks"]), ["index", "query"])
 
@@ -132,13 +132,13 @@ class Scenarios(CampaignCase):
         self.verified("wal")
         self.ok(self.home, "accept", "wal", "durability", "--jobs", probe)
         self.ok(self.home, "land", "wal")
-        reviews = sorted(r.name for r in (self.home / "docs/campaign/reviews").glob("*.md"))
+        reviews = sorted(r.name for r in (self.home / ".campaign/demo/reviews").glob("*.md"))
         self.assertEqual(reviews, ["wal-design.md", "wal-durability.md"])  # no recheck, no second round
 
     def test_f_an_interrupted_campaign_is_reconstructed_from_files(self) -> None:
         wt = self.started("half", files="app.py", risk="normal", check="unit=python3 app.py")
         self.commit(wt, {"app.py": "print('part one')\n"}, "part one")
-        work = wt / "docs/campaign/journal/half.md"
+        work = wt / ".campaign/demo/journal/half.md"
         work.write_text(work.read_text().replace("State: working", "State: waiting on jobs (see Evidence)"))
         self.git(wt, "commit", "-q", "-am", "work file: waiting")
         (wt / "app.py").write_text("print('part two, unsaved')\n")
@@ -247,7 +247,7 @@ class Scenarios(CampaignCase):
         self.assertIn(
             "contract api:store is changing in store-api; consumers use-store", self.ok(self.home, "check").out
         )
-        libwt = self.root / "lib-wt" / "store-api"
+        libwt = self.root / "lib-wt" / "demo" / "store-api"
         self.commit(libwt, {"store.py": "def get(k, default=None):\n    return k\n"}, "additive default")
         self.commit(self.wt("use-store"), {"app.py": "print('uses get(k, default)')\n"}, "use it")
         tuple_check = self.submit(
@@ -255,7 +255,7 @@ class Scenarios(CampaignCase):
             "--quest",
             "use-store",
             "--ref",
-            f"lib={lib}@quest/store-api",
+            f"lib={lib}@quest/demo/store-api",
             "--",
             "python3 -c \"import sys; sys.path.insert(0, '$JOB_REF_LIB'); import store; store.get(1, default=2)\"",
         )

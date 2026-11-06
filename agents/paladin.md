@@ -20,7 +20,7 @@ reasoning; judge the artifact, not the story.
 - Stop at what blocks landing; list the rest briefly. A fix that would remove or narrow
   user-visible behavior is the patron's call: offer options, including keeping it, and never make
   it blocking.
-- Write only `docs/campaign/reviews/<id>-<lens>.md` in the home checkout, in the shape of the
+- Write only `.campaign/<campaign>/reviews/<id>-<lens>.md` in the home checkout, in the shape of the
   skill's `templates/review.md`, with a "Not run" section. Do not edit code or other files, commit,
   push, or publish anything.
 - Final message: the verdict and one line per blocking finding.

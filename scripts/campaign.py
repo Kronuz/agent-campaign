@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """campaign: quests, worktrees, landing and a host job queue for multi-agent projects.
 
-State lives in docs/campaign/state.json in the campaign's home repository and is written only by
+State lives in .campaign/NAME/state.json in the campaign's home repository and is written only by
 this tool, from that repository's main checkout. Jobs live in $CAMPAIGN_JOBS
 (~/.scratch/campaign/jobs) on the host that runs them. `campaign COMMAND --help` documents each
 command; the skill's SKILL.md says when to use it.
@@ -34,9 +34,11 @@ import report
 
 SKILL = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL / "templates"
-META = "docs/campaign"
-STATE_REL = f"{META}/state.json"
-GAME_MASTER_FILES = (f"{META}/state.json", f"{META}/PLAN.md", f"{META}/quests/", f"{META}/reviews/")
+META = ".campaign"  # .campaign/NAME/ holds a campaign's files in its home repository
+LEGACY_META = "docs/campaign"  # where an older campaign keeps them until `campaign migrate`
+EXCLUDE_META = (f":(exclude){META}", f":(exclude){LEGACY_META}")
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+GAME_MASTER_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
 RISKS = ("low", "normal", "high", "critical")
 LENSES = ("correctness", "security", "durability", "design", "system")
@@ -196,12 +198,22 @@ def changed(repo: Path, a: str, b: str) -> list[str]:
     return [x for x in git(repo, "diff", "--name-only", a, b).splitlines() if x]
 
 
+def meta_rel(path: str) -> str | None:
+    """A campaign file's path inside its campaign's directory; None for code."""
+    if path.startswith(META + "/"):
+        return "/".join(path.split("/")[2:])
+    if path.startswith(LEGACY_META + "/"):
+        return path[len(LEGACY_META) + 1 :]
+    return None
+
+
 def is_meta(path: str) -> bool:
-    return path.startswith(META + "/")
+    return meta_rel(path) is not None
 
 
 def game_master_file(path: str) -> bool:
-    return any(path == o or (o.endswith("/") and path.startswith(o)) for o in GAME_MASTER_FILES)
+    rel = meta_rel(path)
+    return rel is not None and any(rel == o or (o.endswith("/") and rel.startswith(o)) for o in GAME_MASTER_FILES)
 
 
 def mktree(repo: Path, entries: list[str]) -> str:
@@ -217,18 +229,31 @@ def mktree(repo: Path, entries: list[str]) -> str:
 
 
 def code_tree(repo: Path, commit: str) -> str:
-    """The commit's tree without docs/campaign: what builds and tests see, so evidence survives
-    commits that touch only campaign metadata (a journal, a review)."""
+    """The commit's tree without the campaign's files (.campaign, and docs/campaign of older
+    campaigns): what builds and tests see, so evidence survives commits that touch only campaign
+    files (a journal, a review, the move by `campaign migrate`)."""
     root = [e for e in git(repo, "ls-tree", "-z", commit).split("\0") if e]
-    docs = [e for e in root if e.split("\t", 1)[1] == "docs"]
-    if not docs or docs[0].split()[1] != "tree":
+    rest = [e for e in root if entry_name(e) not in (META, "docs")]
+    changed = any(entry_name(e) == META for e in root)
+    for e in root:
+        if entry_name(e) != "docs":
+            continue
+        mode, kind, sha = e.split("\t", 1)[0].split()
+        inner = [x for x in git(repo, "ls-tree", "-z", sha).split("\0") if x] if kind == "tree" else []
+        kept = [x for x in inner if entry_name(x) != "campaign"]
+        if len(kept) == len(inner):
+            rest.append(e)
+            continue
+        changed = True
+        if kept:
+            rest.append(f"{mode} {kind} {mktree(repo, kept)}\tdocs")
+    if not changed:
         return git(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}")
-    mode, kind, sha = docs[0].split("\t", 1)[0].split()
-    inner = [e for e in git(repo, "ls-tree", "-z", sha).split("\0") if e and e.split("\t", 1)[1] != "campaign"]
-    rest = [e for e in root if e is not docs[0]]
-    if inner:
-        rest.append(f"{mode} {kind} {mktree(repo, inner)}\tdocs")
     return mktree(repo, rest)
+
+
+def entry_name(entry: str) -> str:
+    return entry.split("\t", 1)[1]
 
 
 def blobs(repo: Path, commit: str, paths: list[str]) -> dict[str, str]:
@@ -244,19 +269,48 @@ def blobs(repo: Path, commit: str, paths: list[str]) -> dict[str, str]:
 # ---------------------------------------------------------------- campaign state
 
 
-def find_home(cwd: Path) -> Path:
+def locate(cwd: Path) -> tuple[Path, str]:
+    """The home repository and, in a quest's worktree, the campaign it belongs to."""
     env = os.environ.get("CAMPAIGN_HOME")
     if env:
-        return Path(env).resolve()
+        return Path(env).resolve(), ""
     if not git_ok(cwd, "rev-parse", "--git-dir"):
         die("not in a git repository, and CAMPAIGN_HOME is unset")
     pointer = Path(git(cwd, "rev-parse", "--path-format=absolute", "--git-dir")) / "campaign-home"
     if pointer.exists():
-        return Path(pointer.read_text().strip())
-    home = main_checkout(cwd)
-    if (home / STATE_REL).exists():
-        return home
-    die("no campaign here: run `campaign init` in the home repository's main checkout")
+        home, _, name = pointer.read_text().strip().partition("\n")
+        return Path(home), name.strip()
+    return main_checkout(cwd), ""
+
+
+def campaigns_in(home: Path) -> dict[str, str]:
+    """The campaigns a home holds: name -> their directory, relative to the home."""
+    found = {f.parent.name: f"{META}/{f.parent.name}" for f in sorted((home / META).glob("*/state.json"))}
+    legacy: Json | None = None
+    with contextlib.suppress(CampaignError):
+        legacy = read_json(home / LEGACY_META / "state.json")
+    if legacy and legacy.get("campaign") and legacy["campaign"] not in found:
+        found[str(legacy["campaign"])] = LEGACY_META
+    return found
+
+
+def select(home: Path, name: str) -> tuple[str, str]:
+    """(name, directory) of the campaign NAME, or of the only one the home holds."""
+    found = campaigns_in(home)
+    if not name and len(found) == 1:
+        name = next(iter(found))
+    if not name:
+        if found:
+            die(f"{home} holds campaigns {', '.join(found)}: pass --campaign NAME or set CAMPAIGN")
+        die("no campaign here: run `campaign init` in the home repository's main checkout")
+    if name not in found:
+        die(f"no campaign {name} in {home}" + (f" (it holds {', '.join(found)})" if found else ""))
+    return name, found[name]
+
+
+def find_campaign(cwd: Path) -> Campaign:
+    home, pinned = locate(cwd)
+    return Campaign(home, os.environ.get("CAMPAIGN") or pinned)
 
 
 QUEST_FIELDS: dict[str, type] = {
@@ -343,8 +397,9 @@ def campaigns() -> dict[str, Json]:
     out: dict[str, Json] = {}
     for f in sorted(registry().glob("*")) if registry().is_dir() else []:
         home = Path(f.read_text().strip())
+        meta = campaigns_in(home).get(f.name)
         try:
-            state = read_json(home / STATE_REL)
+            state = read_json(home / meta / "state.json") if meta else None
         except CampaignError:
             continue
         if state and state.get("campaign") == f.name:
@@ -401,9 +456,10 @@ def cycles(quests: dict[str, Json]) -> list[str]:
 
 
 class Campaign:
-    def __init__(self, home: Path) -> None:
+    def __init__(self, home: Path, name: str = "") -> None:
         self.home = home
-        self.path = home / STATE_REL
+        self.name, self.meta = select(home, name)
+        self.path = home / self.meta / "state.json"
         data = read_json(self.path)
         if data is None:
             die(f"{self.path} does not exist")
@@ -411,6 +467,11 @@ class Campaign:
         if errors:
             die("state.json is invalid:\n  " + "\n  ".join(errors))
         self.state: Json = data
+
+    @property
+    def ident(self) -> str:
+        """How jobs and wait records name this campaign: its directory (its home, for an older one)."""
+        return str(self.home) if self.meta == LEGACY_META else str(self.home / self.meta)
 
     @property
     def quests(self) -> dict[str, Json]:
@@ -439,7 +500,7 @@ class Campaign:
         sidebar(self)
         if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
             return
-        paths = [STATE_REL, *extra]
+        paths = [f"{self.meta}/state.json", *extra]
         git(self.home, "add", "--", *paths)
         if git_ok(self.home, "diff", "--cached", "--quiet", "--", *paths):
             return
@@ -479,12 +540,13 @@ def sidebar(c: Campaign) -> None:
         s: sum(1 for p in live.values() if p["status"] == s)
         for s in ("landed", "active", "review", "blocked", "planned")
     }
-    want["status:campaign"] = (
+    project = f"status:campaign-{c.name}"
+    want[project] = (
         f"{name}: {counts['landed']} landed · {counts['active'] + counts['review']} in flight · {counts['blocked']} blocked · {counts['planned']} planned"
     )
     for pid, p in c.quests.items():
         if p["status"] in ("active", "review", "blocked"):
-            want[f"status:campaign-{pid}"] = f"{pid}: {p['status']}" + (
+            want[f"status:campaign-{c.name}-{pid}"] = f"{pid}: {p['status']}" + (
                 f" ({p.get('reason', '')})" if p["status"] == "blocked" else ""
             )
     if current is not None:
@@ -496,9 +558,12 @@ def sidebar(c: Campaign) -> None:
         )
         want["bar"] = f"{done}/{len(members)}\t{label}"
     cache = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-sidebar.json"
+    view = f"{workspace} {c.ident}"
     seen: dict[str, str] = {}
     with contextlib.suppress(FileNotFoundError, json.JSONDecodeError, AttributeError):
-        seen = json.loads(cache.read_text()).get(workspace, {})
+        views = json.loads(cache.read_text())
+        # a view from before a home could hold several campaigns is keyed by the workspace alone
+        seen = views[view] if view in views else views.get(workspace, {})
     for key in seen.keys() - want.keys():
         if key == "bar":
             report.clear()
@@ -511,10 +576,11 @@ def sidebar(c: Campaign) -> None:
             done, label = value.split("\t", 1)
             report.progress(report.fraction(done), label)
         else:
-            report.status(key.split(":", 1)[1], value, "map" if key == "status:campaign" else "hammer")
+            report.status(key.split(":", 1)[1], value, "map" if key == project else "hammer")
     with contextlib.suppress(OSError, json.JSONDecodeError):
         views = json.loads(cache.read_text()) if cache.exists() else {}
-        views[workspace] = want
+        views.pop(workspace, None)
+        views[view] = want
         cache.write_text(json.dumps(views))
 
 
@@ -522,7 +588,7 @@ def sidebar(c: Campaign) -> None:
 def writing() -> Generator[Campaign, None, None]:
     """The one writer: the home repository's main checkout, on its main branch, under a lock."""
     cwd = Path.cwd()
-    home = find_home(cwd)
+    home, pinned = locate(cwd)
     if not git_ok(cwd, "rev-parse", "--git-dir") or toplevel(cwd) != home:
         die(f"state is written from the campaign's main checkout ({home}); run this there")
     branch = git(home, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
@@ -531,7 +597,7 @@ def writing() -> Generator[Campaign, None, None]:
     lock = Path(git(home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign.lock"
     with open(lock, "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
-        c = Campaign(home)
+        c = Campaign(home, os.environ.get("CAMPAIGN") or pinned)
         recover_landing(c)
         yield c
 
@@ -618,12 +684,12 @@ def outside(paths: list[str], globs: list[str]) -> list[str]:
 
 
 def brief_hash(c: Campaign, pid: str) -> str:
-    brief = c.home / META / "quests" / f"{pid}.md"
+    brief = c.home / c.meta / "quests" / f"{pid}.md"
     return hashlib.sha256(brief.read_bytes()).hexdigest()[:16] if brief.exists() else ""
 
 
-def worktree_path(repo: Path, name: str) -> Path:
-    return repo.parent / f"{repo.name}-wt" / name
+def worktree_path(repo: Path, campaign: str, name: str) -> Path:
+    return repo.parent / f"{repo.name}-wt" / campaign / name
 
 
 def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
@@ -644,21 +710,48 @@ def cmd_init(a: argparse.Namespace) -> int:
     top = toplevel(Path.cwd())
     if top != main_checkout(top):
         die("run init in the repository's main checkout, not in a worktree")
-    if (top / STATE_REL).exists():
-        die(f"{top / STATE_REL} exists")
     name = a.name or top.name
+    if not NAME_RE.fullmatch(name):
+        die(f"campaign name {name!r}: use letters, digits, '.', '_' and '-' (--name)")
+    if name in campaigns_in(top):
+        die(f"{top} already holds campaign {name}")
     taken = campaigns().get(name)
     if taken and taken["home"] != top:
         die(f"campaign {name} already runs from {taken['home']} on this machine: pick another --name")
-    write_json(top / STATE_REL, {"version": 2, "campaign": name, "ci": a.ci, "quests": {}})
+    folder = f"{META}/{name}"
+    write_json(top / folder / "state.json", {"version": 2, "campaign": name, "ci": a.ci, "quests": {}})
     register(name, top)
-    plan = top / META / "PLAN.md"
+    plan = top / folder / "PLAN.md"
     if not plan.exists():
         atomic_write(plan, template("PLAN.md", campaign=name))
     if os.environ.get("CAMPAIGN_NO_COMMIT") != "1":
-        git(top, "add", "--", STATE_REL, f"{META}/PLAN.md")
-        git(top, "commit", "-q", "-m", f"campaign: init {name}", "--", STATE_REL, f"{META}/PLAN.md")
-    print(f"campaign {name} in {top}; write the goals in {META}/PLAN.md")
+        git(top, "add", "--", folder)
+        git(top, "commit", "-q", "-m", f"campaign: init {name}", "--", folder)
+    print(f"campaign {name} in {top}; write the goals in {folder}/PLAN.md")
+    return 0
+
+
+def cmd_migrate(_a: argparse.Namespace) -> int:
+    """Moves an older campaign's files to .campaign/NAME in one commit. Quests in flight carry
+    journals at the old path on their branches, so it waits until none is."""
+    with writing() as c:
+        folder = f"{META}/{c.name}"
+        if c.meta != LEGACY_META:
+            print(f"campaign {c.name} already keeps its files in {c.meta}")
+            return 0
+        busy = sorted(pid for pid, p in c.quests.items() if p["status"] in ("active", "review", "blocked"))
+        if busy:
+            die(
+                f"quests in flight keep journals in {LEGACY_META} on their branches: land or drop {', '.join(busy)} first"
+            )
+        if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
+            die("migrate commits the move; unset CAMPAIGN_NO_COMMIT")
+        (c.home / META).mkdir(exist_ok=True)
+        git(c.home, "mv", LEGACY_META, folder)
+        git(c.home, "commit", "-q", "-m", f"campaign: move {LEGACY_META} to {folder}", "--", LEGACY_META, folder)
+        with contextlib.suppress(OSError):
+            (c.home / "docs").rmdir()  # only when the campaign was all it held
+    print(f"campaign {c.name} keeps its files in {folder}")
     return 0
 
 
@@ -701,7 +794,7 @@ def cmd_new(a: argparse.Namespace) -> int:
             "landed": [],
             "updated": stamp(),
         }
-        brief = f"{META}/quests/{a.id}.md"
+        brief = f"{c.meta}/quests/{a.id}.md"
         if not (c.home / brief).exists():
             atomic_write(c.home / brief, template("quest.md", id=a.id, title=a.title, risk=a.risk))
         c.save(f"campaign: new {a.id} ({a.risk}): {a.title}", (brief,))
@@ -780,7 +873,9 @@ def cmd_start(a: argparse.Namespace) -> int:
             ]
             if clash and not a.force:
                 die(f"task {a.task}'s files overlap tasks {', '.join(clash)}: give --files, or --force REASON")
-            name, branch, base = f"{a.id}--{a.task}", f"quest/{a.id}--{a.task}", rev(repo, p["branch"])
+            recorded = p.get("tasks", {}).get(a.task, {}).get("branch")
+            name, base = f"{a.id}--{a.task}", rev(repo, p["branch"])
+            branch = recorded or f"quest/{c.name}/{name}"
         else:
             if p["status"] not in ("planned", "blocked"):
                 die(f"{a.id} is {p['status']}")
@@ -799,13 +894,13 @@ def cmd_start(a: argparse.Namespace) -> int:
                 die(
                     f"{a.id}'s files may overlap {', '.join(clash)} (one writer per file set): narrow files, order them with needs, or --force REASON"
                 )
-            name, branch, base = a.id, f"quest/{a.id}", rev(repo, main)
+            name, branch, base = a.id, p.get("branch") or f"quest/{c.name}/{a.id}", rev(repo, main)
             for other in cross_overlaps(c, a.id):
                 print(
                     f"warning: {a.id}'s files may overlap {other}: order them (--after {other}) or narrow files",
                     file=sys.stderr,
                 )
-        wt = worktree_path(repo, name)
+        wt = worktree_path(repo, c.name, name)
         if wt.exists():
             die(f"{wt} exists")
         if has_ref(repo, branch):
@@ -814,10 +909,10 @@ def cmd_start(a: argparse.Namespace) -> int:
         else:
             git(repo, "worktree", "add", "-q", "-b", branch, str(wt), base)
         gitdir = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-dir"))
-        (gitdir / "campaign-home").write_text(str(c.home) + "\n")
-        work = Path(META) / "journal" / f"{name}.md"
+        (gitdir / "campaign-home").write_text(f"{c.home}\n{c.name}\n")
+        work = Path(c.meta) / "journal" / f"{name}.md"
         if not (wt / work).exists():
-            atomic_write(wt / work, template("journal.md", id=name, quest=a.id))
+            atomic_write(wt / work, template("journal.md", id=name, brief=f"{c.meta}/quests/{a.id}.md"))
             git(wt, "add", "--", str(work))
             git(wt, "commit", "-q", "-m", f"campaign: start {name}", "--", str(work))
         rel = os.path.relpath(wt, c.home)
@@ -852,7 +947,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
             if p["risk"] in ("high", "critical"):
                 die(f"{a.id} is {p['risk']} risk: its {a.lens} review cannot be waived")
         else:
-            review = c.home / META / "reviews" / f"{a.id}-{a.lens}.md"
+            review = c.home / c.meta / "reviews" / f"{a.id}-{a.lens}.md"
             if not review.exists():
                 die(f"no review at {review.relative_to(c.home)} (or --waive REASON)")
             m = re.search(r"^Verdict:\s*\**\s*(APPROVE|CHANGES|REJECT)\b", review.read_text(), re.M)
@@ -1069,9 +1164,9 @@ def cmd_land(a: argparse.Namespace) -> int:
                 if merged.returncode != 0:
                     git(checkout, "merge", "--abort", check=False)
                     die(f"merge failed: {merged.stderr.strip()}")
-                if not git_ok(checkout, "diff", "--quiet", target, "HEAD", "--", ".", f":(exclude){META}"):
+                if not git_ok(checkout, "diff", "--quiet", target, "HEAD", "--", ".", *EXCLUDE_META):
                     git(checkout, "reset", "-q", "--keep", before)
-                    die("the merge changed code outside docs/campaign; nothing landed")
+                    die("the merge changed code outside the campaign's files; nothing landed")
         except CampaignError:
             c.state.pop("landing", None)
             write_json(c.path, c.state)
@@ -1143,7 +1238,7 @@ def cmd_clean(a: argparse.Namespace) -> int:
 
 
 def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
-    path = f"{META}/journal/{name}.md"
+    path = f"{c.meta}/journal/{name}.md"
     wt = (c.home / rel).resolve() if rel else None
     text = ""
     if wt and (wt / path).exists():
@@ -1158,6 +1253,13 @@ def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
 def problems(c: Campaign) -> list[tuple[str, str]]:
     """(severity, message) for everything git, the worktrees and the queue contradict."""
     out: list[tuple[str, str]] = []
+    if c.meta == LEGACY_META:
+        out.append(
+            (
+                "warning",
+                f"this campaign keeps its files in {LEGACY_META}: run `campaign migrate` when no quest is in flight",
+            )
+        )
     if c.state.get("landing"):
         out.append(
             (
@@ -1282,7 +1384,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
             ("warning", "jobs are queued and no worker runs (`campaign worker`, or any submit or wait starts one)")
         )
     for j in jobs:
-        if j["state"].get("state") == "interrupted" and j["spec"].get("campaign") == str(c.home):
+        if j["state"].get("state") == "interrupted" and j["spec"].get("campaign") == c.ident:
             out.append(("warning", f"job {j['id']} ({j['spec'].get('what')}) was interrupted and not retried"))
     return out
 
@@ -1292,7 +1394,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"]}
     view["ready"] = p["status"] == "planned" and all(c.landed(d) for d in p["needs"])
     repo = c.repo(p)
-    mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == str(c.home)]
+    mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident]
     # failures count only at the code the quest has now; older ones are history (`campaign job list`)
     heads = set()
     if p["status"] in ("active", "review", "blocked"):
@@ -1315,7 +1417,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         main = main_branch(repo)
         head = rev(repo, p["branch"])
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
-        behind = git(repo, "rev-list", "--count", f"{head}..{main}", "--", ".", f":(exclude){META}")
+        behind = git(repo, "rev-list", "--count", f"{head}..{main}", "--", ".", *EXCLUDE_META)
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead), behind=int(behind))
         checks: dict[str, str] = {}
         view["checks"] = checks
@@ -1326,7 +1428,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         view["reviews"] = reviews
         for lens in p["lenses"]:
             acc = p.get("accepted", {}).get(lens)
-            review = c.home / META / "reviews" / f"{pid}-{lens}.md"
+            review = c.home / c.meta / "reviews" / f"{pid}-{lens}.md"
             if acc:
                 reviews[lens] = f"accepted at {acc['commit'][:12]}" + (" (waived)" if acc["by"] == "waived" else "")
             elif review.exists():
@@ -1345,7 +1447,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
 
 def review_rows(c: Campaign) -> list[Json]:
     rows: list[Json] = []
-    folder = c.home / META / "reviews"
+    folder = c.home / c.meta / "reviews"
     for f in sorted(folder.glob("*.md")) if folder.exists() else []:
         text = f.read_text()
         m = re.search(r"^Verdict:\s*\**\s*(\w+)", text, re.M)
@@ -1380,7 +1482,7 @@ def machine_status() -> int:
 def cmd_status(a: argparse.Namespace) -> int:
     if a.all:
         return machine_status()
-    c = Campaign(find_home(Path.cwd()))
+    c = find_campaign(Path.cwd())
     reap()
     sidebar(c)
     jobs = all_jobs()
@@ -1726,7 +1828,7 @@ USAGE_READERS = {
 
 
 def usage(c: Campaign) -> Json:
-    created = git(c.home, "log", "--diff-filter=A", "--format=%ct", "--", "docs/campaign/state.json").split()
+    created = git(c.home, "log", "--follow", "--diff-filter=A", "--format=%ct", "--", f"{c.meta}/state.json").split()
     since = float(created[-1]) if created else 0.0
     runs: list[Json] = []
     sessions: list[Json] = []
@@ -1748,7 +1850,7 @@ def usage(c: Campaign) -> Json:
     ]
     jobs: list[Json] = []
     for j in all_jobs():
-        if j["spec"].get("campaign") != str(c.home):
+        if j["spec"].get("campaign") != c.ident:
             continue
         st, sp = j["state"], j["spec"]
         jobs.append(
@@ -1774,7 +1876,7 @@ def span(seconds: float) -> str:
 
 
 def cmd_usage(a: argparse.Namespace) -> int:
-    u = usage(Campaign(find_home(Path.cwd())))
+    u = usage(find_campaign(Path.cwd()))
     if a.json:
         print(json.dumps(u, indent=2))
         return 0
@@ -1820,10 +1922,11 @@ def cmd_usage(a: argparse.Namespace) -> int:
 
 
 def cmd_check(a: argparse.Namespace) -> int:
-    home = find_home(Path.cwd())
-    data = read_json(home / STATE_REL)
+    home, pinned = locate(Path.cwd())
+    path = home / select(home, os.environ.get("CAMPAIGN") or pinned)[1] / "state.json"
+    data = read_json(path)
     if data is None:
-        die(f"{home / STATE_REL} does not exist")
+        die(f"{path} does not exist")
     errors = validate(data)
     for e in errors:
         print(f"error: {e}")
@@ -1855,7 +1958,7 @@ def submit_checks(
             "minutes": check["minutes"],
             "env": {},
             "quest": qid,
-            "campaign": str(c.home),
+            "campaign": c.ident,
             "what": f"{qid} {'deferred ' if check.get('later') else ''}check {check['name']} at {commit[:12]}",
             "slot": "" if fresh or p["risk"] == "critical" else f"{c.state['campaign']}-{qid}",
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
@@ -1887,7 +1990,7 @@ def verify_deferred(a: argparse.Namespace) -> int:
 def cmd_verify(a: argparse.Namespace) -> int:
     if a.deferred:
         return verify_deferred(a)
-    c = Campaign(find_home(Path.cwd()))
+    c = find_campaign(Path.cwd())
     p = c.quest(a.id)
     checks = p["checks"] if a.all else gates(p)
     if not checks:
@@ -2446,15 +2549,12 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     }
     spec["env"] = dict(x.split("=", 1) for x in a.env)
     cwd = Path.cwd()
-    home = ""
-    with contextlib.suppress(CampaignError):
-        home = str(find_home(cwd))
     default_ref = "HEAD"
     repo = Path(a.repo).resolve() if a.repo else cwd
     if a.quest:
-        c = Campaign(Path(home) if home else find_home(cwd))
+        c = find_campaign(cwd)
         p = c.quest(a.quest)
-        spec.update(quest=a.quest, campaign=str(c.home))
+        spec.update(quest=a.quest, campaign=c.ident)
         repo = Path(a.repo).resolve() if a.repo else c.repo(p)
         default_ref = p.get("branch") or "HEAD"
     if a.unversioned or not git_ok(repo, "rev-parse", "--git-dir"):
@@ -2477,7 +2577,10 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     spec["cmux"] = os.environ.get("CMUX_WORKSPACE_ID", "")
     spec["what"] = a.what or command[:60] + (f" at {spec['commit'][:12]}" if spec.get("commit") else "")
     spec.setdefault("quest", "")
-    spec.setdefault("campaign", home)
+    if "campaign" not in spec:
+        spec["campaign"] = ""
+        with contextlib.suppress(CampaignError):
+            spec["campaign"] = find_campaign(Path.cwd()).ident
     jid, reused = submit(spec, force=a.force)
     print(jid + (f" (reused: {resolve_job(jid)['spec'].get('what', '')})" if reused else ""))
     if a.sync:
@@ -2552,7 +2655,15 @@ def wait_events(c: Campaign, timeout: float) -> int:
     since the game master last saw them (recorded in the home's .git), so nothing that happens
     between two waits is missed; then lists what is still in flight, to wait for next."""
     seen_file = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-seen.json"
-    recorded = read_json(seen_file) if seen_file.exists() else None
+    records: Json = (read_json(seen_file) if seen_file.exists() else None) or {}
+    if "heads" in records:  # written before a home could hold several campaigns
+        records = {str(c.home): records}
+    recorded: Json | None = records.get(c.ident)
+
+    def remember(heads: dict[str, str], ended: dict[str, Json]) -> None:
+        records[c.ident] = {"heads": heads, "jobs": sorted(ended)}
+        write_json(seen_file, records)
+
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
     start = time.time()
 
@@ -2561,13 +2672,13 @@ def wait_events(c: Campaign, timeout: float) -> int:
         ended = {
             j["id"]: j
             for j in all_jobs()
-            if j["spec"].get("campaign") == str(c.home) and j["state"].get("state") in TERMINAL
+            if j["spec"].get("campaign") == c.ident and j["state"].get("state") in TERMINAL
         }
         return heads, ended
 
     heads, ended = current()
     if recorded is None:  # the first wait starts from now
-        write_json(seen_file, {"heads": heads, "jobs": sorted(ended)})
+        remember(heads, ended)
         seen_heads, seen_jobs = dict(heads), set(ended)
     else:
         seen_heads = {str(k): str(v) for k, v in dict(recorded.get("heads") or {}).items()}
@@ -2579,7 +2690,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
         finished = sorted(set(ended) - seen_jobs)
         if moved or finished:
             break
-        running = [j for j in all_jobs() if j["spec"].get("campaign") == str(c.home)]
+        running = [j for j in all_jobs() if j["spec"].get("campaign") == c.ident]
         if not heads and not any(j["state"].get("state") not in TERMINAL for j in running):
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
@@ -2595,10 +2706,10 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
-    write_json(seen_file, {"heads": heads, "jobs": sorted(ended)})
+    remember(heads, ended)
     flight = [f"{name} ({journal_state(c, name, branch, '')})" for (name, branch) in branch_heads(c)]
     pending = sum(
-        1 for j in all_jobs() if j["spec"].get("campaign") == str(c.home) and j["state"].get("state") not in TERMINAL
+        1 for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
     )
     if flight or pending:
         print(f"still in flight: {', '.join(flight) or 'no quest'}; {pending} job(s) pending; wait again after this")
@@ -2631,7 +2742,7 @@ def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
 def cmd_wait(a: argparse.Namespace) -> int:
     reap()
     if a.commits:
-        return wait_events(Campaign(find_home(Path.cwd())), a.timeout)
+        return wait_events(find_campaign(Path.cwd()), a.timeout)
     if a.jobs:
         ids = [resolve_job(x)["id"] for x in a.jobs]
     else:
@@ -2653,17 +2764,21 @@ def parser() -> argparse.ArgumentParser:
         prog="campaign", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = ap.add_subparsers(dest="command", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--campaign", metavar="NAME", help="which campaign, when its home holds several (default $CAMPAIGN)"
+    )
 
     p = sub.add_parser("init", help="start a campaign in this repository's main checkout")
     p.add_argument("--name", help="campaign name (default: the directory's)")
     p.add_argument("--ci", choices=("github", ""), default="", help="require green GitHub CI to land")
     p.set_defaults(fn=cmd_init)
 
-    p = sub.add_parser("config", help="campaign-wide settings: ci, ci_later")
+    p = sub.add_parser("config", parents=[common], help="campaign-wide settings: ci, ci_later")
     p.add_argument("assignments", nargs="+", metavar="key=value")
     p.set_defaults(fn=cmd_config)
 
-    p = sub.add_parser("new", help="plan a quest")
+    p = sub.add_parser("new", parents=[common], help="plan a quest")
     p.add_argument("id")
     p.add_argument("--title", required=True)
     p.add_argument("--risk", choices=RISKS, default="normal")
@@ -2691,7 +2806,7 @@ def parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(fn=cmd_new)
 
-    p = sub.add_parser("set", help="change a quest's fields")
+    p = sub.add_parser("set", parents=[common], help="change a quest's fields")
     p.add_argument("id")
     p.add_argument("--task", help="update an existing task's files=GLOBS")
     p.add_argument("assignments", nargs="*", metavar="key=value")
@@ -2703,28 +2818,30 @@ def parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(fn=cmd_set)
 
-    p = sub.add_parser("start", help="branch and worktree for a quest or one of its tasks")
+    p = sub.add_parser("start", parents=[common], help="branch and worktree for a quest or one of its tasks")
     p.add_argument("id")
     p.add_argument("--task", help="a parallel writer inside the quest, branched from it")
     p.add_argument("--files", help="the task's file globs (default: the quest's)")
     p.add_argument("--force", metavar="REASON", help="start before its needs landed, or over an overlapping file set")
     p.set_defaults(fn=cmd_start)
 
-    p = sub.add_parser("status", help="what is ready, running, waiting and landable")
+    p = sub.add_parser("status", parents=[common], help="what is ready, running, waiting and landable")
     p.add_argument("id", nargs="?")
     p.add_argument("--json", action="store_true")
     p.add_argument("--reviews", action="store_true", help="verdicts and blocking findings per review file")
     p.add_argument("--all", action="store_true", help="every campaign on this machine")
     p.set_defaults(fn=cmd_status)
 
-    p = sub.add_parser("usage", help="tokens, cost and time per quest, role and class (harness logs and jobs)")
+    p = sub.add_parser(
+        "usage", parents=[common], help="tokens, cost and time per quest, role and class (harness logs and jobs)"
+    )
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_usage)
 
-    p = sub.add_parser("check", help="contradictions between state, git, worktrees and jobs")
+    p = sub.add_parser("check", parents=[common], help="contradictions between state, git, worktrees and jobs")
     p.set_defaults(fn=cmd_check)
 
-    p = sub.add_parser("verify", help="queue a quest's gate checks at its branch head")
+    p = sub.add_parser("verify", parents=[common], help="queue a quest's gate checks at its branch head")
     p.add_argument("id")
     p.add_argument("--commit", help="verify this commit instead of the head")
     p.add_argument("--force", action="store_true", help="rerun even if an identical job succeeded")
@@ -2735,7 +2852,9 @@ def parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(fn=cmd_verify)
 
-    p = sub.add_parser("accept", help="record a review lens as passed for the quest's current content")
+    p = sub.add_parser(
+        "accept", parents=[common], help="record a review lens as passed for the quest's current content"
+    )
     p.add_argument("id")
     p.add_argument("lens", choices=LENSES)
     p.add_argument("--commit", help="the commit accepted (default: the branch head)")
@@ -2744,7 +2863,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--note")
     p.set_defaults(fn=cmd_accept)
 
-    p = sub.add_parser("land", help="fast-forward (or cleanly merge) a quest onto main")
+    p = sub.add_parser("land", parents=[common], help="fast-forward (or cleanly merge) a quest onto main")
     p.add_argument("id")
     p.add_argument("--upto", metavar="COMMIT", help="land a prefix of the branch as an increment")
     p.add_argument("--reason", help="why the increment is safe to land alone")
@@ -2753,12 +2872,16 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--record", metavar="COMMIT", help="record a landing that already happened")
     p.set_defaults(fn=cmd_land)
 
-    p = sub.add_parser("clean", help="remove a landed or dropped quest's worktrees and branches")
+    p = sub.add_parser("migrate", parents=[common], help=f"move the campaign's files from {LEGACY_META} to {META}")
+    p.set_defaults(fn=cmd_migrate)
+    p = sub.add_parser("clean", parents=[common], help="remove a landed or dropped quest's worktrees and branches")
     p.add_argument("id")
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_clean)
 
-    p = sub.add_parser("wait", help="block until jobs finish, or (--commits) until anything new happens; no tokens")
+    p = sub.add_parser(
+        "wait", parents=[common], help="block until jobs finish, or (--commits) until anything new happens; no tokens"
+    )
     p.add_argument("jobs", nargs="*")
     p.add_argument("--quest")
     p.add_argument("--any", action="store_true", help="return when the first one finishes")
@@ -2780,7 +2903,7 @@ def parser() -> argparse.ArgumentParser:
     job = sub.add_parser("job", help="submit and inspect machine jobs").add_subparsers(
         dest="job_command", required=True
     )
-    p = job.add_parser("submit", help="queue a command at an exact commit")
+    p = job.add_parser("submit", parents=[common], help="queue a command at an exact commit")
     p.add_argument("--quest")
     p.add_argument("--repo", help="repository (default: this one, or the quest's)")
     p.add_argument("--commit", help="ref to run (default: HEAD, or the quest branch)")
@@ -2806,18 +2929,18 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--sync", action="store_true", help="run now and wait (no worker); same records")
     p.add_argument("cmd", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_job_submit)
-    p = job.add_parser("list")
+    p = job.add_parser("list", parents=[common])
     p.add_argument("--quest")
     p.add_argument("--state")
     p.set_defaults(fn=cmd_job_list)
-    p = job.add_parser("show")
+    p = job.add_parser("show", parents=[common])
     p.add_argument("job")
     p.set_defaults(fn=cmd_job_show)
-    p = job.add_parser("log")
+    p = job.add_parser("log", parents=[common])
     p.add_argument("job")
     p.add_argument("-n", "--lines", type=int, default=40)
     p.set_defaults(fn=cmd_job_log)
-    p = job.add_parser("cancel")
+    p = job.add_parser("cancel", parents=[common])
     p.add_argument("job")
     p.set_defaults(fn=cmd_job_cancel)
     return ap
@@ -2826,6 +2949,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ap = parser()
     args, extra = ap.parse_known_args(argv)
+    if getattr(args, "campaign", None):
+        os.environ["CAMPAIGN"] = args.campaign  # job runners and the worker inherit it
     # older argparse leaves key=value assignments after an option (`set ID --task T files=...`) unparsed
     if extra and getattr(args, "fn", None) is cmd_set and all("=" in x and not x.startswith("-") for x in extra):
         args.assignments += extra

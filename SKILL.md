@@ -29,7 +29,7 @@ goals ─► PLAN ─► quests ─► campaign start ─► adventurer ─► j
    never edit them, and a changed quest file voids earlier acceptances.
 4. **Review follows risk, not ritual.** One fresh paladin per risk that needs one; it spends on
    what the evidence does not already establish.
-5. **State lives in files.** `docs/campaign/` and git hold everything a fresh game master needs.
+5. **State lives in files.** `.campaign/<campaign>/` and git hold everything a fresh game master needs.
 6. **Agents never wait on machines, and measurements never run without isolation.**
 7. **The patron decides goals, scope, and any removal or narrowing of user-visible behavior.**
    The game master decides the rest and records it in `PLAN.md`. **Campaign never rents
@@ -68,10 +68,10 @@ launch costs more. Harness specifics (launching, background runs, resuming, wait
 ## Start a campaign
 
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The patron
-   writes Goals, Non-goals, Constraints and Reserved decisions in `docs/campaign/PLAN.md`.
+   writes Goals, Non-goals, Constraints and Reserved decisions in `.campaign/<campaign>/PLAN.md`.
 2. Split the goals into quests: `campaign new ID --title T --risk R --files GLOBS
    [--needs IDS] [--after IDS] [--provides C] [--consumes C] [--milestone M]
-   --check NAME[:LEVEL[:MIN]]=CMD`. Fill in each quest file (`docs/campaign/quests/ID.md`):
+   --check NAME[:LEVEL[:MIN]]=CMD`. Fill in each quest file (`.campaign/<campaign>/quests/ID.md`):
    outcome, criteria A1... each naming its evidence, contracts, decisions, what may land early.
 3. When the architecture is consequential, one paladin (lens `design`) challenges the plan and the
    quest list before anything is built. This is the one review worth waiting for.
@@ -123,7 +123,7 @@ platform. Slow CI workflows can be made non-gating the same way
    If a finishing agent does not wake it, it keeps its turn, blocking on the harness's agent
    wait while agents are out (`references/harness.md`).
 4. When the journal says "ready for review", the game master sets `status=review`, launches the
-   paladins the risk requires, commits each review file to `docs/campaign/reviews/ID-LENS.md`, and
+   paladins the risk requires, commits each review file to `.campaign/<campaign>/reviews/ID-LENS.md`, and
    relays blocking findings to the adventurer.
 5. `campaign accept ID LENS [--jobs J]` once the review approves, or after the game master confirmed
    each blocking fix by rerunning its probe as a job. Then `campaign land ID` and `campaign clean ID`.
@@ -195,7 +195,7 @@ before and after at named commits, `exclusive` for numbers that decide anything,
 | `exclusive` | numbers that decide or get published, cache-sensitive A/Bs | the machine to itself |
 
 Jobs run at the commit they were submitted for, in their own checkout, so the adventurer keeps
-editing; a commit that touches only `docs/campaign/` (a journal) keeps its evidence. A strict or
+editing; a commit that touches only `.campaign/` (a journal) keeps its evidence. A strict or
 exclusive job lasts at most 30 minutes and is stopped at its deadline (the result is then
 invalid); split longer work. Every process a job starts dies with it. A worker starts by itself
 and exits when the queue is empty. Without a worker, `campaign job submit --sync` runs the job in
@@ -204,7 +204,7 @@ the foreground and records the same result. Mechanics: `references/host.md`.
 ## Integration
 
 `campaign land` checks, in order: dependencies landed; the target is on the branch and `main`
-changed nothing but `docs/campaign/` since it branched (otherwise rebase, `campaign verify`,
+changed nothing but `.campaign/` since it branched (otherwise rebase, `campaign verify`,
 retry); no edits to the game master's files or outside the file set; every check passed on the
 target's code; every required lens accepted for the current content (and, for high risk, no
 upstream code change since); CI green when configured. It fast-forwards `main`, or merges when only

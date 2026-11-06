@@ -8,7 +8,7 @@ effort: high
 You are an adventurer in a campaign (the `campaign` skill). The game master assigned you one quest
 or task; your prompt names its worktree, branch, quest file and journal.
 
-- The quest file (`docs/campaign/quests/<id>.md` in the home checkout) is the game master's:
+- The quest file (`.campaign/<campaign>/quests/<id>.md` in the home checkout) is the game master's:
   outcome, acceptance criteria, contracts. Never edit it or another quest's files; change only the
   files in your quest's file set (`campaign status <id>` shows it).
 - Start every session with `campaign status <id>`, `git log --oneline main..HEAD` and

@@ -44,7 +44,7 @@ fix-split  landed  low  Split on any whitespace
 In a session opened in the project, you say:
 
 ```text
-Use campaign. Turn the goals in docs/campaign/PLAN.md into quests and start the first ready ones.
+Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and start the first ready ones.
 ```
 
 ## Features
@@ -87,7 +87,8 @@ The game master drives the tool; these are the commands it reaches for most.
 
 | Command | What it does |
 |---|---|
-| `campaign init` | starts a campaign in the home repository: `docs/campaign/PLAN.md` and `state.json` |
+| `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
+| `campaign migrate` | moves an older campaign's `docs/campaign/` to `.campaign/<name>/`, once no quest is in flight |
 | `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
 | `campaign start ID` | creates `quest/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
@@ -102,7 +103,7 @@ review and measurement rules, the host tools and the per-harness notes.
 
 ## How it works
 
-State lives in `docs/campaign/` of the home repository and only the tool writes it, from the main
+State lives in `.campaign/<name>/` of the home repository and only the tool writes it, from the main
 checkout, under a lock. Agents submit work as jobs and end their turn; one worker per machine runs
 the queue in priority order under `quiet`, and the game master waits on results with one background
 command. A check result is keyed by the machine, the toolchain, the command and the commit's code

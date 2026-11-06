@@ -1,7 +1,7 @@
 # {id}: journal
 
 State: working
-Quest: docs/campaign/quests/{quest}.md (the game master's; never edit it)
+Quest: {brief} (the game master's; never edit it)
 
 The adventurer keeps this journal current and commits it with the work, so a fresh adventurer can
 pick the quest up. The first two lines are read by `campaign status`. State is one of: working,

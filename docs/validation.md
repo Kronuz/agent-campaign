@@ -21,12 +21,13 @@ builds throwaway repositories with their own job queue and `quiet` directory.
 
 | Suite | Covers |
 |---|---|
-| `test_campaign` | quest creation and starting, dependency kinds and cycles, the single-writer guard, status transitions, ownership at start and at landing, edits to the game master's files, file overlap reports, evidence at the exact code (and kept across journal-only commits), failing checks, landed code equal to tested code, rebases after `main` moves, review acceptance (approve, changes with confirming jobs, reject, waivers, drift, changed quest file, upstream changes for high risk), review counts, increments, the GitHub CI gate (stub `gh`), `--push` to a bare remote, the cmux sidebar (stub `report`), interrupted landings (completed and cleared), deleted and unrecorded branches, contracts with two providers, cleanup |
+| `test_campaign` | quest creation and starting, dependency kinds and cycles, the single-writer guard, status transitions, ownership at start and at landing, edits to the game master's files, file overlap reports, evidence at the exact code (and kept across journal-only commits), failing checks, landed code equal to tested code, rebases after `main` moves, review acceptance (approve, changes with confirming jobs, reject, waivers, drift, changed quest file, upstream changes for high risk), review counts, increments, the GitHub CI gate (stub `gh`), `--push` to a bare remote, the cmux sidebar (the real `report`, stub `cmux`), interrupted landings (completed and cleared), deleted and unrecorded branches, contracts with two providers, cleanup |
 | `test_jobs` | identity (the submitted commit while the branch moves on, reuse, toolchain fingerprint, refs into other repositories, `--sync`), scheduling (`--after`, skips, priority, the worker's lifetime), limits (no-hold timeouts, measurement deadlines, the 30-minute cap, helpers killed with their job, cancel), crashes (lost runner reaped with its orphans and retried, interrupted without retries, a result recorded before the runner died, a stale runner fenced off), contention (Scenario G) |
 | `test_quiet` | deadline stop and exit code 124, waiting requests in `quiet list`, exit codes passing through, the 30-minute cap, the hold outliving a command that ignores TERM, a starving build served before a queued measurement, bounded commands under a CPU burner per core, a TERM to `quiet` stopping its command's group and freeing the hold, `QUIET_PAUSE` stopping light work and resuming it; on Linux, strict and light holds on disjoint cores and qemu vCPU threads moved and restored (fake VMs with `CPU n/KVM` threads) |
 | `test_scenarios` | Scenarios A-F, H, I from the brief and a scouting party, end to end |
 | `test_campaign.Campaigns` | several campaigns on one machine: unique names, re-registration on the next write, overlap and contract warnings both ways, `status --all`, a `NAME:ID` dependency enforced at landing, and a landing into a shared repository waiting for its lock (5 of 5 mutants failed) |
 | `test_campaign.Usage`, `test_budget` | `campaign usage` on Copilot's event shapes: runs attributed by the launch prompt (adventurer, resume, paladin), other campaigns and unrelated agents left out, logs older than the campaign skipped, game master sessions counted only when they ran its agents, jobs' run and wait time; the instructions' word budget |
+| `test_campaign.SharedHome`, `test_campaign.Migration`, `test_agents` | two campaigns in one home: the main checkout asks which, a quest's worktree knows, the same quest ID gets `quest/demo/fix` and `quest/perf/fix` (fails with branches named `quest/ID`), each game master's wait sees only its own campaign's commits (fails with one wait record per home); a campaign in the older `docs/campaign/` layout running in place, `campaign migrate` refused while a quest is in flight and then moving it in one commit, evidence from before the move reused after it (fails with `code_tree` excluding only `.campaign`); generated agent files keep the effort, files from the shell `sync-agents` are replaced, hand-written ones kept (fails without the old marks) |
 | `test_campaign.DirectPath`, `test_jobs.Scheduling` | deferred checks: landing waits only for gates, `land` queues the rest on the landed code at priority -1, a red one is an error until `verify --deferred` reruns it green, the 10-minute cap on deferred measurements, non-gating CI workflows, deferred work never taking every light slot |
 
 Result, both suites at once on the shared host (the condition that exposed two bugs below):
@@ -189,6 +190,20 @@ The pause test also passes against the bash `quiet`.
 | macOS | Python 3.15 | 95 | OK, 2 skipped (Linux only) | 545 s |
 | Linux | Python 3.9.19 | 95 | OK | 229 s |
 | Linux | Python 3.15 | 95 | OK | 215 s |
+
+## One shape for the tools
+
+Every tool is Python with an `argparse` interface: `campaign`, `quiet`, `pace`, `report` and
+`sync-agents` (`install.sh` stays shell, as the bootstrap). Help is colored on Python 3.14 and
+later, each command has `--help`, and usage errors exit 2. `campaign` and `quiet` import `report`
+instead of starting it, so a `quiet` run costs no extra process outside cmux. `sync-agents.py`
+writes the same bytes as the shell version for the four agent types plus edge cases (quotes, `%`,
+`$HOME`, a second `---`, no final newline, an unmapped model, a model override), apart from its
+mark. A campaign keeps its files in `.campaign/<name>/` at the root of its home repository, so one
+repository can hold several; branches are `quest/<campaign>/<id>` and worktrees
+`<repo>-wt/<campaign>/<id>`; jobs, wait records and sidebar pills are keyed by campaign. Older
+campaigns keep `docs/campaign/` until `campaign migrate`; their jobs keep the home as their tag, so
+jobs submitted before the upgrade still wake their game master.
 
 ## Not run
 

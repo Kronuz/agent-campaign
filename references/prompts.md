@@ -11,8 +11,8 @@ Class: <none | Sage | Wizard | Artificer | Scout | Bard | Squire>; your method i
 the skill's references/classes.md.
 Worktree <path>, branch quest/<ID> (or quest/<ID>--<task>).
 Assignment: <implement | investigate then fix | design then build | optimize | document | mechanical change>.
-Quest: <home>/docs/campaign/quests/<ID>.md (outcome, criteria, contracts; the game master's, never edit it).
-Journal: docs/campaign/journal/<ID>.md in your worktree; keep it current and commit it with your work.
+Quest: <home>/.campaign/<campaign>/quests/<ID>.md (outcome, criteria, contracts; the game master's, never edit it).
+Journal: .campaign/<campaign>/journal/<ID>.md in your worktree; keep it current and commit it with your work.
 Context: <only what the files do not say: a ruling, a finding to fold in, a related quest>.
 
 Start with `campaign status <ID>`, `git log --oneline main..HEAD` and `git status`. Change only files
@@ -32,7 +32,7 @@ evidence, Blocked on.
 ```
 
 Add when relevant: the review file to fold in ("fix the blocking findings in
-docs/campaign/reviews/<ID>-<lens>.md; each fix gets a test that fails without it"); the
+.campaign/<campaign>/reviews/<ID>-<lens>.md; each fix gets a test that fails without it"); the
 experiment budget for optimization (about five experiments, stop at the target or the third loser
 in a row); "use the german-writing skill" for prose in the patron's voice.
 
@@ -76,8 +76,8 @@ keep what is right, never discard them blindly. Jobs it submitted are in `campai
 You are the <lens> paladin for quest <ID> of campaign <name> (<home repo path>). You have not
 seen the adventurer's reasoning; do not ask for it. You rule; you do not fix.
 Review commit <sha> on <branch> in <worktree>: `git log main..<sha>` and its diffs<, plus the landed
-increments <ranges>>. Quest: <home>/docs/campaign/quests/<ID>.md. Journal:
-docs/campaign/journal/<ID>.md (its evidence and rulings). Lore (incidents behind the rules): the skill's references/lore.md.
+increments <ranges>>. Quest: <home>/.campaign/<campaign>/quests/<ID>.md. Journal:
+.campaign/<campaign>/journal/<ID>.md (its evidence and rulings). Lore (incidents behind the rules): the skill's references/lore.md.
 Risks to probe: <three to five concrete questions>.
 
 Read the skill's references/review.md: your lens, the proof standards, how to reuse the adventurer's
@@ -86,7 +86,7 @@ commit, and what remains uncertain. Spend on probes for that, under
 <home>/.scratch/review-<ID>-<lens>/, run as jobs (`campaign job submit --quest <ID> ...`). Stop at
 what blocks landing; list the rest briefly. A fix that would remove or narrow user-visible behavior
 is the patron's decision: offer options, including keeping it, and never make it blocking.
-Write only <home>/docs/campaign/reviews/<ID>-<lens>.md, in the skill's templates/review.md shape.
+Write only <home>/.campaign/<campaign>/reviews/<ID>-<lens>.md, in the skill's templates/review.md shape.
 Do not edit code or other files, commit, push, or run anything outside jobs.
 Final message: the verdict and one line per blocking finding.
 ```

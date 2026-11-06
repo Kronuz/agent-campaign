@@ -151,7 +151,7 @@ class CampaignCase(unittest.TestCase):
         return self.git(repo, "rev-parse", "HEAD")
 
     def wt(self, name: str) -> Path:
-        return self.root / "app-wt" / name
+        return self.root / "app-wt" / "demo" / name
 
     # -- the tool
 
@@ -179,7 +179,7 @@ class CampaignCase(unittest.TestCase):
         return r
 
     def state(self) -> dict[str, Any]:
-        data: dict[str, Any] = json.loads((self.home / "docs/campaign/state.json").read_text())
+        data: dict[str, Any] = json.loads((self.home / ".campaign/demo/state.json").read_text())
         return data
 
     def quest(self, pid: str) -> dict[str, Any]:
@@ -200,10 +200,10 @@ class CampaignCase(unittest.TestCase):
         self.ok(self.home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
 
     def review(self, pid: str, lens: str, verdict: str, commit: str = "") -> None:
-        folder = self.home / "docs/campaign/reviews"
+        folder = self.home / ".campaign/demo/reviews"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{pid}-{lens}.md").write_text(f"# {pid} review: {lens}\n\nCommit: {commit}\nVerdict: {verdict}\n")
-        self.git(self.home, "add", "docs/campaign/reviews")
+        self.git(self.home, "add", ".campaign/demo/reviews")
         self.git(self.home, "commit", "-q", "-m", f"review {pid} {lens}")
 
     def wait_until(self, predicate: Any, timeout: float = 30) -> None:

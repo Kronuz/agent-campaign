@@ -27,12 +27,12 @@ class Quests(CampaignCase):
         )
         time.sleep(2)
         self.assertIsNone(waiting.poll())  # nothing has happened yet
-        journal = "docs/campaign/journal/fix.md"
+        journal = ".campaign/demo/journal/fix.md"
         state = "State: blocked on the game master: the publication code\n"
         self.commit(wt, {journal: state + (wt / journal).read_text().split("\n", 3)[-1]})
         out, _ = waiting.communicate(timeout=30)
         self.assertEqual(waiting.returncode, 0)
-        self.assertIn("fix: quest/fix moved to", out)
+        self.assertIn("fix: quest/demo/fix moved to", out)
         self.assertIn("journal: blocked on the game master: the publication code", out)
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
@@ -44,13 +44,13 @@ class Quests(CampaignCase):
         self.commit(a, {"app.py": "print(2)\n"})  # both adventurers finish while the game master is busy
         self.commit(b, {"README.md": "two\n"})
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertIn("one: quest/one moved to", out)
-        self.assertIn("two: quest/two moved to", out)
+        self.assertIn("one: quest/demo/one moved to", out)
+        self.assertIn("two: quest/demo/two moved to", out)
         self.assertIn("still in flight: one (working), two (working)", out)
         self.commit(b, {"README.md": "two again\n"})  # lands while the game master handles the first two
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertIn("two: quest/two moved to", out)
-        self.assertNotIn("one: quest/one moved", out)
+        self.assertIn("two: quest/demo/two moved to", out)
+        self.assertNotIn("one: quest/demo/one moved", out)
         job = self.submit(self.home, "--quest", "one", "--", "true")
         self.ok(self.home, "wait", job)  # ends before the next event wait starts
         self.assertIn(f"{job}  done exit 0", self.ok(self.home, "wait", "--commits", "--timeout", "30").out)
@@ -71,10 +71,10 @@ class Quests(CampaignCase):
         wt = self.started("fix", files="app.py")
         p = self.quest("fix")
         self.assertEqual(p["status"], "active")
-        self.assertEqual(p["branch"], "quest/fix")
-        self.assertTrue((wt / "docs/campaign/journal/fix.md").exists())
-        self.assertEqual(self.git(self.home, "merge-base", "main", "quest/fix"), p["base"])
-        self.assertTrue((self.home / "docs/campaign/quests/fix.md").exists())
+        self.assertEqual(p["branch"], "quest/demo/fix")
+        self.assertTrue((wt / ".campaign/demo/journal/fix.md").exists())
+        self.assertEqual(self.git(self.home, "merge-base", "main", "quest/demo/fix"), p["base"])
+        self.assertTrue((self.home / ".campaign/demo/quests/fix.md").exists())
 
     def test_needs_block_start_and_after_blocks_landing(self) -> None:
         self.ok(self.home, "new", "lib", "--title", "lib", "--risk", "low", "--files", "lib/**")
@@ -137,7 +137,7 @@ class Ownership(CampaignCase):
 
     def test_landing_refuses_edits_to_the_game_masters_files(self) -> None:
         wt = self.started("fix", files="app.py", check="unit=true")
-        self.commit(wt, {"docs/campaign/quests/fix.md": "weakened criteria\n"})
+        self.commit(wt, {".campaign/demo/quests/fix.md": "weakened criteria\n"})
         self.verified("fix")
         self.fails(self.home, "land", "fix", match="game master's files")
         self.assertIn("game master's files", self.ok(self.home, "check").out)
@@ -172,7 +172,7 @@ class Evidence(CampaignCase):
         failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         self.assertIn("jobs: 1 failed at head", self.ok(self.home, "status").out)
-        self.commit(wt, {"docs/campaign/journal/fix.md": "a journal commit keeps the code\n"})
+        self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
         self.assertIn("jobs: 1 failed at head", self.ok(self.home, "status").out)
         self.commit(wt, {"app.py": "print(3)\n"})
         self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
@@ -181,7 +181,7 @@ class Evidence(CampaignCase):
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        work = "docs/campaign/journal/fix.md"
+        work = ".campaign/demo/journal/fix.md"
         self.commit(wt, {work: (wt / work).read_text() + "\nEvidence: the unit check.\n"})
         self.assertIn("reused", self.ok(self.home, "verify", "fix").out)
         landed = self.ok(self.home, "land", "fix").out  # main moved only in campaign files: a merge
@@ -190,7 +190,7 @@ class Evidence(CampaignCase):
         b = self.started("other", files="README.md")
         self.commit(b, {"README.md": "x\n"})
         self.verified("other")
-        self.commit(b, {"docs/other.md": "outside docs/campaign counts as code\n"})
+        self.commit(b, {"docs/other.md": "outside the campaign's files counts as code\n"})
         self.assertNotIn("reused", self.ok(self.home, "verify", "other").out)
 
     def test_failing_check_blocks_landing(self) -> None:
@@ -207,7 +207,7 @@ class Evidence(CampaignCase):
         self.ok(self.home, "new", "other", "--title", "other", "--risk", "low")  # a state-only commit on main
         self.ok(self.home, "land", "fix")
         tested = self.quest("fix")["landed"][0]["tested"]
-        diff = self.git(self.home, "diff", tested, "main", "--", ".", ":(exclude)docs/campaign")
+        diff = self.git(self.home, "diff", tested, "main", "--", ".", ":(exclude).campaign")
         self.assertEqual(diff, "")
 
     def test_main_moving_in_code_requires_a_rebase_and_new_evidence(self) -> None:
@@ -271,7 +271,7 @@ class Reviews(CampaignCase):
         self.normal()
         self.review("feat", "correctness", "APPROVE")
         self.ok(self.home, "accept", "feat", "correctness")
-        self.commit(self.home, {"docs/campaign/quests/feat.md": "new criteria\n"})
+        self.commit(self.home, {".campaign/demo/quests/feat.md": "new criteria\n"})
         self.fails(self.home, "land", "feat", match="brief changed")
 
     def test_upstream_code_changes_void_high_risk_acceptance_only(self) -> None:
@@ -291,7 +291,7 @@ class Reviews(CampaignCase):
 
     def test_review_counts_are_derived_from_review_files(self) -> None:
         self.normal()
-        folder = self.home / "docs/campaign/reviews"
+        folder = self.home / ".campaign/demo/reviews"
         folder.mkdir(parents=True)
         (folder / "feat-correctness.md").write_text(
             "Verdict: CHANGES\n\n| ID | Blocking | Class | Finding | Evidence | Fix |\n|---|---|---|---|---|---|\n"
@@ -389,7 +389,7 @@ class Campaigns(CampaignCase):
     def lib_quest(self, home: Path, pid: str, *extra: str) -> Path:
         self.ok(home, "new", pid, "--title", pid, "--risk", "low", "--repo", "../lib", "--check", "unit=true", *extra)
         self.ok(home, "start", pid)
-        return self.root / "lib-wt" / pid
+        return self.root / "lib-wt" / ("demo" if home == self.home else "other") / pid
 
     def landed_from(self, home: Path, pid: str) -> None:
         self.ok(home, "verify", pid)
@@ -427,7 +427,7 @@ class Campaigns(CampaignCase):
         machine = self.ok(self.other, "status", "--all").out
         self.assertIn("demo", machine)
         self.assertIn("in flight: use", machine)
-        use = self.root / "lib-wt" / "use"
+        use = self.root / "lib-wt" / "other" / "use"
         self.commit(use, {"use.py": "from lib import X\n"})
         self.ok(self.other, "verify", "use")
         self.ok(self.other, "wait", "--quest", "use", "--timeout", "90", timeout=120)
@@ -650,7 +650,7 @@ class Integration(CampaignCase):
     def test_github_ci_must_be_green_at_the_target(self) -> None:
         state = self.state()
         state["ci"] = "github"
-        (self.home / "docs/campaign/state.json").write_text(json.dumps(state))
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
         self.git(self.home, "commit", "-q", "-am", "require CI")
         wt = self.started("fix", files="app.py", check="unit=true")
         self.commit(wt, {"app.py": "print(2)\n"})
@@ -675,6 +675,51 @@ class Integration(CampaignCase):
         self.assertEqual(
             self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
         )
+
+
+class Migration(CampaignCase):
+    def test_an_older_campaign_runs_in_place_and_moves_once_nothing_is_in_flight(self) -> None:
+        (self.home / "docs").mkdir()
+        self.git(self.home, "mv", ".campaign/demo", "docs/campaign")  # a campaign started before .campaign
+        self.git(self.home, "commit", "-q", "-m", "an older campaign")
+        wt = self.started("fix", files="app.py", check="unit=true")
+        self.assertTrue((wt / "docs/campaign/journal/fix.md").exists())
+        self.assertIn("campaign migrate", self.ok(self.home, "status").out)
+        self.fails(self.home, "migrate", match="land or drop fix")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.ok(self.home, "land", "fix")
+        self.ok(self.home, "migrate")
+        self.assertEqual(self.git(self.home, "status", "--porcelain"), "")
+        self.assertTrue((self.home / ".campaign/demo/quests/fix.md").exists())
+        self.assertFalse((self.home / "docs").exists())
+        self.assertNotIn("campaign migrate", self.ok(self.home, "status").out)
+        self.started("next", files="app.py", check="unit=true")
+        # the move changed no code, so the evidence from before it still applies
+        self.assertIn("reused", self.ok(self.home, "verify", "next").out)
+
+
+class SharedHome(CampaignCase):
+    def test_one_home_holds_two_campaigns_apart(self) -> None:
+        self.ok(self.home, "init", "--name", "perf")
+        self.fails(self.home, "status", match="pass --campaign NAME")
+        for name in ("demo", "perf"):
+            self.ok(self.home, "new", "fix", "--title", name, "--risk", "low", "--files", "app.py", "--campaign", name)
+            self.ok(self.home, "start", "fix", "--campaign", name)
+        self.assertEqual(self.quest("fix")["branch"], "quest/demo/fix")
+        perf = self.root / "app-wt" / "perf" / "fix"
+        self.assertTrue((perf / ".campaign/perf/journal/fix.md").exists())
+        # a quest's worktree knows its campaign; the main checkout needs the name
+        self.assertIn("fix  active  low  perf", self.ok(perf, "status").out)
+        self.env["CAMPAIGN"] = "perf"
+        self.assertIn("campaign perf", self.ok(self.home, "status").out)
+        self.env.pop("CAMPAIGN")
+        # each game master's wait sees only its campaign's events
+        for name in ("demo", "perf"):
+            self.run_cli(self.home, "wait", "--commits", "--timeout", "1", "--campaign", name)
+        self.commit(perf, {"app.py": "print('perf')\n"})
+        self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1", "--campaign", "demo").code, 3)
+        self.assertIn("quest/perf/fix moved", self.ok(self.home, "wait", "--commits", "--campaign", "perf").out)
 
 
 class Sidebar(CampaignCase):
@@ -703,7 +748,7 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "start", "a")
         log = calls.read_text()
         self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)
-        self.assertIn("set-status|campaign-a|a: active|--icon|hammer|", log)
+        self.assertIn("set-status|campaign-demo-a|a: active|--icon|hammer|", log)
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")
@@ -712,7 +757,7 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "land", "a")
         log = calls.read_text()
         self.assertIn("notify|--title|Landed a|--body|", log)
-        self.assertIn("clear-status|campaign-a|", log)
+        self.assertIn("clear-status|campaign-demo-a|", log)
         self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · ready: b|", log)
         self.env.pop("CMUX_WORKSPACE_ID")
         calls.write_text("")
@@ -733,7 +778,7 @@ class Recovery(CampaignCase):
             "mode": "merge",
             "at": "now",
         }
-        (self.home / "docs/campaign/state.json").write_text(json.dumps(state))
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
         self.git(
             self.home, "merge", "-q", "--no-ff", "-m", "crash after this", head
         )  # main moved, then the game master died
@@ -748,7 +793,7 @@ class Recovery(CampaignCase):
         head = self.commit(wt, {"app.py": "print(2)\n"})
         state = self.state()
         state["landing"] = {"id": "fix", "target": head, "final": True, "mode": "ff", "at": "now"}
-        (self.home / "docs/campaign/state.json").write_text(json.dumps(state))
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
         self.git(self.home, "commit", "-q", "-am", "intent on disk")
         r = self.ok(self.home, "new", "next", "--title", "next")
         self.assertIn("main never moved", r.err)
@@ -757,10 +802,10 @@ class Recovery(CampaignCase):
     def test_check_finds_deleted_and_unrecorded_branches(self) -> None:
         wt = self.started("gone", files="app.py")
         self.git(self.home, "worktree", "remove", "--force", str(wt))
-        self.git(self.home, "branch", "-D", "quest/gone")
+        self.git(self.home, "branch", "-D", "quest/demo/gone")
         r = self.run_cli(self.home, "check")
         self.assertEqual(r.code, 1)
-        self.assertIn("branch quest/gone is gone", r.out)
+        self.assertIn("branch quest/demo/gone is gone", r.out)
         self.ok(self.home, "set", "gone", "status=dropped", "reason=superseded")
         wt = self.started("done", files="README.md")
         head = self.commit(wt, {"README.md": "done\n"})
@@ -786,7 +831,7 @@ class Recovery(CampaignCase):
         (wt / "probe.txt").unlink()
         self.ok(self.home, "clean", "fix")
         self.assertFalse(wt.exists())
-        self.assertNotIn("quest/fix", self.git(self.home, "branch", "--list"))
+        self.assertNotIn("quest/demo/fix", self.git(self.home, "branch", "--list"))
         self.assertNotIn("slots", self.git(self.home, "worktree", "list"))
 
 
