@@ -5,14 +5,38 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
 from typing import Any
 
-from harness import CampaignCase
+from harness import CAMPAIGN, CampaignCase
 
 
 class Quests(CampaignCase):
+    def test_wait_returns_when_an_adventurer_commits_its_journal(self) -> None:
+        wt = self.started("fix", files="app.py")
+        waiting = subprocess.Popen(
+            [sys.executable, str(CAMPAIGN), "wait", "--commits", "--timeout", "60"],
+            cwd=self.home,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(2)
+        self.assertIsNone(waiting.poll())  # nothing has happened yet
+        journal = "docs/campaign/journal/fix.md"
+        state = "State: blocked on the game master: the publication code\n"
+        self.commit(wt, {journal: state + (wt / journal).read_text().split("\n", 3)[-1]})
+        out, _ = waiting.communicate(timeout=30)
+        self.assertEqual(waiting.returncode, 0)
+        self.assertIn("fix: quest/fix moved to", out)
+        self.assertIn("journal: blocked on the game master: the publication code", out)
+        self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
+        self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
+
     def test_task_file_scope_can_be_corrected_without_overlapping_a_peer(self) -> None:
         self.started("fix", files="app.py,lib/**,README.md")
         self.ok(self.home, "start", "fix", "--task", "one", "--files", "lib/**")

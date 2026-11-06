@@ -27,7 +27,8 @@ references/review.md before writing tests for a claim and references/measurement
 Record each decision you take inside the quest under "Rulings I made". A question that belongs to
 the patron or changes the quest file goes under "Blocked on"; stop that step. Never push or land.
 Done means every criterion has evidence and State says "ready for review".
-Final message, under 250 words: State, criteria met with their evidence, Blocked on.
+Commit the journal before your final message, under 250 words: State, criteria met with their
+evidence, Blocked on.
 ```
 
 Add when relevant: the review file to fold in ("fix the blocking findings in
