@@ -1932,33 +1932,33 @@ USAGE_READERS = {
 
 
 def task_attribution(c: Campaign, task: str) -> Json | None:
-    """Role, quest and class or lens from a launch's task name, `<role>-<quest>[-<class or lens>]`,
-    for harnesses that keep only the name in plaintext (Codex). Without a role, the name counts
-    only when it is exactly one of this campaign's quests or tasks."""
-    rest, role, extra = task.lower(), "", ""
-    for r in ROLES:
-        if rest.startswith(r + "-"):
-            role, rest = r, rest[len(r) + 1 :]
-            for w in (*CLASSES, *LENSES):
-                if rest.endswith("-" + w):
-                    extra, rest = w, rest[: -len(w) - 1]
-                    break
-            break
-    owners = [
-        pid
-        for pid, p in c.quests.items()
-        if rest == pid or rest.startswith(pid + "--") or rest in {t.split("--")[-1] for t in p.get("tasks", {})}
-    ]
-    quest = owners[0] if len(owners) == 1 else "-"
-    if not role and quest == "-":
+    """Role, quest and class or lens from a launch's task name, for harnesses that keep only the
+    name in plaintext (Codex, whose names allow only lowercase letters, digits and underscores):
+    `<role>_<quest>[_<class or lens>]`, `_` read as `-`. A name counts toward a quest when it holds
+    one of the campaign's quest or task ids as whole words (the longest wins); a lens marks a
+    paladin, and a quest or task without one its adventurer. Parts of words are never guessed at."""
+    words = task.lower().replace("_", "-").split("-")  # "--" leaves an empty word, as in task ids
+    role = words[0] if words[0] in ROLES else ""
+    lens = next((w for w in words if w in LENSES), "")
+    cls = next((w for w in words[1:] if w in CLASSES), "")
+
+    def holds(ident: str) -> bool:
+        part = ident.split("-")
+        return any(words[i : i + len(part)] == part for i in range(len(words) - len(part) + 1))
+
+    found: dict[str, int] = {}
+    for pid, q in c.quests.items():
+        for ident in [pid, *(f"{pid}--{t}" for t in q.get("tasks", {})), *q.get("tasks", {})]:
+            if holds(ident):
+                found[pid] = max(found.get(pid, 0), len(ident.split("-")))
+    best = max(found.values(), default=0)
+    quests = [pid for pid, n in found.items() if n == best]
+    quest = quests[0] if len(quests) == 1 else "-"
+    role = role or ("paladin" if lens else "adventurer" if quest != "-" else "")
+    if not role:
         return None
     paladin = role == "paladin"
-    return {
-        "role": role or "unattributed",
-        "quest": quest,
-        "class": "" if paladin else extra.capitalize(),
-        "lens": extra if paladin else "",
-    }
+    return {"role": role, "quest": quest, "class": "" if paladin else cls.capitalize(), "lens": lens if paladin else ""}
 
 
 def usage(c: Campaign) -> Json:
@@ -2024,13 +2024,14 @@ def cmd_usage(a: argparse.Namespace) -> int:
         groups: dict[str, list[Json]] = {}
         for r in runs:
             groups.setdefault(key(r), []).append(r)
-        print(f"\n{title:<44} runs  tokens    cost  agent time")
+        width = max(len(title), *map(len, groups))
+        print(f"\n{title:<{width}} runs  tokens    cost  agent time")
         for k, rs in sorted(
             groups.items(), key=lambda x: (-sum(r["cost"] for r in x[1]), -sum(r["tokens"] for r in x[1]))
         ):
             tokens, cost = sum(r["tokens"] for r in rs), sum(r["cost"] for r in rs)
             print(
-                f"{k:<44} {len(rs):>4} {amount(tokens):>7} {amount(cost):>7}  {span(sum(r['seconds'] for r in rs)):>10}"
+                f"{k:<{width}} {len(rs):>4} {amount(tokens):>7} {amount(cost):>7}  {span(sum(r['seconds'] for r in rs)):>10}"
             )
 
     when = time.strftime("%Y-%m-%d", time.localtime(u["since"]))
@@ -2059,10 +2060,14 @@ def cmd_usage(a: argparse.Namespace) -> int:
             ),
         )
     if jobs:
-        print(f"\n{'jobs by quest':<44} jobs     ran  waited")
-        for q in sorted({j["quest"] for j in jobs}):
+        quests = sorted({j["quest"] for j in jobs})
+        width = max(len("jobs by quest"), *map(len, quests))
+        print(f"\n{'jobs by quest':<{width}} jobs     ran  waited")
+        for q in quests:
             js = [j for j in jobs if j["quest"] == q]
-            print(f"{q:<44} {len(js):>4} {span(sum(j['ran'] for j in js)):>7} {span(sum(j['waited'] for j in js)):>7}")
+            print(
+                f"{q:<{width}} {len(js):>4} {span(sum(j['ran'] for j in js)):>7} {span(sum(j['waited'] for j in js)):>7}"
+            )
     for s in u["game_master"]:
         print(
             f"\ngame master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens, cost {amount(s['cost'])} "

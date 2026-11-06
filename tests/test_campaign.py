@@ -512,7 +512,8 @@ class Usage(CampaignCase):
 
     def test_codex_runs_are_attributed_by_task_name_when_the_prompt_is_encrypted(self) -> None:
         self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low")
-        for task in ("adventurer-fix-artificer", "paladin-fix-security", "fix", "builder"):
+        names = ("adventurer_fix_artificer", "paladin_fix_security", "fix_security", "night_fix_v2", "fixer", "builder")
+        for task in names:
             log = self.codex_log("agent", task)  # no parent log: the launch prompt is unreadable
             log.write_text(log.read_text().replace("/root/builder", f"/root/{task}").replace('"builder"', f'"{task}"'))
         u = json.loads(self.ok(self.home, "usage", "--json").out)
@@ -520,10 +521,12 @@ class Usage(CampaignCase):
         self.assertEqual(
             got,
             {
-                "adventurer-fix-artificer": ("adventurer", "fix", "Artificer", ""),
-                "paladin-fix-security": ("paladin", "fix", "", "security"),
-                "fix": ("unattributed", "fix", "", ""),
-                "builder": ("unattributed", "-", "", ""),  # a nickname is not guessed at
+                "adventurer_fix_artificer": ("adventurer", "fix", "Artificer", ""),
+                "paladin_fix_security": ("paladin", "fix", "", "security"),
+                "fix_security": ("paladin", "fix", "", "security"),  # a lens marks a paladin
+                "night_fix_v2": ("adventurer", "fix", "", ""),  # the quest's id as a whole word
+                "fixer": ("unattributed", "-", "", ""),  # part of a word is not guessed at
+                "builder": ("unattributed", "-", "", ""),
             },
         )
         out = self.ok(self.home, "usage").out
