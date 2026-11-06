@@ -343,10 +343,10 @@ waits with `campaign wait` in bounded calls.
 
 1. **A Python tool.** State transitions, dependency graphs and process supervision are safer in
    a typed standard-library program than in bash. It needs only `python3` (3.9+) and `git`.
-   `quiet` stays bash because every agent on the machine already uses it.
+   Every tool has that shape; only `install.sh` stays shell, as the bootstrap.
 2. **Evidence identity is the code tree.** Landing requires the branch to contain `main`'s code
    and the checks to have passed at that commit. A rebase over another package's code costs a
-   rerun of the fast checks; state commits never do, because `docs/campaign/` is outside the
+   rerun of the fast checks; state commits never do, because `.campaign/` is outside the
    identity. A merge queue that batches landings would amortize reruns; at a few landings a day it
    is not worth its machinery.
 3. **Content-based acceptance.** A review is tied to file contents, not commit ids, so rebases that
@@ -360,3 +360,13 @@ waits with `campaign wait` in bounded calls.
 6. **One repository per package.** Cross-repository work is ordered packages plus an integration
    job pinned to every repository's commit. Atomic multi-repository landing would need a
    coordinator nobody has asked for.
+7. **No messages between campaigns.** Campaigns on one machine see each other's overlapping
+   quests, changing contracts and `NAME:ID` dependencies in `campaign check`; across machines they
+   see nothing, and the patron carries what one game master must tell another. A mailbox would
+   be outboxes in each home (`.campaign/<name>/outbox/<peer>/`, written only by their campaign),
+   read from peers' homes by path or fetched git URL, acknowledged in the reader's state, and
+   waking `campaign wait`; the tool would send what it already detects. It is not built: the
+   records hold no coordination failure between campaigns (the relays the patron made were
+   between ordinary sessions, or about the skill itself), and it costs about 200 lines, a fetch
+   loop and instruction words. Build it when two campaigns that share a repository or a contract
+   run at once, or when the patron relays between game masters more than occasionally.
