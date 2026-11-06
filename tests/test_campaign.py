@@ -169,15 +169,49 @@ class Evidence(CampaignCase):
     def test_status_counts_failures_only_at_the_code_the_quest_has_now(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
         failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         out = self.ok(self.home, "status").out
-        self.assertIn("jobs that ended badly at this code (not its checks", out)
+        self.assertIn("jobs at this code: 1 done, 1 ended badly", out)  # the check passed, the probe did not
         self.assertIn(f"    {failed}  failed (exit 1)  exit 1", out)  # which job, and how it ended
         self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
         self.assertIn(f"    {failed}  failed (exit 1)", self.ok(self.home, "status").out)
         self.commit(wt, {"app.py": "print(3)\n"})
         self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
+
+    def test_status_shows_progress_from_the_criteria_and_the_journal(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text("# fix\n\n## Acceptance criteria\n\n- A1 one: a test\n- A2 two: a test\n- A3 three: a test\n")
+        self.git(self.home, "commit", "-qam", "criteria")
+        journal = "\n".join(
+            [
+                "# fix: journal",
+                "",
+                "State: working",
+                "",
+                "## Next",
+                "",
+                "1. wire the reader",
+                "",
+                "## Evidence",
+                "",
+                "| Criterion | Evidence |",
+                "|---|---|",
+                "| A1 | job 261106-1 |",
+                "| A2, A3 | <pending> |",
+                "| A2 | test_two |",
+                "",
+            ]
+        )
+        self.commit(wt, {".campaign/demo/journal/fix.md": journal})
+        out = self.ok(self.home, "status").out
+        self.assertIn("67% 2 of 3 criteria met", out)
+        self.assertIn("67% of the campaign", out)
+        self.assertIn("next: wire the reader", out)
+        self.env["CAMPAIGN_BAR"] = "#."
+        self.assertIn("#############....... 67% 2 of 3", self.ok(self.home, "status").out)
 
     def test_campaign_metadata_commits_keep_the_evidence(self) -> None:
         wt = self.started("fix", files="app.py")

@@ -1319,17 +1319,50 @@ def cmd_clean(a: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- status and check
 
 
-def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
+def journal_text(c: Campaign, name: str, branch: str, rel: str) -> str:
+    """A quest's or task's journal: in its worktree, else on its branch."""
     path = f"{c.meta}/journal/{name}.md"
     wt = (c.home / rel).resolve() if rel else None
-    text = ""
     if wt and (wt / path).exists():
-        text = (wt / path).read_text()
-    elif branch:
+        return (wt / path).read_text()
+    if branch:
         p = c.quests[name.split("--", maxsplit=1)[0]]
-        text = git(c.repo(p), "show", f"{branch}:{path}", check=False)
-    m = re.search(r"^State:\s*(.+)$", text, re.M)
+        return git(c.repo(p), "show", f"{branch}:{path}", check=False)
+    return ""
+
+
+def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
+    m = re.search(r"^State:\s*(.+)$", journal_text(c, name, branch, rel), re.M)
     return m.group(1).strip() if m else "(no journal)"
+
+
+def section(text: str, title: str) -> str:
+    m = re.search(rf"^## {title}\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return m.group(1) if m else ""
+
+
+def criteria(c: Campaign, pid: str) -> list[str]:
+    """The ids of a quest's acceptance criteria (A1, A2, ...), from its quest file."""
+    brief = c.home / c.meta / "quests" / f"{pid}.md"
+    text = brief.read_text() if brief.exists() else ""
+    return list(dict.fromkeys(re.findall(r"^\s*[-*]\s*\**(A\d+)\b", section(text, "Acceptance criteria"), re.M)))
+
+
+def criteria_met(journal: str, ids: list[str]) -> list[str]:
+    """The criteria a journal's Evidence table names with evidence beside them."""
+    met: set[str] = set()
+    for row in section(journal, "Evidence").splitlines():
+        cells = [x.strip() for x in row.strip().strip("|").split("|")]
+        if len(cells) >= 2 and cells[1] and not cells[1].startswith("<") and not set(cells[1]) <= set("-: "):
+            met.update(re.findall(r"\bA\d+\b", cells[0]))
+    return [x for x in ids if x in met]
+
+
+def next_step(journal: str) -> str:
+    """The first step in a journal's Next list."""
+    m = re.search(r"^\s*(?:\d+\.|[-*])\s+(.+)$", section(journal, "Next"), re.M)
+    step = m.group(1).strip() if m else ""
+    return "" if step.startswith("<") else step
 
 
 def problems(c: Campaign) -> list[tuple[str, str]]:
@@ -1526,10 +1559,22 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
             wt = (c.home / rel).resolve() if rel else None
             dirty = len(git(wt, "status", "--porcelain").splitlines()) if wt and wt.exists() else -1
             work[name] = {"state": journal_state(c, name, branch, rel), "dirty": dirty, "worktree": rel}
-    view["other_jobs"] = [
-        job_summary(j)
-        for j in mine
-        if j["state"].get("state") in ("failed", "timeout", "interrupted") and j["id"] not in checked and at_head(j)
+        journal = journal_text(c, pid, p["branch"], p.get("worktree", ""))
+        ids = criteria(c, pid)
+        tasks = [w["state"] for name, w in work.items() if name != pid]
+        view["progress"] = {
+            "criteria": len(ids),
+            "met": criteria_met(journal, ids),
+            "tasks": len(tasks),
+            "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
+            "next": next_step(journal),
+        }
+    ended = [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
+    view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
+    view["bad_at_head"] = [
+        {**job_summary(j), "check": j["id"] in checked}
+        for j in ended
+        if j["state"].get("state") in ("failed", "timeout", "interrupted")
     ]
     return view
 
@@ -1568,16 +1613,60 @@ def machine_status() -> int:
     return 0
 
 
+STYLES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "magenta": "35", "cyan": "36"}
+STAGES = {
+    "planned": "dim",
+    "active": "cyan",
+    "review": "magenta",
+    "blocked": "red",
+    "landed": "green",
+    "dropped": "dim",
+}
+
+
+def paint(text: str, *styles: str) -> str:
+    """Colored for a terminal (NO_COLOR turns it off, FORCE_COLOR on); plain for pipes and agents."""
+    if os.environ.get("NO_COLOR") or not styles:
+        return text
+    if not os.environ.get("FORCE_COLOR") and (not sys.stdout.isatty() or os.environ.get("TERM") == "dumb"):
+        return text
+    return f"\033[{';'.join(STYLES[x] for x in styles)}m{text}\033[0m"
+
+
+def bar(done: float, width: int = 20) -> str:
+    """A progress bar of CAMPAIGN_BAR's two characters (default block characters every terminal font
+    has); "#-" when the output cannot encode them."""
+    done = max(0.0, min(done, 1.0))
+    chars = os.environ.get("CAMPAIGN_BAR", "")
+    full, empty = (chars[0], chars[1]) if len(chars) == 2 else ("\u2588", "\u2591")
+    try:
+        (full + empty).encode(sys.stdout.encoding or "ascii")
+    except (UnicodeEncodeError, LookupError):
+        full, empty = "#", "-"
+    n = round(done * width)
+    return paint(full * n, "green") + paint(empty * (width - n), "dim") + f" {round(done * 100)}%"
+
+
 def print_quest(v: Json, full: bool) -> None:
-    print(f"\n{v['id']}  {v['status']}  {v['risk']}  {v['title']}")
+    print(f"\n{paint(v['id'], 'bold')}  {paint(v['status'], STAGES.get(v['status'], ''))}  {v['risk']}  {v['title']}")
+    g = v.get("progress")
+    if g and (g["criteria"] or g["tasks"]):
+        tasks = f"{g['tasks_done']} of {plural(g['tasks'], 'task')} complete" if g["tasks"] else ""
+        if g["criteria"]:
+            met = f"{len(g['met'])} of {plural(g['criteria'], 'criterion')} met".replace("criterions", "criteria")
+            print(f"  {bar(len(g['met']) / g['criteria'])} {met}" + (f" · {tasks}" if tasks else ""))
+        else:
+            print(f"  {tasks}")
+        if g["next"]:
+            print(f"  next: {g['next']}")
     if "branch" in v:
         print(f"  branch {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead of main")
         if v["missing"]:
-            print("  to land:")
+            print("  " + paint("to land:", "yellow"))
             for gap in v["missing"]:
                 print(f"    - {gap}")
         else:
-            print(f"  ready to land: `campaign land {v['id']}`")
+            print("  " + paint(f"ready to land: `campaign land {v['id']}`", "green"))
         checks = [f"{k} {s}" for k, s in v["checks"].items()]
         if v["later"]:
             checks.append("after landing: " + ", ".join(v["later"]))
@@ -1599,14 +1688,17 @@ def print_quest(v: Json, full: bool) -> None:
     else:
         for gap in v["missing"]:
             print(f"  {gap}")
-    if v["other_jobs"]:
-        print("  jobs that ended badly at this code (not its checks; they don't gate landing):")
-        for f in v["other_jobs"]:
-            code = "" if f["exit"] is None else f" (exit {f['exit']})"
-            print(f"    {f['job']}  {f['state']}{code}  {f['what']}  (`campaign job log {f['job']}`)")
-    busy = {k: n for k, n in v["jobs"].items() if n}
-    if busy:
-        print("  jobs: " + ", ".join(f"{n} {k}" for k, n in busy.items()))
+    bad = v["bad_at_head"]
+    counts = [f"{v['done_at_head']} done"] if v["done_at_head"] else []
+    counts += [paint(f"{len(bad)} ended badly", "red")] if bad else []
+    counts += [f"{n} {k}" for k, n in v["jobs"].items() if n]
+    if counts:
+        print(f"  jobs at this code: {', '.join(counts)}")
+    for f in bad:
+        code = "" if f["exit"] is None else f" (exit {f['exit']})"
+        print(f"    {f['job']}  {f['state']}{code}  {f['what']}" + (" (a check)" if f["check"] else ""))
+    if any(not f["check"] for f in bad):
+        print("    only the quest's checks gate landing; `campaign job log ID` shows why a job failed")
     if full and v["landed"]:
         print("  landed: " + ", ".join(v["landed"]))
     if v.get("deferred"):
@@ -1645,11 +1737,19 @@ def cmd_status(a: argparse.Namespace) -> int:
         )
         return 0
     n = o["counts"]
-    print(f"campaign {c.state['campaign']} ({c.home})")
+    print(f"{paint('campaign ' + c.state['campaign'], 'bold')} ({c.home})")
     print(
         f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned"
         + (f"; ready to start: {', '.join(o['ready'])}" if o["ready"] else "")
     )
+    live = [v for v in views if v["status"] != "dropped"]
+    if live and not a.id:
+        done = sum(
+            1.0 if v["status"] == "landed" else len(v["progress"]["met"]) / v["progress"]["criteria"]
+            for v in live
+            if v["status"] == "landed" or (v.get("progress") or {}).get("criteria")
+        )
+        print(f"  {bar(done / len(live))} of the campaign (quests not landed count by criteria met)")
     m = o["milestone"]
     if m and m["name"]:
         print(f"  milestone {m['name']}: {m['landed']} of {plural(m['quests'], 'quest')} landed")
@@ -1677,7 +1777,7 @@ def cmd_status(a: argparse.Namespace) -> int:
     if found:
         print()
     for severity, message in found:
-        print(f"{severity}: {message}")
+        print(f"{paint(severity, {'error': 'red', 'warning': 'yellow'}.get(severity, 'dim'))}: {message}")
     return 0
 
 
@@ -3013,7 +3113,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--force", metavar="REASON", help="start before its needs landed, or over an overlapping file set")
     p.set_defaults(fn=cmd_start)
 
-    p = sub.add_parser("status", parents=[common], help="what is ready, running, waiting and landable")
+    p = sub.add_parser(
+        "status",
+        parents=[common],
+        help="what is ready, running, waiting and landable",
+        description="Each quest and what it still needs to land, with progress from its criteria and journal. "
+        "Colored on a terminal (NO_COLOR turns it off); CAMPAIGN_BAR sets the progress bar's two characters "
+        "(default \u2588\u2591, e.g. \u25b0\u25b1).",
+    )
     p.add_argument("id", nargs="?")
     p.add_argument("--json", action="store_true")
     p.add_argument("--reviews", action="store_true", help="verdicts and blocking findings per review file")
