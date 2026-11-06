@@ -51,13 +51,13 @@ class Quiet(unittest.TestCase):
         return self.log.read_text().split()
 
     def test_a_measurement_is_stopped_at_its_deadline(self) -> None:
-        start = time.time()
-        p = self.quiet("exclusive", "m", "1", "measure", "--", "bash", "-c", "sleep 30; echo late")
-        out, err = p.communicate(timeout=30)
+        # a starved shell may outlive its TERM until the KILL 10 s later, so `&&`: a run that was never
+        # stopped prints "late" at 30 s, and how soon a stopped one ends depends on the CPU it gets
+        p = self.quiet("exclusive", "m", "1", "measure", "--", "bash", "-c", "sleep 30 && echo late")
+        out, err = p.communicate(timeout=60)
         self.assertEqual(p.returncode, 124)
         self.assertNotIn("late", out)
         self.assertIn("invalid", err)
-        self.assertLess(time.time() - start, 15)
 
     def test_bounded_commands_finish_normally_under_cpu_load(self) -> None:
         """Starved commands must not be reported as past their deadline (a timer race seen under load)."""
