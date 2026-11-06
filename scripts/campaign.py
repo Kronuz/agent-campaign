@@ -420,7 +420,7 @@ def cross_overlaps(c: Campaign, pid: str) -> list[str]:
     p = c.quests[pid]
     found: list[str] = []
     for name, o in campaigns().items():
-        if o["home"] == c.home:
+        if name == c.name:
             continue
         for qid, q in o["state"].get("quests", {}).items():
             if (
@@ -1329,7 +1329,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         if not live:
             continue
         for name, o in campaigns().items():
-            if o["home"] == c.home:
+            if name == c.name:
                 continue
             for qid, q in o["state"].get("quests", {}).items():
                 if q.get("status") not in ("planned", "active", "review"):

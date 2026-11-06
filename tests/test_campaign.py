@@ -705,7 +705,8 @@ class SharedHome(CampaignCase):
         self.fails(self.home, "status", match="pass --campaign NAME")
         for name in ("demo", "perf"):
             self.ok(self.home, "new", "fix", "--title", name, "--risk", "low", "--files", "app.py", "--campaign", name)
-            self.ok(self.home, "start", "fix", "--campaign", name)
+            started = self.ok(self.home, "start", "fix", "--campaign", name)
+        self.assertIn("may overlap demo:fix", started.err)  # neighbors in one home still see each other
         self.assertEqual(self.quest("fix")["branch"], "quest/demo/fix")
         perf = self.root / "app-wt" / "perf" / "fix"
         self.assertTrue((perf / ".campaign/perf/journal/fix.md").exists())
