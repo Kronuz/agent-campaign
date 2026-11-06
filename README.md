@@ -118,6 +118,8 @@ the research, the architecture and the validation.
 - `pace` reads Claude Code's quota from a status line's snapshot and does not see purchased credits.
 - Landing is one repository at a time: a change across repositories lands in order, never
   atomically.
+- A quest in a repository other than the campaign's home commits its journal there, so the
+  journal reaches that repository's history.
 - `quiet` and the job queue coordinate one machine; remote hosts run their own.
 
 ## Building and testing

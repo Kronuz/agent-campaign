@@ -29,7 +29,9 @@ goals ─► PLAN ─► quests ─► campaign start ─► adventurer ─► j
    never edit them, and a changed quest file voids earlier acceptances.
 4. **Review follows risk, not ritual.** One fresh paladin per risk that needs one; it spends on
    what the evidence does not already establish.
-5. **State lives in files.** `.campaign/<campaign>/` and git hold everything a fresh game master needs.
+5. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
+   product is (designs, research, results, how-it-works notes) goes to `docs/` of the repository it
+   describes (`templates/PLAN.md`, Documents).
 6. **Agents never wait on machines, and measurements never run without isolation.**
 7. **The patron decides goals, scope, and any removal or narrowing of user-visible behavior.**
    The game master decides the rest and records it in `PLAN.md`. **Campaign never rents

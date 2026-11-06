@@ -12,6 +12,9 @@ machine state (status, branch, checks, reviews) is in `state.json`: `campaign st
 Each names the evidence that shows it (a test, a check, a job, a review lens).
 
 - A1 <criterion>: <evidence>
+- A2 A how-it-works note for each mechanism this adds or changes, in `docs/mechanisms/` of the
+  repository it changes (the skill's `templates/mechanism.md`), checked against the code: the note
+  and the paladin's reading of it. Delete A2 when the quest adds or changes no mechanism.
 
 ## Contracts
 
