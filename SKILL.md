@@ -120,7 +120,8 @@ platform. Slow CI workflows can be made non-gating the same way
 3. The game master waits with one background `campaign wait --commits` (no tokens until a job
    ends or an adventurer commits), then resumes the adventurer by message while its context is
    small (about 150k tokens), or starts a fresh one with the "Resume" prompt.
-   If a finishing agent does not wake it (`references/harness.md`), it keeps its turn meanwhile.
+   If a finishing agent does not wake it (`references/harness.md`), it keeps its turn and
+   waits again while anything is out.
 4. When the journal says "ready for review", the game master sets `status=review`, launches the
    paladins the risk requires, commits each review file to `docs/campaign/reviews/ID-LENS.md`, and
    relays blocking findings to the adventurer.

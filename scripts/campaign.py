@@ -2544,27 +2544,78 @@ def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
     return heads
 
 
-def wait_for(ids: list[str], any_one: bool, timeout: float, watch: Callable[[], list[str]] | None = None) -> int:
-    start = time.time()
+def wait_events(c: Campaign, timeout: float) -> int:
+    """Returns at the first commit on a quest branch in flight or job of this campaign that ended
+    since the game master last saw them (recorded in the home's .git), so nothing that happens
+    between two waits is missed; then lists what is still in flight, to wait for next."""
+    seen_file = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-seen.json"
+    recorded = read_json(seen_file) if seen_file.exists() else None
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
-    moved: list[str] = []
+    start = time.time()
+
+    def current() -> tuple[dict[str, str], dict[str, Json]]:
+        heads = {f"{name} {branch}": head for (name, branch), head in branch_heads(c).items()}
+        ended = {
+            j["id"]: j
+            for j in all_jobs()
+            if j["spec"].get("campaign") == str(c.home) and j["state"].get("state") in TERMINAL
+        }
+        return heads, ended
+
+    heads, ended = current()
+    if recorded is None:  # the first wait starts from now
+        write_json(seen_file, {"heads": heads, "jobs": sorted(ended)})
+        seen_heads, seen_jobs = dict(heads), set(ended)
+    else:
+        seen_heads = {str(k): str(v) for k, v in dict(recorded.get("heads") or {}).items()}
+        seen_jobs = {str(x) for x in recorded.get("jobs") or []}
     while True:
         reap()
-        if ids:
+        heads, ended = current()
+        moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
+        finished = sorted(set(ended) - seen_jobs)
+        if moved or finished:
+            break
+        running = [j for j in all_jobs() if j["spec"].get("campaign") == str(c.home)]
+        if not heads and not any(j["state"].get("state") not in TERMINAL for j in running):
+            print("nothing to wait for: no quest in flight and no job of this campaign")
+            return 0
+        if timeout and time.time() - start >= timeout:
+            print(f"nothing new after {timeout:g}s")
+            return 3
+        if any(j["state"].get("state") == "queued" for j in running):
             ensure_worker()
+        time.sleep(tick)
+    for key in moved:
+        name, branch = key.split(" ", 1)
+        print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch, '')}")
+    for jid in finished:
+        s = job_summary(ended[jid])
+        print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
+    write_json(seen_file, {"heads": heads, "jobs": sorted(ended)})
+    flight = [f"{name} ({journal_state(c, name, branch, '')})" for (name, branch) in branch_heads(c)]
+    pending = sum(
+        1 for j in all_jobs() if j["spec"].get("campaign") == str(c.home) and j["state"].get("state") not in TERMINAL
+    )
+    if flight or pending:
+        print(f"still in flight: {', '.join(flight) or 'no quest'}; {pending} job(s) pending; wait again after this")
+    return 0
+
+
+def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
+    start = time.time()
+    tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
+    while True:
+        reap()
+        ensure_worker()
         jobs = {x: load_job(jobs_dir() / x) for x in ids}
         pending = [x for x, j in jobs.items() if j["state"].get("state") not in TERMINAL]
-        if ids and (not pending or (any_one and len(pending) < len(ids))):
-            break
-        moved = watch() if watch else []
-        if moved:
+        if not pending or (any_one and len(pending) < len(ids)):
             break
         if timeout and time.time() - start >= timeout:
-            print(f"still pending after {timeout:g}s" + (f": {', '.join(pending)}" if pending else ""))
+            print(f"still pending after {timeout:g}s: {', '.join(pending)}")
             return 3
         time.sleep(tick)
-    for line in moved:
-        print(line)
     for x, j in jobs.items():
         s = job_summary(j)
         took = f" in {s['seconds']}s" if s["seconds"] is not None else ""
@@ -2576,6 +2627,8 @@ def wait_for(ids: list[str], any_one: bool, timeout: float, watch: Callable[[], 
 
 def cmd_wait(a: argparse.Namespace) -> int:
     reap()
+    if a.commits:
+        return wait_events(Campaign(find_home(Path.cwd())), a.timeout)
     if a.jobs:
         ids = [resolve_job(x)["id"] for x in a.jobs]
     else:
@@ -2583,25 +2636,10 @@ def cmd_wait(a: argparse.Namespace) -> int:
         ids = [j["id"] for j in mine if j["state"].get("state") not in TERMINAL]
         if not ids and a.quest:
             ids = [j["id"] for j in mine]  # all finished: report them
-    watch = None
-    if a.commits:
-        c = Campaign(find_home(Path.cwd()))
-        before = branch_heads(c)
-
-        def watch() -> list[str]:
-            return [
-                f"{name}: {branch} moved to {head[:12]}; journal: {journal_state(c, name, branch, '')}"
-                for (name, branch), head in branch_heads(c).items()
-                if before.get((name, branch)) != head
-            ]
-
-        if not before and not ids:
-            print("nothing to wait for: no jobs, and no quest in flight")
-            return 0
-    elif not ids:
+    if not ids:
         print("nothing to wait for")
         return 0
-    return wait_for(ids, a.any or bool(watch), a.timeout, watch)
+    return wait_for(ids, a.any, a.timeout)
 
 
 # ---------------------------------------------------------------- command line
@@ -2717,14 +2755,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_clean)
 
-    p = sub.add_parser(
-        "wait", help="block until jobs finish (or, with --commits, an adventurer commits); costs no tokens"
-    )
+    p = sub.add_parser("wait", help="block until jobs finish, or (--commits) until anything new happens; no tokens")
     p.add_argument("jobs", nargs="*")
     p.add_argument("--quest")
     p.add_argument("--any", action="store_true", help="return when the first one finishes")
     p.add_argument(
-        "--commits", action="store_true", help="also return when a commit lands on a quest or task branch in flight"
+        "--commits",
+        action="store_true",
+        help="return at the first quest-branch commit or job of this campaign not seen by an earlier wait",
     )
     p.add_argument("--timeout", type=float, default=0, help="seconds; exit 3 when it passes")
     p.set_defaults(fn=cmd_wait)

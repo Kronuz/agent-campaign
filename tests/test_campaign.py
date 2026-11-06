@@ -37,6 +37,25 @@ class Quests(CampaignCase):
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
 
+    def test_wait_misses_nothing_that_happened_between_two_waits(self) -> None:
+        a = self.started("one", files="app.py")
+        b = self.started("two", files="README.md")
+        self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)  # starts from now
+        self.commit(a, {"app.py": "print(2)\n"})  # both adventurers finish while the game master is busy
+        self.commit(b, {"README.md": "two\n"})
+        out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
+        self.assertIn("one: quest/one moved to", out)
+        self.assertIn("two: quest/two moved to", out)
+        self.assertIn("still in flight: one (working), two (working)", out)
+        self.commit(b, {"README.md": "two again\n"})  # lands while the game master handles the first two
+        out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
+        self.assertIn("two: quest/two moved to", out)
+        self.assertNotIn("one: quest/one moved", out)
+        job = self.submit(self.home, "--quest", "one", "--", "true")
+        self.ok(self.home, "wait", job)  # ends before the next event wait starts
+        self.assertIn(f"{job}  done exit 0", self.ok(self.home, "wait", "--commits", "--timeout", "30").out)
+        self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)
+
     def test_task_file_scope_can_be_corrected_without_overlapping_a_peer(self) -> None:
         self.started("fix", files="app.py,lib/**,README.md")
         self.ok(self.home, "start", "fix", "--task", "one", "--files", "lib/**")

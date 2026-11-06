@@ -19,7 +19,7 @@ campaign job submit [--quest ID] [--commit REF] [--ref NAME=[PATH@]REF] [--cwd D
     [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
 campaign verify ID            # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
-campaign wait [JOBS | --quest ID] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
+campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
 campaign job list | show J | log J | cancel J
 campaign usage [--json]       # agent runs and jobs per quest, role and class
 ```
