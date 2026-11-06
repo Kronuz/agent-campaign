@@ -733,7 +733,8 @@ def cmd_init(a: argparse.Namespace) -> int:
 
 def cmd_migrate(_a: argparse.Namespace) -> int:
     """Moves an older campaign's files to .campaign/NAME in one commit. Quests in flight carry
-    journals at the old path on their branches, so it waits until none is."""
+    journals at the old path on their branches, and the campaign's pending jobs carry its old tag,
+    so it waits until there are none."""
     with writing() as c:
         folder = f"{META}/{c.name}"
         if c.meta != LEGACY_META:
@@ -744,6 +745,13 @@ def cmd_migrate(_a: argparse.Namespace) -> int:
             die(
                 f"quests in flight keep journals in {LEGACY_META} on their branches: land or drop {', '.join(busy)} first"
             )
+        pending = sorted(
+            j["id"]
+            for j in all_jobs()
+            if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
+        )
+        if pending:
+            die(f"jobs {', '.join(pending)} are queued or running under the old layout: `campaign wait` for them first")
         if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
             die("migrate commits the move; unset CAMPAIGN_NO_COMMIT")
         (c.home / META).mkdir(exist_ok=True)
@@ -1257,7 +1265,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         out.append(
             (
                 "warning",
-                f"this campaign keeps its files in {LEGACY_META}: run `campaign migrate` when no quest is in flight",
+                f"this campaign keeps its files in {LEGACY_META}: `campaign migrate` moves them to {META}/{c.name} once no quest is active, in review or blocked and none of its jobs is queued or running (it refuses until then)",
             )
         )
     if c.state.get("landing"):

@@ -689,6 +689,10 @@ class Migration(CampaignCase):
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
         self.ok(self.home, "land", "fix")
+        jid = self.submit(self.home, "--", "sleep 300")  # a job of this campaign, tagged the old way
+        self.fails(self.home, "migrate", match=f"jobs {jid} are queued or running")
+        self.ok(self.home, "job", "cancel", jid)
+        self.run_cli(self.home, "wait", jid, "--timeout", "30")
         self.ok(self.home, "migrate")
         self.assertEqual(self.git(self.home, "status", "--porcelain"), "")
         self.assertTrue((self.home / ".campaign/demo/quests/fix.md").exists())
