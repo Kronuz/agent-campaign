@@ -104,7 +104,9 @@ review and measurement rules, the host tools and the per-harness notes.
 ## How it works
 
 State lives in `.campaign/<name>/` of the home repository and only the tool writes it, from the main
-checkout, under a lock. Agents submit work as jobs and end their turn; one worker per machine runs
+checkout, under a lock. Every change is a commit that says what happened (`campaign: start`, `accept`,
+`land ... at <commit>`), so `git log -- .campaign/<name>` is the campaign's ledger; each quest's
+journal is its builder's, and `PLAN.md`'s Decisions table is the game master's. Agents submit work as jobs and end their turn; one worker per machine runs
 the queue in priority order under `quiet`, and the game master waits on results with one background
 command. A check result is keyed by the machine, the toolchain, the command and the commit's code
 without the campaign's own files, which is what lets `land` prove that the code on `main` is the
