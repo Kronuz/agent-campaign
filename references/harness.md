@@ -15,6 +15,7 @@ exercised on this machine.
 | Subagent waits for a job | one `campaign wait --timeout 600`, then ends its turn (a subagent that ends its turn is finished; nothing wakes it) | the same (a background command's notice does not wake a subagent) | the same |
 | Periodic report | a scheduled job, recreated each session | `manage_schedule` with a cron, recreated each session | This session exposes no scheduler; use campaign state/sidebar and report at turn boundaries (verified 2026-11-05) |
 | Usage (`campaign usage`) | not read yet | `~/.copilot/session-state/*/events.jsonl`: per agent, the `task` prompt, model, effort, cost, tokens, time (verified 2026-11-05) | Rollout logs: launch, model/effort, tokens/time and lead totals; encrypted launches unattributed, cost unavailable (2026-11-05) |
+| Quota (`pace`) | the snapshot a status line writes to `~/.scratch/quota/claude.json` | session events' `quotaSnapshots` (verified 2026-11-05) | rollout `rate_limits` (verified 2026-11-05) |
 | Skills location | `~/.claude/skills` (linked to `~/.agents/skills`) | `~/.agents/skills` | `~/.agents/skills`, symlink and loaded skill verified 2026-11-05 |
 
 ## Agent types
@@ -53,8 +54,7 @@ hypotheses pending comparable completed work, not model rankings (`docs/codex-tr
 
 Generated types inherit the model; file effort overrides launch settings. Use the body fallback
 for a different class effort. Sol/medium and Astra/high launches work; named loading remains
-unexercised. Preserve max when requested. `pace codex` reports both windows and burn/exhaustion
-relative to reset; stale samples are marked. Cost zero means unavailable, never free.
+unexercised. Preserve max when requested. Cost zero means unavailable, never free.
 
 Verified 2026-11-05: global guidance is `$CODEX_HOME/AGENTS.override.md`, otherwise `AGENTS.md`
 (default `~/.codex`). The terminal exposes

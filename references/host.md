@@ -112,10 +112,10 @@ campaigns' state.
 - **ccache:** every CMake build goes through it (`~/.profile` sets the compiler launchers;
   `~/.ccache/ccache.conf` shares entries across worktrees and job checkouts). An old build
   directory needs a fresh configure to pick it up.
-- **`pace [claude|copilot|codex]`** prints each quota window's use, its linear pace and the time
-  to reset. It is information for decisions (will this batch exhaust the week before the
-  milestone?), never a reason to launch work. It sees Claude Code's 5-hour and weekly windows but
-  not extra credits bought, so it can report a window spent that credits still cover.
+- **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
+  it runs out before its reset, read from each harness's own records (`references/harness.md`).
+  It is information for decisions (will this batch exhaust the week before the milestone?), never
+  a reason to launch work. It does not see Claude Code's purchased credits.
 - **`report`** draws the patron's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). Inside cmux, every state change and `campaign status` update the bar (the current
   milestone's quests), the `campaign` pill (the whole project) and a `campaign-<id>` pill per

@@ -78,8 +78,7 @@ git clone https://github.com/Kronuz/agent-campaign.git ~/code/agent-campaign
 never replaces a file it did not link; `install.sh --check` reports what is missing. Agent types
 load when a session starts.
 
-**Requirements:** Python 3.9 or newer (standard library only), git 2.31 or newer and bash; `jq`
-for `pace`. One of Claude Code, GitHub Copilot CLI or Codex; [cmux](https://cmux.dev) is optional
+**Requirements:** Python 3.9 or newer (standard library only), git 2.31 or newer and bash. One of Claude Code, GitHub Copilot CLI or Codex; [cmux](https://cmux.dev) is optional
 and shows the campaign in its sidebar.
 
 ## Usage
@@ -115,7 +114,7 @@ the research, the architecture and the validation.
 
 - The test suite has run on macOS only.
 - `campaign usage` reads Copilot CLI's session logs; Claude Code's and Codex's are not read yet.
-- `pace` sees Claude Code's five-hour and weekly windows, not extra credits bought.
+- `pace` reads Claude Code's quota from a status line's snapshot and does not see purchased credits.
 - Landing is one repository at a time: a change across repositories lands in order, never
   atomically.
 - `quiet` and the job queue coordinate one machine; remote hosts run their own.
