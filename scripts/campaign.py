@@ -2075,17 +2075,21 @@ def sweep(sid: int, beat: Path | None = None) -> None:
         time.sleep(2 if sig == signal.SIGTERM else 0.2)
 
 
-def kill_group(pgid: int) -> None:
+def kill_group(child: subprocess.Popen[bytes], beat: Path) -> None:
+    """TERMs a job's process group, then KILLs it if it outlives 20 seconds. The leader is reaped as
+    it goes: on Linux a zombie leader keeps its group signalable."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGTERM)
+        os.killpg(child.pid, signal.SIGTERM)
     for _ in range(100):
+        child.poll()
+        beat.touch()
         try:
-            os.killpg(pgid, 0)
+            os.killpg(child.pid, 0)
         except (ProcessLookupError, PermissionError):
             return
         time.sleep(0.2)
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGKILL)
+        os.killpg(child.pid, signal.SIGKILL)
 
 
 def worktree_add(repo: Path, path: Path, commit: str, beat: Path | None = None) -> None:
@@ -2170,7 +2174,7 @@ def release(spec: Json, d: Path, owner: int) -> None:
 
 def quiet_argv() -> list[str]:
     found = shutil.which("quiet")
-    return [found] if found else ["bash", str(SKILL / "scripts" / "quiet.sh")]
+    return [found] if found else [sys.executable, str(SKILL / "scripts" / "quiet.py")]
 
 
 def finish(job: Json, code: int, state: str, note: str = "", fence: int = 0) -> bool:
@@ -2266,7 +2270,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         began = ad / "began"
         if (d / "cancel").exists() and not cancelled:
             cancelled = True
-            kill_group(child.pid)
+            kill_group(child, beat)
         elif (
             not timed_out
             and spec["level"] == "none"
@@ -2274,7 +2278,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             and time.time() > began.stat().st_mtime + 60 * spec["minutes"]
         ) or (not timed_out and time.time() > limit):
             timed_out = True
-            kill_group(child.pid)
+            kill_group(child, beat)
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
     release(spec, d, me)

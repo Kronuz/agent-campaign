@@ -145,7 +145,8 @@ class Limits(CampaignCase):
     def test_a_no_hold_job_is_stopped_at_its_timeout(self) -> None:
         jid = self.submit(self.home, "--level", "none", "--minutes", "1", "--", "sleep 300")
         began = self.root / "jobs" / jid / "a1" / "began"
-        self.wait_until(began.exists)
+        # the shell creates the file before date writes it, and that write would reset a backdated mtime
+        self.wait_until(lambda: began.exists() and began.read_text().strip())
         os.utime(began, (time.time() - 120, time.time() - 120))  # its one minute has passed
         self.run_cli(self.home, "wait", jid, "--timeout", "30")
         self.assertEqual(self.job(jid)["state"], "timeout")

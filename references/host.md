@@ -8,7 +8,7 @@ Every command has `--help`.
 `install.sh` links `campaign`, `quiet`, `pace` and `report` into `~/.local/bin` and
 the agent types into every installed harness; it never replaces a file it did not link. If one is
 missing, run `install.sh` again (ask the patron before removing anything in its way). Without it, run
-`python3 <skill>/scripts/campaign.py` and `bash <skill>/scripts/quiet.sh` directly. `campaign`
+`python3 <skill>/scripts/campaign.py` and `python3 <skill>/scripts/quiet.py` directly. `campaign`
 needs only `python3` (3.9 or newer) and `git` (2.31 or newer).
 
 ## Jobs

@@ -1,16 +1,17 @@
 # Campaign 2.0 validation
 
-> Status: CURRENT (2026-11-05). What was run, what it showed, and what was not run. Host: Apple
-> M4 Pro (14 cores, macOS 26.6), git 2.50.1, Python 3.9.6 and 3.15, shared with other agents.
-> Commit hashes are `dotfiles:` unless named.
+> Status: CURRENT (2026-11-06). What was run, what it showed, and what was not run. Hosts: Apple
+> M4 Pro (14 cores, macOS 26.6), git 2.50.1, Python 3.9.6 and 3.15, shared with other agents; and
+> a Linux development machine (x86_64, 4 cores with SMT, kernel 5.15, git 2.40.4, Python 3.9.19
+> and 3.15). Commit hashes are `dotfiles:` unless named.
 
 ## Static checks
 
 | Check | Result |
 |---|---|
-| `ruff check` and `ruff format` (skill's `ruff.toml`) on `campaign.py` and the tests | clean |
+| `ruff check` and `ruff format` (skill's `ruff.toml`) on `campaign.py`, `quiet.py`, `pace.py` and the tests | clean |
 | `pyrefly check` (strict preset, Python 3.9 target) | 0 errors |
-| `shellcheck -S warning` on `quiet.sh`, `pace.sh`, `sync-agents.sh` | clean (`pace.sh` documents its seven eval-assigned variables; 1.x had the same warnings unsuppressed) |
+| `shellcheck -S warning` on `report.sh`, `sync-agents.sh`, `install.sh` | clean |
 | `sync-agents.sh --check` (Copilot and Codex files match the sources) | clean; the Codex TOML parses with `tomllib` |
 
 ## Executable tests
@@ -22,7 +23,7 @@ builds throwaway repositories with their own job queue and `quiet` directory.
 |---|---|
 | `test_campaign` | quest creation and starting, dependency kinds and cycles, the single-writer guard, status transitions, ownership at start and at landing, edits to the game master's files, file overlap reports, evidence at the exact code (and kept across journal-only commits), failing checks, landed code equal to tested code, rebases after `main` moves, review acceptance (approve, changes with confirming jobs, reject, waivers, drift, changed quest file, upstream changes for high risk), review counts, increments, the GitHub CI gate (stub `gh`), `--push` to a bare remote, the cmux sidebar (stub `report`), interrupted landings (completed and cleared), deleted and unrecorded branches, contracts with two providers, cleanup |
 | `test_jobs` | identity (the submitted commit while the branch moves on, reuse, toolchain fingerprint, refs into other repositories, `--sync`), scheduling (`--after`, skips, priority, the worker's lifetime), limits (no-hold timeouts, measurement deadlines, the 30-minute cap, helpers killed with their job, cancel), crashes (lost runner reaped with its orphans and retried, interrupted without retries, a result recorded before the runner died, a stale runner fenced off), contention (Scenario G) |
-| `test_quiet` | deadline stop and exit code 124, waiting requests in `quiet list`, exit codes passing through, the 30-minute cap, the hold outliving a command that ignores TERM, a starving build served before a queued measurement, bounded commands under a CPU burner per core |
+| `test_quiet` | deadline stop and exit code 124, waiting requests in `quiet list`, exit codes passing through, the 30-minute cap, the hold outliving a command that ignores TERM, a starving build served before a queued measurement, bounded commands under a CPU burner per core, a TERM to `quiet` stopping its command's group and freeing the hold, `QUIET_PAUSE` stopping light work and resuming it; on Linux, strict and light holds on disjoint cores and qemu vCPU threads moved and restored (fake VMs with `CPU n/KVM` threads) |
 | `test_scenarios` | Scenarios A-F, H, I from the brief and a scouting party, end to end |
 | `test_campaign.Campaigns` | several campaigns on one machine: unique names, re-registration on the next write, overlap and contract warnings both ways, `status --all`, a `NAME:ID` dependency enforced at landing, and a landing into a shared repository waiting for its lock (5 of 5 mutants failed) |
 | `test_campaign.Usage`, `test_budget` | `campaign usage` on Copilot's event shapes: runs attributed by the launch prompt (adventurer, resume, paladin), other campaigns and unrelated agents left out, logs older than the campaign skipped, game master sessions counted only when they ran its agents, jobs' run and wait time; the instructions' word budget |
@@ -76,6 +77,8 @@ their test**; the survivor guarded a case no prompt produces, and the guard was 
 | A starving build wrote its marker only after winning `quiet`'s directory lock, which a fast-polling measurement held most of the time, so fairness depended on timing (the real code passed 1 of 3) | the mutation check, after a mutant of one half of the rule survived | the marker is written before taking the lock | 5 of 5 passes; the one-sided mutant fails 3 of 3 |
 | A job submitted `--after` one job reused an identical job queued `--after` another, inheriting its order and its skip when that one failed | the test suites run in parallel under other sessions' load (a slow worker leaves the first job queued) | a job that runs after others is found by its key and the jobs it follows | `test_a_pending_job_is_reused_only_when_it_runs_after_the_same_jobs`, which fails on the old lookup |
 | bash printed "Killed: 9" when the timer was stopped, into every bounded command's stderr | a manual trace | the timer is disowned | a strict run prints nothing extra |
+| On Linux a process group whose leader is an unreaped zombie stays signalable, so after every timeout or cancel the runner's `kill_group` waited its full 20 s without a heartbeat and the reaper took the live runner for dead (`interrupted`); macOS answers `EPERM` for such a group, so it never showed there | the first Linux run (2 of 91 failing) | the leader is reaped while polling, and the heartbeat touched | `test_a_no_hold_job_is_stopped_at_its_timeout` and `test_cancel_stops_queued_and_running_jobs` fail on Linux without it and pass with it |
+| The no-hold timeout test backdated `began` as soon as the file existed, but the shell creates it before `date` writes it, and that write reset the mtime | the Linux runs (2 of 6) | the test waits for the content | 10 of 10 |
 
 ## Live agent tests
 
@@ -168,13 +171,31 @@ One line of stderr in the 3.9 run, `child setpgid (N to N): Operation not permit
 job control in `quiet`'s `bounded()`: it sets the group of a child that has already exited. The
 child sets its own group, so nothing is affected.
 
+## Linux run and the Python `quiet`
+
+`quiet` moved from bash to Python (`scripts/quiet.py`) with the same commands, exit codes, hold
+files and environment, and the suite then ran on Linux for the first time. What changed: signals
+set a flag that the waits check, so none lands mid-fork; a TERM or HUP to `quiet` now reaches an
+unbounded light command, which bash left running; the lock is a `flock` on `.flock`, which the
+kernel frees when a holder dies (bash's `.lock` directory is not shared, so the two versions do not
+exclude each other while a machine switches); cores are pinned with the affinity calls instead
+of `taskset`; the pause watchdog has its own session, so a job runner's sweep can't stop it before
+it resumes the paused jobs; and a one-CPU host admits light work (bash's default load cap was 0).
+The pause test also passes against the bash `quiet`.
+
+| Host | Interpreter | Tests | Result | Wall time |
+|---|---|---|---|---|
+| macOS | Python 3.9.6 | 95 | OK, 2 skipped (Linux only) | 356 s |
+| macOS | Python 3.15 | 95 | OK, 2 skipped (Linux only) | 545 s |
+| Linux | Python 3.9.19 | 95 | OK | 229 s |
+| Linux | Python 3.15 | 95 | OK | 215 s |
+
 ## Not run
 
 - Claude Code and Codex were not exercised live; Codex is not installed here. Agent files for
   both are generated; the Codex format is from vendor docs.
-- Linux and FreeBSD: `quiet`'s core partitioning and VM pinning are unchanged, but the new deadline
-  stop and starvation rule ran only on macOS.
-- Remote hosts, `blockers --remote`, and real GitHub CI (the gate ran against a stub `gh`).
+- FreeBSD: `quiet`'s `cpuset` path.
+- Real GitHub CI (the gate ran against a stub `gh`).
 - Large repositories: job checkouts and `git mktree` on trees of hundreds of thousands of files.
 - A multi-day campaign with many quests; the live tests are small.
 - `pace` with a Claude Code snapshot (none on this host); the Copilot path ran.

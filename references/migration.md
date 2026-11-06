@@ -44,7 +44,7 @@ Point one session at a clone and leave every other session on 1.x:
 git clone https://github.com/Kronuz/agent-campaign.git ~/code/agent-campaign
 mkdir -p ~/.scratch/campaign2-try/bin
 ln -sf ~/code/agent-campaign/scripts/campaign.py ~/.scratch/campaign2-try/bin/campaign
-ln -sf ~/code/agent-campaign/scripts/quiet.sh ~/.scratch/campaign2-try/bin/quiet
+ln -sf ~/code/agent-campaign/scripts/quiet.py ~/.scratch/campaign2-try/bin/quiet
 ```
 
 Start the session with: "Use the campaign skill at ~/code/agent-campaign/SKILL.md; prefix every

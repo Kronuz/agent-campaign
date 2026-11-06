@@ -112,8 +112,8 @@ the research, the architecture and the validation.
 
 ## Limitations
 
-- The test suite has run on macOS only.
-- `campaign usage` reads Copilot CLI's session logs; Claude Code's and Codex's are not read yet.
+- The test suite runs on macOS and Linux; FreeBSD's core pinning is untested.
+- `campaign usage` reads Copilot CLI's and Codex's session logs; Claude Code's are not read yet.
 - `pace` reads Claude Code's quota from a status line's snapshot and does not see purchased credits.
 - Landing is one repository at a time: a change across repositories lands in order, never
   atomically.

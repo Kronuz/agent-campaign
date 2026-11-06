@@ -27,7 +27,7 @@ if [ -d "$HOME/.claude" ]; then
 		link "$repo" "$HOME/.claude/skills/campaign"
 	for agent in "$repo"/agents/*.md; do link "$agent" "$HOME/.claude/agents/$(basename "$agent")"; done
 fi
-for tool in campaign:campaign.py quiet:quiet.sh pace:pace.py report:report.sh; do
+for tool in campaign:campaign.py quiet:quiet.py pace:pace.py report:report.sh; do
 	link "$repo/scripts/${tool#*:}" "$HOME/.local/bin/${tool%%:*}"
 done
 for old in "$HOME"/.local/bin/*; do  # a tool this repository renamed or removed leaves a dangling link

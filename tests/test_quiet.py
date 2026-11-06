@@ -1,16 +1,32 @@
-"""quiet: measurements end at their deadline, holds outlive the stop, and builds are not starved."""
+"""quiet: measurements end at their deadline, holds outlive the stop, builds are not starved, and
+strict holds get their cores (Linux) or pause light work (QUIET_PAUSE)."""
 
 from __future__ import annotations
 
+import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
-QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.sh"
+QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.py"
+LINUX = sys.platform == "linux"
+NCPU = os.cpu_count() or 1
+
+
+def affinity(pid: int) -> list[int]:
+    if sys.platform == "linux":
+        return sorted(os.sched_getaffinity(pid))
+    return []
+
+
+def vcpus(pid: int) -> int:
+    return sum(1 for t in Path(f"/proc/{pid}/task").glob("*/comm") if t.read_text().startswith("CPU "))
 
 
 class Quiet(unittest.TestCase):
@@ -37,8 +53,9 @@ class Quiet(unittest.TestCase):
 
     def quiet(self, *args: str, **env: str) -> subprocess.Popen[str]:
         return subprocess.Popen(
-            ["bash", str(QUIET), *args],
+            [sys.executable, str(QUIET), *args],
             env={**self.env, **env},
+            stdin=subprocess.DEVNULL,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -49,6 +66,15 @@ class Quiet(unittest.TestCase):
 
     def events(self) -> list[str]:
         return self.log.read_text().split()
+
+    def listed(self) -> str:
+        return subprocess.run([sys.executable, str(QUIET), "list"], env=self.env, text=True, capture_output=True).stdout
+
+    def until(self, test: Callable[[], object], seconds: float = 20) -> None:
+        end = time.time() + seconds
+        while not test():
+            self.assertLess(time.time(), end, "timed out waiting")
+            time.sleep(0.05)
 
     def test_a_measurement_is_stopped_at_its_deadline(self) -> None:
         # a starved shell may outlive its TERM until the KILL 10 s later, so `&&`: a run that was never
@@ -67,7 +93,7 @@ class Quiet(unittest.TestCase):
         runs: list[subprocess.Popen[bytes]] = []
         try:
             runs = [
-                subprocess.Popen(["bash", str(QUIET), "light", f"b{i}", "30", "load", "--", "true"], env=env)
+                subprocess.Popen([sys.executable, str(QUIET), "light", f"b{i}", "30", "load", "--", "true"], env=env)
                 for i in range(8)
             ]
             codes = [p.wait(timeout=120) for p in runs]  # the burners stop at 60 s; other sessions may not
@@ -104,7 +130,7 @@ class Quiet(unittest.TestCase):
         time.sleep(1)
         b = self.quiet("exclusive", "B", "10", "the benchmark", "--", "true")
         time.sleep(1.5)
-        listed = subprocess.run(["bash", str(QUIET), "list"], env=self.env, text=True, capture_output=True).stdout
+        listed = self.listed()
         for p in (a, b):
             p.communicate(timeout=60)
         self.assertIn("B.pending [waiting, strict]: the benchmark", listed)
@@ -120,6 +146,121 @@ class Quiet(unittest.TestCase):
         for p in (a, light, b):
             p.communicate(timeout=60)
         self.assertEqual(self.events(), ["A-start", "A-end", "L-start", "L-end", "B-start", "B-end"])
+
+    def test_a_stopped_run_stops_its_command_and_frees_the_hold(self) -> None:
+        p = self.quiet(
+            "exclusive", "t", "10", "stopped", "--", "bash", "-c", f"echo $$ > {self.log}; sleep 30 && echo late"
+        )
+        self.until(lambda: self.log.exists() and self.log.read_text().strip())
+        group = int(self.log.read_text())
+        p.send_signal(signal.SIGTERM)
+        out, _ = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 128 + signal.SIGTERM)
+        self.assertNotIn("late", out)
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(group, 0)
+        self.assertEqual(self.listed(), "")
+
+    def test_a_pausing_strict_hold_stops_light_work_and_resumes_it(self) -> None:
+        ticks = self.dir / "ticks"
+        ticker = f"import time\nwhile True:\n    open({str(ticks)!r}, 'a').write('.')\n    time.sleep(0.05)"
+        light = self.quiet("light", "L", "10", "ticker", "--", sys.executable, "-c", ticker)
+        self.until(ticks.exists)
+        sizes = f"import os, time\na = os.path.getsize({str(ticks)!r})\ntime.sleep(1.5)\nprint(a, os.path.getsize({str(ticks)!r}))"
+        # all the CPUs as the strict set: no partition, so on Linux too strict pauses instead
+        strict = self.quiet(
+            "strict",
+            "S",
+            "10",
+            "measure",
+            "--",
+            sys.executable,
+            "-c",
+            sizes,
+            QUIET_PAUSE="1",
+            QUIET_STRICT_CPUS=f"0-{NCPU - 1}",
+        )
+        out, err = strict.communicate(timeout=60)
+        after = ticks.stat().st_size
+        time.sleep(0.5)
+        resumed = ticks.stat().st_size
+        light.terminate()
+        light.communicate(timeout=30)
+        self.assertEqual(strict.returncode, 0, err)
+        before, during = map(int, out.split())
+        self.assertEqual(before, during)
+        self.assertGreater(resumed, after)
+
+    @unittest.skipUnless(LINUX and NCPU >= 2, "cores are partitioned on Linux")
+    def test_strict_and_light_holds_split_the_cores(self) -> None:
+        upper = f"{NCPU // 2}-{NCPU - 1}"
+        show = (
+            "import os, sys, time\nprint(sorted(os.sched_getaffinity(0)), flush=True)\ntime.sleep(float(sys.argv[1]))"
+        )
+        strict = self.quiet(
+            "strict", "S", "10", "measure", "--", sys.executable, "-c", show, "3", QUIET_STRICT_CPUS=upper
+        )
+        self.until(lambda: "[strict cpus" in self.listed())
+        light = self.quiet("light", "L", "1", "build", "--", sys.executable, "-c", show, "0", QUIET_STRICT_CPUS=upper)
+        light_out, _ = light.communicate(timeout=30)
+        strict_out, _ = strict.communicate(timeout=30)
+        self.assertEqual(json.loads(strict_out), list(range(NCPU // 2, NCPU)))
+        self.assertEqual(json.loads(light_out), list(range(NCPU // 2)))
+
+    @unittest.skipUnless(LINUX and NCPU >= 4, "VM threads are pinned on Linux")
+    def test_strict_moves_vm_threads_and_restores_them(self) -> None:
+        mine = [p for p in Path("/proc").iterdir() if p.name.isdigit() and p.stat().st_uid == os.getuid()]
+        if any(b"qemu-system" in (p / "cmdline").read_bytes() for p in mine if (p / "cmdline").exists()):
+            self.skipTest("a real qemu VM of this user would be moved")
+        vm = (
+            "import ctypes, threading, time\n"
+            "def vcpu(i):\n"
+            "    ctypes.CDLL(None).prctl(15, f'CPU {i}/KVM'.encode())\n"
+            "    time.sleep(60)\n"
+            "for i in range(3):\n"
+            "    threading.Thread(target=vcpu, args=(i,), daemon=True).start()\n"
+            "time.sleep(60)"
+        )
+        fakes = [
+            subprocess.Popen([sys.executable, "-c", vm, "qemu-system-x86_64", "-name", f"fakevm-{n}"])
+            for n in ("measured", "other")
+        ]
+        try:
+            for f in fakes:
+                self.until(lambda f=f: vcpus(f.pid) == 3)
+            show = (
+                "import json, os, sys\n"
+                "print(json.dumps({p: sorted({tuple(sorted(os.sched_getaffinity(int(t)))) for t in os.listdir(f'/proc/{p}/task')}) for p in sys.argv[1:]}))"
+            )
+            pids = [str(f.pid) for f in fakes]
+            strict_cpus = f"{NCPU - 2}-{NCPU - 1}"
+            p = self.quiet(
+                "strict",
+                "S",
+                "1",
+                "vm",
+                "--",
+                sys.executable,
+                "-c",
+                show,
+                *pids,
+                QUIET_STRICT_CPUS=strict_cpus,
+                QUIET_VM="fakevm-measured",
+            )
+            out, err = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, err)
+            during = json.loads(out)
+            self.assertEqual(during[pids[0]], [[NCPU - 2, NCPU - 1]])
+            self.assertEqual(during[pids[1]], [list(range(NCPU - 2))])
+            self.assertIn("has 3 vCPUs on 2 strict CPUs", err)
+            original = affinity(0)
+            for f in fakes:
+                for t in Path(f"/proc/{f.pid}/task").iterdir():
+                    self.assertEqual(affinity(int(t.name)), original)
+        finally:
+            for f in fakes:
+                f.kill()
+                f.wait()
 
 
 if __name__ == "__main__":

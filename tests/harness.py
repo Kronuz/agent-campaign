@@ -17,7 +17,7 @@ from typing import Any
 
 SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
-QUIET = SKILL / "scripts" / "quiet.sh"
+QUIET = SKILL / "scripts" / "quiet.py"
 
 
 def session_members(sids: set[int]) -> list[int]:
