@@ -269,6 +269,20 @@ class Reviews(CampaignCase):
         self.verified("feat")
         self.fails(self.home, "land", "feat", match="changed since")
 
+    def test_main_moving_elsewhere_asks_for_a_rebase_not_a_new_review(self) -> None:
+        self.normal()
+        self.review("feat", "correctness", "APPROVE")
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.commit(self.home, {"notes.md": "a handoff note on main\n"})
+        status = self.ok(self.home, "status", "feat").out
+        self.assertIn("rebase onto main", status)
+        self.assertNotIn("changed since", status)  # the reviewed code did not change
+        self.started("other", files="lib.py", risk="normal")
+        self.assertIn("not reviewed yet; launch a correctness paladin", self.ok(self.home, "status", "other").out)
+        self.review("other", "correctness", "CHANGES")
+        status = self.ok(self.home, "status", "other").out
+        self.assertIn("correctness review not accepted: verdict CHANGES; fix what blocks", status)
+
     def test_a_changed_brief_voids_acceptance(self) -> None:
         self.normal()
         self.review("feat", "correctness", "APPROVE")

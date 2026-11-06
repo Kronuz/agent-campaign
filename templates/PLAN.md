@@ -33,6 +33,9 @@ note per landed mechanism (`docs/mechanisms/`, from the skill's `templates/mecha
 game master updates the book outline at each milestone: chapters by component, each mapped to its
 notes, designs and commits, and the mechanisms still missing a note.
 
+Handoffs, lead prompts and other notes about running the campaign go to `.campaign/<name>/`: a
+file anywhere else is code to `land`, so every quest in flight would have to rebase over it.
+
 | Repository | Its `docs/` holds |
 |---|---|
 | <home> | <this workspace: machines, setup, runbooks> |

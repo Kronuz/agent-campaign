@@ -40,6 +40,7 @@ EXCLUDE_META = (f":(exclude){META}", f":(exclude){LEGACY_META}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 GAME_MASTER_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
+FLIGHT = ("active", "review", "blocked")  # in flight: started, neither landed nor dropped
 RISKS = ("low", "normal", "high", "critical")
 LENSES = ("correctness", "security", "durability", "design", "system")
 CLASSES = ("sage", "wizard", "artificer", "scout", "bard", "squire")
@@ -522,6 +523,12 @@ def notify(title: str, body: str) -> None:
         report.notify(title, body)
 
 
+def in_flight(counts: dict[str, int]) -> str:
+    """ "2 in flight (1 active, 1 blocked)": the quests started and not landed, by stage."""
+    stages = [f"{counts[s]} {'in review' if s == 'review' else s}" for s in FLIGHT if counts[s]]
+    return f"{sum(counts[s] for s in FLIGHT)} in flight" + (f" ({', '.join(stages)})" if stages else "")
+
+
 def overview(c: Campaign) -> Json:
     """Counts by status, the quests ready to start, and the first milestone not yet landed."""
     live = {k: p for k, p in c.quests.items() if p["status"] != "dropped"}
@@ -558,11 +565,9 @@ def sidebar(c: Campaign) -> None:
     name = c.state["campaign"]
     want: dict[str, str] = {}
     project = f"status:campaign-{c.name}"
-    want[project] = (
-        f"{name}: {counts['landed']} landed · {counts['active'] + counts['review']} in flight · {counts['blocked']} blocked · {counts['planned']} planned"
-    )
+    want[project] = f"{name}: {counts['landed']} landed · {in_flight(counts)} · {counts['planned']} planned"
     for pid, p in c.quests.items():
-        if p["status"] in ("active", "review", "blocked"):
+        if p["status"] in FLIGHT:
             want[f"status:campaign-{c.name}-{pid}"] = f"{pid}: {p['status']}" + (
                 f" ({p.get('reason', '')})" if p["status"] == "blocked" else ""
             )
@@ -747,7 +752,7 @@ def cmd_init(a: argparse.Namespace) -> int:
 
 def migration_blockers(c: Campaign) -> tuple[list[str], list[str]]:
     """(quests in flight, jobs queued or running): what keeps an older campaign from moving."""
-    busy = sorted(pid for pid, p in c.quests.items() if p["status"] in ("active", "review", "blocked"))
+    busy = sorted(pid for pid, p in c.quests.items() if p["status"] in FLIGHT)
     pending = sorted(
         j["id"] for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
     )
@@ -1021,8 +1026,10 @@ def cmd_accept(a: argparse.Namespace) -> int:
 
 
 def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> list[str]:
-    """Quest paths whose content at target differs from what was accepted."""
-    now_paths = [x for x in changed(repo, main_head, target) if not is_meta(x)]
+    """Quest paths whose content at target differs from what was accepted. Only the quest's own
+    changes count, the paths accept records; what main changed is the rebase's business."""
+    base = git(repo, "merge-base", main_head, target)
+    now_paths = [x for x in changed(repo, base, target) if not is_meta(x)]
     at_target = blobs(repo, target, now_paths)
     out = [x for x in now_paths if accepted.get(x) != at_target[x]]
     rest = [x for x in accepted if x not in at_target]
@@ -1083,6 +1090,19 @@ def verdict(c: Campaign, pid: str, lens: str) -> str:
     return m.group(1) if m else "no verdict"
 
 
+def review_step(said: str, pid: str, lens: str) -> str:
+    """What a review's verdict asks for next."""
+    if said == "APPROVE":
+        return f"approved; `campaign accept {pid} {lens}`"
+    if said == "CHANGES":
+        return f"verdict CHANGES; fix what blocks, rerun its probes as jobs, then `campaign accept {pid} {lens} --jobs IDS`"
+    if said == "REJECT":
+        return "verdict REJECT; re-plan the quest"
+    if said == "none yet":
+        return f"not reviewed yet; launch a {lens} paladin"
+    return f"its review has {said}; the paladin writes `Verdict: APPROVE|CHANGES|REJECT`"
+
+
 def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -> list[str]:
     """What keeps a quest from landing TARGET, each with what to do about it; empty when it can
     land. `land` refuses with these and `status` lists them."""
@@ -1115,9 +1135,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     for lens in p["lenses"] if final else []:
         acc = p.get("accepted", {}).get(lens)
         if not acc:
-            gaps.append(
-                f"{lens} review not accepted (verdict: {verdict(c, pid, lens)}; `campaign accept {pid} {lens}`)"
-            )
+            gaps.append(f"{lens} review not accepted: {review_step(verdict(c, pid, lens), pid, lens)}")
         elif acc.get("brief") != brief_hash(c, pid):
             gaps.append(f"the brief changed after {lens} was accepted: re-accept against the current criteria")
         elif lens != "design":  # design approves the approach before the code exists
@@ -1468,7 +1486,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident]
     # failures count only at the code the quest has now; older ones are history (`campaign job list`)
     heads = set()
-    if p["status"] in ("active", "review", "blocked"):
+    if p["status"] in FLIGHT:
         heads = {code_tree(repo, rev(repo, b)) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)}
 
     def at_head(j: Json) -> bool:
@@ -1490,7 +1508,8 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         view["missing"] = landing_gaps(c, pid, head, final=True, ci=False)
         checks: dict[str, str] = {}
         view["checks"] = checks
-        for check in p["checks"]:
+        view["later"] = [x["name"] for x in deferred(p)]
+        for check in gates(p):
             job = job_for_check(repo, head, check)
             checks[check["name"]] = job["state"].get("state", "?") if job else "not run at head"
             if job:
@@ -1540,7 +1559,7 @@ def machine_status() -> int:
     for name, o in campaigns().items():
         quests = o["state"].get("quests", {})
         counts = {s: sum(1 for q in quests.values() if q.get("status") == s) for s in STATUSES}
-        flying = [q for q, x in quests.items() if x.get("status") in ("active", "review", "blocked")]
+        flying = [q for q, x in quests.items() if x.get("status") in FLIGHT]
         print(
             f"{name}  {o['home']}: "
             + (", ".join(f"{n} {s}" for s, n in counts.items() if n) or "no quests")
@@ -1559,10 +1578,22 @@ def print_quest(v: Json, full: bool) -> None:
                 print(f"    - {gap}")
         else:
             print(f"  ready to land: `campaign land {v['id']}`")
-        print("  journals:")
+        checks = [f"{k} {s}" for k, s in v["checks"].items()]
+        if v["later"]:
+            checks.append("after landing: " + ", ".join(v["later"]))
+        if checks:
+            print("  checks: " + "; ".join(checks))
+        tasks = {}
         for name, w in v["journal"].items():
-            dirty = "worktree missing" if w["dirty"] < 0 else f"{w['dirty']} uncommitted" if w["dirty"] else "clean"
-            print(f"    {name}: {w['state']} [{dirty}]")
+            dirty = " [worktree missing]" if w["dirty"] < 0 else f" [{w['dirty']} uncommitted]" if w["dirty"] else ""
+            if name == v["id"]:
+                print(f"  journal: {w['state']}{dirty}")
+            else:  # a task's id is QUEST--TASK
+                tasks[name.split("--", 1)[1]] = f"{w['state']}{dirty}"
+        if tasks:
+            print("  tasks:")
+            for task, state in tasks.items():
+                print(f"    {task}: {state}")
     elif v["ready"]:
         print(f"  ready to start: `campaign start {v['id']}`")
     else:
@@ -1616,7 +1647,7 @@ def cmd_status(a: argparse.Namespace) -> int:
     n = o["counts"]
     print(f"campaign {c.state['campaign']} ({c.home})")
     print(
-        f"  quests: {n['landed']} landed, {n['active'] + n['review']} in flight, {n['blocked']} blocked, {n['planned']} planned"
+        f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned"
         + (f"; ready to start: {', '.join(o['ready'])}" if o["ready"] else "")
     )
     m = o["milestone"]
@@ -2799,7 +2830,7 @@ def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
     """(name, branch) -> head, for every branch of the quests in flight."""
     heads: dict[tuple[str, str], str] = {}
     for pid, p in c.quests.items():
-        if p["status"] in ("active", "review", "blocked"):
+        if p["status"] in FLIGHT:
             repo = c.repo(p)
             for name, branch, _, _ in branches(c, pid):
                 if has_ref(repo, branch):
