@@ -94,7 +94,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
 | `campaign accept ID LENS` | records a paladin's verdict for the quest's current content |
 | `campaign land ID` | lands the quest when every check and review holds for the exact code |
-| `campaign status`, `check` | the quest log, and the contradictions between state, git and jobs |
+| `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and class |
 

@@ -172,10 +172,10 @@ class Evidence(CampaignCase):
         failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         out = self.ok(self.home, "status").out
-        self.assertIn("jobs: 1 failed at head", out)
+        self.assertIn("jobs that ended badly at this code (not its checks", out)
         self.assertIn(f"    {failed}  failed (exit 1)  exit 1", out)  # which job, and how it ended
         self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
-        self.assertIn("jobs: 1 failed at head", self.ok(self.home, "status").out)
+        self.assertIn(f"    {failed}  failed (exit 1)", self.ok(self.home, "status").out)
         self.commit(wt, {"app.py": "print(3)\n"})
         self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
 
@@ -358,7 +358,7 @@ class DirectPath(CampaignCase):
         self.assertIn("fix forward or revert", r.out)
         status = self.ok(self.home, "status").out
         self.assertIn("deferred checks: 1 done, 1 failed", status)
-        self.assertNotIn("\n  jobs:", status)  # a landed quest's failures are history
+        self.assertNotIn("ended badly", status)  # a landed quest's failures are history
         # the fix lands like any quest; rerunning the deferred checks on main clears the error
         self.ok(self.home, "set", "fast", "--later", "soak=true", "--later", "other-platform=echo other")
         self.ok(self.home, "verify", "fast", "--deferred")

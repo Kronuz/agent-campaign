@@ -520,13 +520,10 @@ def notify(title: str, body: str) -> None:
         report.notify(title, body)
 
 
-def sidebar(c: Campaign) -> None:
-    """A bar for the current milestone, a pill for the project and one per quest in flight.
-    Only changes are sent; the last view per workspace is cached in the git directory."""
-    workspace = os.environ.get("CMUX_WORKSPACE_ID", "")
-    if not workspace:
-        return
+def overview(c: Campaign) -> Json:
+    """Counts by status, the quests ready to start, and the first milestone not yet landed."""
     live = {k: p for k, p in c.quests.items() if p["status"] != "dropped"}
+    counts = {s: sum(1 for p in live.values() if p["status"] == s) for s in STATUSES}
     order: list[str] = []
     for p in live.values():
         if p.get("milestone", "") not in order:
@@ -534,12 +531,30 @@ def sidebar(c: Campaign) -> None:
     current = next(
         (m for m in order if any(p.get("milestone", "") == m and p["status"] != "landed" for p in live.values())), None
     )
+    ready = [k for k, p in live.items() if p["status"] == "planned" and all(c.landed(d) for d in p["needs"])]
+    view: Json = {"counts": counts, "ready": ready, "milestone": None}
+    if current is not None:
+        members = [k for k, p in live.items() if p.get("milestone", "") == current]
+        done = sum(1 for k in members if live[k]["status"] == "landed")
+        view["milestone"] = {
+            "name": current,
+            "landed": done,
+            "quests": len(members),
+            "ready": [k for k in ready if k in members],
+        }
+    return view
+
+
+def sidebar(c: Campaign) -> None:
+    """A bar for the current milestone, a pill for the project and one per quest in flight.
+    Only changes are sent; the last view per workspace is cached in the git directory."""
+    workspace = os.environ.get("CMUX_WORKSPACE_ID", "")
+    if not workspace:
+        return
+    o = overview(c)
+    counts, m = o["counts"], o["milestone"]
     name = c.state["campaign"]
     want: dict[str, str] = {}
-    counts = {
-        s: sum(1 for p in live.values() if p["status"] == s)
-        for s in ("landed", "active", "review", "blocked", "planned")
-    }
     project = f"status:campaign-{c.name}"
     want[project] = (
         f"{name}: {counts['landed']} landed · {counts['active'] + counts['review']} in flight · {counts['blocked']} blocked · {counts['planned']} planned"
@@ -549,14 +564,11 @@ def sidebar(c: Campaign) -> None:
             want[f"status:campaign-{c.name}-{pid}"] = f"{pid}: {p['status']}" + (
                 f" ({p.get('reason', '')})" if p["status"] == "blocked" else ""
             )
-    if current is not None:
-        members = [k for k, p in live.items() if p.get("milestone", "") == current]
-        done = sum(1 for k in members if live[k]["status"] == "landed")
-        ready = [k for k in members if live[k]["status"] == "planned" and all(c.landed(d) for d in live[k]["needs"])]
-        label = f"{name}{' ' + current if current else ''}: {done} of {len(members)} quests landed" + (
-            f" · ready: {', '.join(ready[:3])}" if ready else ""
+    if m is not None:
+        label = f"{name}{' ' + m['name'] if m['name'] else ''}: {m['landed']} of {m['quests']} quests landed" + (
+            f" · ready: {', '.join(m['ready'][:3])}" if m["ready"] else ""
         )
-        want["bar"] = f"{done}/{len(members)}\t{label}"
+        want["bar"] = f"{m['landed']}/{m['quests']}\t{label}"
     cache = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-sidebar.json"
     view = f"{workspace} {c.ident}"
     seen: dict[str, str] = {}
@@ -1056,6 +1068,72 @@ def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[J
     return missing, evidence
 
 
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def verdict(c: Campaign, pid: str, lens: str) -> str:
+    """A paladin's verdict on the quest; "none yet" without a review file."""
+    review = c.home / c.meta / "reviews" / f"{pid}-{lens}.md"
+    if not review.exists():
+        return "none yet"
+    m = re.search(r"^Verdict:\s*\**\s*(\w+)", review.read_text(), re.M)
+    return m.group(1) if m else "no verdict"
+
+
+def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -> list[str]:
+    """What keeps a quest from landing TARGET, each with what to do about it; empty when it can
+    land. `land` refuses with these and `status` lists them."""
+    p = c.quests[pid]
+    repo = c.repo(p)
+    main = main_branch(repo)
+    gaps: list[str] = []
+    unmet = [d for d in p["needs"] + (p["after"] if final else []) if not c.landed(d)]
+    if unmet:
+        gaps.append(f"land {', '.join(unmet)} first")
+    main_head = rev(repo, main)
+    base = git(repo, "merge-base", main_head, target)
+    moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
+    if moved:
+        gaps.append(
+            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): rebase onto {main}, run `campaign verify {pid}`, then land"
+        )
+    paths = changed(repo, base, target)
+    owned = [x for x in paths if game_master_file(x)]
+    if owned:
+        gaps.append(f"{p['branch']} edits the game master's files: {', '.join(owned)}")
+    stray = outside(paths, p["files"])
+    if stray:
+        gaps.append(
+            f"{p['branch']} changes files outside its file set ({', '.join(p['files'])}): {', '.join(stray[:8])}"
+        )
+    for missing in check_evidence(c, p, target)[0]:
+        name, _, why = missing.partition(": ")
+        gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
+    for lens in p["lenses"] if final else []:
+        acc = p.get("accepted", {}).get(lens)
+        if not acc:
+            gaps.append(
+                f"{lens} review not accepted (verdict: {verdict(c, pid, lens)}; `campaign accept {pid} {lens}`)"
+            )
+        elif acc.get("brief") != brief_hash(c, pid):
+            gaps.append(f"the brief changed after {lens} was accepted: re-accept against the current criteria")
+        elif lens != "design":  # design approves the approach before the code exists
+            moved_since = drift(repo, main_head, target, acc["blobs"])
+            upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
+            if moved_since:
+                gaps.append(f"{lens} was accepted at {acc['commit'][:12]}; changed since: {', '.join(moved_since[:8])}")
+            elif upstream and p["risk"] in ("high", "critical"):
+                gaps.append(
+                    f"{lens}: {main} changed {plural(len(upstream), 'code file')} under this {p['risk']}-risk quest since its review (`git diff {acc.get('base', base)[:12]} {base[:12]}`); read them, then re-accept"
+                )
+    if ci and c.state.get("ci") == "github":
+        state = ci_state(repo, target, c.state.get("ci_later", []))
+        if state != "success":
+            gaps.append(f"CI at {target[:12]}: {state} (--no-ci to land without it)")
+    return gaps
+
+
 @contextlib.contextmanager
 def repo_lock(c: Campaign, repo: Path) -> Generator[None, None, None]:
     """The lock of a repository other than the home: one campaign writes to it at a time."""
@@ -1109,10 +1187,6 @@ def cmd_land(a: argparse.Namespace) -> int:
         final = a.upto is None
         if not final and not a.reason:
             die("an increment needs --reason (why this prefix is safe to land alone)")
-        deps = p["needs"] + (p["after"] if final else [])
-        unmet = [d for d in deps if not c.landed(d)]
-        if unmet:
-            die(f"land {', '.join(unmet)} first")
         head = rev(repo, p["branch"])
         target = rev(repo, a.upto) if a.upto else head
         if not ancestor(repo, target, head):
@@ -1121,44 +1195,12 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{checkout} is not on {main}")
         if git(checkout, "status", "--porcelain", "--untracked-files=no"):
             die(f"{checkout} has uncommitted changes")
+        gaps = landing_gaps(c, a.id, target, final=final, ci=not a.no_ci)
+        if gaps:
+            die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
+        evidence = check_evidence(c, p, target)[1]
         main_head = rev(repo, main)
         base = git(repo, "merge-base", main_head, target)
-        moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
-        if moved:
-            die(
-                f"{main} changed {len(moved)} files since {p['branch']} branched (e.g. {moved[0]}): rebase onto {main}, run `campaign verify {a.id}`, then land"
-            )
-        paths = changed(repo, base, target)
-        owned = [x for x in paths if game_master_file(x)]
-        if owned:
-            die(f"{p['branch']} edits the game master's files: {', '.join(owned)}")
-        stray = outside(paths, p["files"])
-        if stray:
-            die(f"{p['branch']} changes files outside its file set ({', '.join(p['files'])}): {', '.join(stray[:8])}")
-        missing, evidence = check_evidence(c, p, target)
-        if missing:
-            die(f"checks are not green at {target[:12]}: {'; '.join(missing)} (`campaign verify {a.id}`)")
-        if final:
-            for lens in p["lenses"]:
-                acc = p.get("accepted", {}).get(lens)
-                if not acc:
-                    die(f"{lens} review not accepted (`campaign accept {a.id} {lens}`)")
-                if acc.get("brief") != brief_hash(c, a.id):
-                    die(f"the brief changed after {lens} was accepted: re-accept against the current criteria")
-                if lens == "design":  # approves the approach before the code exists; other lenses cover the code
-                    continue
-                moved_since = drift(repo, main_head, target, acc["blobs"])
-                if moved_since:
-                    die(f"{lens} was accepted at {acc['commit'][:12]}; changed since: {', '.join(moved_since[:8])}")
-                upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
-                if upstream and p["risk"] in ("high", "critical"):
-                    die(
-                        f"{lens}: {main} changed {len(upstream)} code files under this {p['risk']}-risk quest since its review (`git diff {acc.get('base', base)[:12]} {base[:12]}`); read them, then re-accept"
-                    )
-        if c.state.get("ci") == "github" and not a.no_ci:
-            ci = ci_state(repo, target, c.state.get("ci_later", []))
-            if ci != "success":
-                die(f"CI at {target[:12]}: {ci} (--no-ci to land without it)")
         message = f"campaign: land {a.id}" + ("" if final else f" increment ({a.reason})")
         mode = "ff" if base == main_head else "merge"
         c.state["landing"] = {
@@ -1410,9 +1452,16 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
 
 
 def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
+    """A quest as status shows it: what it still needs ("missing"), its branch, checks, reviews and
+    journals, and the jobs that ended badly at its current code without being its checks."""
     p = c.quests[pid]
-    view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"]}
-    view["ready"] = p["status"] == "planned" and all(c.landed(d) for d in p["needs"])
+    view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"], "missing": []}
+    unmet = [d for d in p["needs"] if not c.landed(d)]
+    view["ready"] = p["status"] == "planned" and not unmet
+    if p["status"] == "planned" and unmet:
+        view["missing"] = [f"land {', '.join(unmet)} first"]
+    elif p["status"] == "blocked":
+        view["missing"] = [f"blocked: {p.get('reason', '')}"]
     repo = c.repo(p)
     mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident]
     # failures count only at the code the quest has now; older ones are history (`campaign job list`)
@@ -1425,46 +1474,42 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
             return code_tree(Path(j["spec"]["repo"]), j["spec"]["commit"]) in heads
         return False
 
-    view["jobs"] = {
-        s: sum(1 for j in mine if j["state"].get("state") == s and (s in ("queued", "running") or at_head(j)))
-        for s in ("queued", "running", "failed", "timeout", "interrupted")
-    }
-    view["failed"] = [
-        job_summary(j) for j in mine if j["state"].get("state") in ("failed", "timeout", "interrupted") and at_head(j)
-    ]
+    view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
     view["landed"] = [x["commit"][:12] + ("" if x.get("final") else " (increment)") for x in p["landed"]]
     later = [load_job(jobs_dir() / j)["state"].get("state", "missing") for x in p["landed"] for j in x.get("later", [])]
     if later:
         view["deferred"] = {s: later.count(s) for s in sorted(set(later))}
+    checked: set[str] = set()
     if p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
         main = main_branch(repo)
         head = rev(repo, p["branch"])
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
-        behind = git(repo, "rev-list", "--count", f"{head}..{main}", "--", ".", *EXCLUDE_META)
-        view.update(branch=p["branch"], head=head[:12], ahead=int(ahead), behind=int(behind))
+        view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
+        view["missing"] = landing_gaps(c, pid, head, final=True, ci=False)
         checks: dict[str, str] = {}
         view["checks"] = checks
         for check in p["checks"]:
             job = job_for_check(repo, head, check)
             checks[check["name"]] = job["state"].get("state", "?") if job else "not run at head"
-        reviews: dict[str, str] = {}
-        view["reviews"] = reviews
-        for lens in p["lenses"]:
-            acc = p.get("accepted", {}).get(lens)
-            review = c.home / c.meta / "reviews" / f"{pid}-{lens}.md"
-            if acc:
-                reviews[lens] = f"accepted at {acc['commit'][:12]}" + (" (waived)" if acc["by"] == "waived" else "")
-            elif review.exists():
-                m = re.search(r"^Verdict:\s*\**\s*(\w+)", review.read_text(), re.M)
-                reviews[lens] = f"reviewed: {m.group(1) if m else 'no verdict'}"
-            else:
-                reviews[lens] = "not reviewed"
+            if job:
+                checked.add(job["id"])
+        view["reviews"] = {lens: verdict(c, pid, lens) for lens in p["lenses"]}
+        for lens, acc in p.get("accepted", {}).items():
+            if lens in view["reviews"]:
+                view["reviews"][lens] = f"accepted at {acc['commit'][:12]}" + (
+                    " (waived)" if acc["by"] == "waived" else ""
+                )
         work: dict[str, Json] = {}
         view["journal"] = work
         for name, branch, rel, _ in branches(c, pid):
             wt = (c.home / rel).resolve() if rel else None
             dirty = len(git(wt, "status", "--porcelain").splitlines()) if wt and wt.exists() else -1
             work[name] = {"state": journal_state(c, name, branch, rel), "dirty": dirty, "worktree": rel}
+    view["other_jobs"] = [
+        job_summary(j)
+        for j in mine
+        if j["state"].get("state") in ("failed", "timeout", "interrupted") and j["id"] not in checked and at_head(j)
+    ]
     return view
 
 
@@ -1502,6 +1547,39 @@ def machine_status() -> int:
     return 0
 
 
+def print_quest(v: Json, full: bool) -> None:
+    print(f"\n{v['id']}  {v['status']}  {v['risk']}  {v['title']}")
+    if "branch" in v:
+        print(f"  branch {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead of main")
+        if v["missing"]:
+            print("  to land:")
+            for gap in v["missing"]:
+                print(f"    - {gap}")
+        else:
+            print(f"  ready to land: `campaign land {v['id']}`")
+        print("  journals:")
+        for name, w in v["journal"].items():
+            dirty = "worktree missing" if w["dirty"] < 0 else f"{w['dirty']} uncommitted" if w["dirty"] else "clean"
+            print(f"    {name}: {w['state']} [{dirty}]")
+    elif v["ready"]:
+        print(f"  ready to start: `campaign start {v['id']}`")
+    else:
+        for gap in v["missing"]:
+            print(f"  {gap}")
+    if v["other_jobs"]:
+        print("  jobs that ended badly at this code (not its checks; they don't gate landing):")
+        for f in v["other_jobs"]:
+            code = "" if f["exit"] is None else f" (exit {f['exit']})"
+            print(f"    {f['job']}  {f['state']}{code}  {f['what']}  (`campaign job log {f['job']}`)")
+    busy = {k: n for k, n in v["jobs"].items() if n}
+    if busy:
+        print("  jobs: " + ", ".join(f"{n} {k}" for k, n in busy.items()))
+    if full and v["landed"]:
+        print("  landed: " + ", ".join(v["landed"]))
+    if v.get("deferred"):
+        print("  deferred checks: " + ", ".join(f"{n} {s}" for s, n in v["deferred"].items()))
+
+
 def cmd_status(a: argparse.Namespace) -> int:
     if a.all:
         return machine_status()
@@ -1516,12 +1594,14 @@ def cmd_status(a: argparse.Namespace) -> int:
     found = problems(c)
     reviews: list[Json] = review_rows(c) if a.reviews else []
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
+    o = overview(c)
     if a.json:
         print(
             json.dumps(
                 {
                     "campaign": c.state["campaign"],
                     "home": str(c.home),
+                    "overview": o,
                     "quests": views,
                     "problems": found,
                     "jobs": queue,
@@ -1531,44 +1611,38 @@ def cmd_status(a: argparse.Namespace) -> int:
             )
         )
         return 0
+    n = o["counts"]
+    print(f"campaign {c.state['campaign']} ({c.home})")
     print(
-        f"campaign {c.state['campaign']} ({c.home}); jobs: {queue['queued']} queued, {queue['running']} running, worker {'up' if worker_alive() else 'down'}"
+        f"  quests: {n['landed']} landed, {n['active'] + n['review']} in flight, {n['blocked']} blocked, {n['planned']} planned"
+        + (f"; ready to start: {', '.join(o['ready'])}" if o["ready"] else "")
     )
-    ready = [v["id"] for v in views if v["ready"]]
-    if ready and not a.id:
-        print(f"ready to start: {', '.join(ready)}")
-    for v in views:
-        print(f"\n{v['id']}  {v['status']}  {v['risk']}  {v['title']}")
-        if "branch" in v:
-            print(
-                f"  branch {v['branch']} at {v['head']} ({v['ahead']} ahead; main has {v['behind']} code commit{'' if v['behind'] == 1 else 's'} it lacks)"
-            )
-            for name, w in v["journal"].items():
-                dirty = "worktree missing" if w["dirty"] < 0 else f"{w['dirty']} uncommitted" if w["dirty"] else "clean"
-                print(f"  {name}: {w['state']} [{dirty}]")
-            if v["checks"]:
-                print("  checks: " + ", ".join(f"{k} {s}" for k, s in v["checks"].items()))
-            if v["reviews"]:
-                print("  reviews: " + ", ".join(f"{k} {s}" for k, s in v["reviews"].items()))
-        busy = {k: n for k, n in v["jobs"].items() if n}
-        if busy:
-            print(
-                "  jobs: "
-                + ", ".join(f"{n} {k}" + ("" if k in ("queued", "running") else " at head") for k, n in busy.items())
-            )
-        for f in v["failed"]:
-            code = "" if f["exit"] is None else f" (exit {f['exit']})"
-            print(f"    {f['job']}  {f['state']}{code}  {f['what']}")
-        if v["failed"]:
-            print("    at the code the quest has now; only its checks gate landing (`campaign job log ID`)")
-        if v["landed"]:
-            print("  landed: " + ", ".join(v["landed"]))
-        if v.get("deferred"):
-            print("  deferred checks: " + ", ".join(f"{n} {s}" for s, n in v["deferred"].items()))
+    m = o["milestone"]
+    if m and m["name"]:
+        print(f"  milestone {m['name']}: {m['landed']} of {plural(m['quests'], 'quest')} landed")
+    print(f"  jobs: {queue['queued']} queued, {queue['running']} running; worker {'up' if worker_alive() else 'down'}")
+    if a.id:
+        print_quest(views[0], full=True)
+    else:
+        for status in ("active", "review", "blocked", "planned"):
+            for v in views:
+                if v["status"] == status:
+                    print_quest(v, full=False)
+        landed = [v for v in views if v["status"] == "landed"]
+        if landed:
+            print("\nlanded: " + ", ".join(v["id"] for v in landed))
+            for v in landed:
+                red = {s: k for s, k in v.get("deferred", {}).items() if s != "done"}
+                if red:
+                    print(f"  {v['id']}: deferred checks: " + ", ".join(f"{k} {s}" for s, k in v["deferred"].items()))
+    if reviews:
+        print()
     for r in reviews:
         print(
             f"review {r['file']}: {r['verdict']}, {r['findings']} findings, {r['blocking']} blocking ({r['blocking_defects']} defects)"
         )
+    if found:
+        print()
     for severity, message in found:
         print(f"{severity}: {message}")
     return 0
