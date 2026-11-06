@@ -96,7 +96,9 @@ launch costs more. Harness specifics (launching, background runs, resuming, wait
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work.
-- **Scope changes:** `campaign set ID ...`; superseded work is `status=dropped reason=...`.
+- **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
+  can land alone), then to the adventurer; superseded work is `campaign set ID status=dropped
+  reason=...`.
 
 ## Direct path first
 
@@ -132,11 +134,9 @@ platform. Slow CI workflows can be made non-gating the same way
 
 ## Scouting parties
 
-When there is a list worth hunting, send a party of cheap scouts at once, one target each: the
-losing rows of a fresh benchmark, a profile's hotspots, recently landed or never-checked code where
-the proof is thinnest (count-only tests, untested error paths, boundaries), or a backlog of small
-bugs. In 1.x this found most wins and old bugs: 33 explorer runs at a median of 93k tokens, 20 of
-them landed.
+For a list worth hunting, send a party of cheap scouts at once, one target each: the losing rows
+of a fresh benchmark, a profile's hotspots, recently landed or never-checked code where the proof
+is thinnest (count-only tests, untested error paths, boundaries), or a backlog of small bugs.
 
 1. Targets come from a fresh measurement or probe on current `main`, never from an old document.
 2. One quest per target, areas disjoint (`campaign new hunt-<area> --risk low|normal --files
