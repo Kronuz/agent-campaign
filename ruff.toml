@@ -1,0 +1,8 @@
+# Lint and format settings for the campaign tool and its tests.
+line-length = 120
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL"]
+# Long messages stay on one line; subprocess calls check their own return codes; no threads.
+ignore = ["E501", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLW1509", "PLW1510", "SIM105"]
