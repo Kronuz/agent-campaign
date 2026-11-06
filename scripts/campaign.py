@@ -42,6 +42,8 @@ GAME_MASTER_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
 RISKS = ("low", "normal", "high", "critical")
 LENSES = ("correctness", "security", "durability", "design", "system")
+CLASSES = ("sage", "wizard", "artificer", "scout", "bard", "squire")
+ROLES = ("adventurer", "paladin", "scout")
 LEVELS = ("none", "light", "strict", "exclusive")
 DEFAULT_LENSES: dict[str, list[str]] = {
     "low": [],
@@ -1929,6 +1931,36 @@ USAGE_READERS = {
 }  # harness -> reader(since) -> (agent runs, game master sessions)
 
 
+def task_attribution(c: Campaign, task: str) -> Json | None:
+    """Role, quest and class or lens from a launch's task name, `<role>-<quest>[-<class or lens>]`,
+    for harnesses that keep only the name in plaintext (Codex). Without a role, the name counts
+    only when it is exactly one of this campaign's quests or tasks."""
+    rest, role, extra = task.lower(), "", ""
+    for r in ROLES:
+        if rest.startswith(r + "-"):
+            role, rest = r, rest[len(r) + 1 :]
+            for w in (*CLASSES, *LENSES):
+                if rest.endswith("-" + w):
+                    extra, rest = w, rest[: -len(w) - 1]
+                    break
+            break
+    owners = [
+        pid
+        for pid, p in c.quests.items()
+        if rest == pid or rest.startswith(pid + "--") or rest in {t.split("--")[-1] for t in p.get("tasks", {})}
+    ]
+    quest = owners[0] if len(owners) == 1 else "-"
+    if not role and quest == "-":
+        return None
+    paladin = role == "paladin"
+    return {
+        "role": role or "unattributed",
+        "quest": quest,
+        "class": "" if paladin else extra.capitalize(),
+        "lens": extra if paladin else "",
+    }
+
+
 def usage(c: Campaign) -> Json:
     created = git(c.home, "log", "--follow", "--diff-filter=A", "--format=%ct", "--", f"{c.meta}/state.json").split()
     since = float(created[-1]) if created else 0.0
@@ -1944,6 +1976,10 @@ def usage(c: Campaign) -> Json:
         for r in runs
         if r["name"] == c.state["campaign"] or (r["home"] and Path(r["home"]).expanduser().resolve() == home)
     ]
+    for r in runs:
+        r["task"] = str(r.get("path", "")).rsplit("/", 1)[-1]
+        if r["role"] == "unattributed" and r["task"]:
+            r.update(task_attribution(c, r["task"]) or {})
     related = {(r["harness"], r["session"]) for r in runs}
     sessions = [
         s
@@ -1989,7 +2025,9 @@ def cmd_usage(a: argparse.Namespace) -> int:
         for r in runs:
             groups.setdefault(key(r), []).append(r)
         print(f"\n{title:<44} runs  tokens    cost  agent time")
-        for k, rs in sorted(groups.items(), key=lambda x: -sum(r["cost"] for r in x[1])):
+        for k, rs in sorted(
+            groups.items(), key=lambda x: (-sum(r["cost"] for r in x[1]), -sum(r["tokens"] for r in x[1]))
+        ):
             tokens, cost = sum(r["tokens"] for r in rs), sum(r["cost"] for r in rs)
             print(
                 f"{k:<44} {len(rs):>4} {amount(tokens):>7} {amount(cost):>7}  {span(sum(r['seconds'] for r in rs)):>10}"
@@ -2002,10 +2040,23 @@ def cmd_usage(a: argparse.Namespace) -> int:
         f"and waited {span(sum(j['waited'] for j in jobs))}"
     )
     if runs:
-        table("by quest", lambda r: r["quest"])
+        table(
+            "by quest", lambda r: "(unattributed)" if r["quest"] == "-" and r["role"] == "unattributed" else r["quest"]
+        )
         table(
             "by role, class, model and effort",
-            lambda r: " ".join(x for x in (r["role"], r["lens"], r["class"], r["model"], r["effort"]) if x),
+            lambda r: " ".join(
+                x
+                for x in (
+                    r["role"],
+                    r["lens"],
+                    r["class"],
+                    r["task"] if r["role"] == "unattributed" else "",
+                    r["model"],
+                    r["effort"],
+                )
+                if x
+            ),
         )
     if jobs:
         print(f"\n{'jobs by quest':<44} jobs     ran  waited")

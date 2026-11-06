@@ -510,6 +510,26 @@ class Usage(CampaignCase):
         other.write_text(other.read_text().replace('"lead"', '"unrelated"'))
         self.assertEqual(json.loads(self.ok(self.home, "usage", "--json").out)["game_master"], [])
 
+    def test_codex_runs_are_attributed_by_task_name_when_the_prompt_is_encrypted(self) -> None:
+        self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low")
+        for task in ("adventurer-fix-artificer", "paladin-fix-security", "fix", "builder"):
+            log = self.codex_log("agent", task)  # no parent log: the launch prompt is unreadable
+            log.write_text(log.read_text().replace("/root/builder", f"/root/{task}").replace('"builder"', f'"{task}"'))
+        u = json.loads(self.ok(self.home, "usage", "--json").out)
+        got = {r["task"]: (r["role"], r["quest"], r["class"], r["lens"]) for r in u["runs"]}
+        self.assertEqual(
+            got,
+            {
+                "adventurer-fix-artificer": ("adventurer", "fix", "Artificer", ""),
+                "paladin-fix-security": ("paladin", "fix", "", "security"),
+                "fix": ("unattributed", "fix", "", ""),
+                "builder": ("unattributed", "-", "", ""),  # a nickname is not guessed at
+            },
+        )
+        out = self.ok(self.home, "usage").out
+        self.assertIn("(unattributed)", out)
+        self.assertIn("unattributed builder gpt-6-astra high", out)
+
     def test_codex_legacy_cumulative_snapshots_and_old_logs(self) -> None:
         log = self.codex_log("agent", "fallback")
         lines = [line for line in log.read_text().splitlines() if '"token_usage_record"' not in line]
