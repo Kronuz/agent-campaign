@@ -123,6 +123,17 @@ class Evidence(CampaignCase):
         self.assertEqual(record["tested"], self.git(wt, "rev-parse", "HEAD"))
         self.assertEqual(record["evidence"][0]["state"], "done")
 
+    def test_status_counts_failures_only_at_the_code_the_quest_has_now(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
+        self.run_cli(self.home, "wait", failed, "--timeout", "60")
+        self.assertIn("jobs: 1 failed at head", self.ok(self.home, "status").out)
+        self.commit(wt, {"docs/campaign/journal/fix.md": "a journal commit keeps the code\n"})
+        self.assertIn("jobs: 1 failed at head", self.ok(self.home, "status").out)
+        self.commit(wt, {"app.py": "print(3)\n"})
+        self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
+
     def test_campaign_metadata_commits_keep_the_evidence(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})

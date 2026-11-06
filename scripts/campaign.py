@@ -1294,13 +1294,20 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     view["ready"] = p["status"] == "planned" and all(c.landed(d) for d in p["needs"])
     repo = c.repo(p)
     mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == str(c.home)]
-    # a closed quest's failures are history (rejected candidates, probes meant to fail)
-    shown = (
-        ("queued", "running")
-        if p["status"] in ("landed", "dropped")
-        else ("queued", "running", "failed", "timeout", "interrupted")
-    )
-    view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in shown}
+    # failures count only at the code the quest has now; older ones are history (`campaign job list`)
+    heads = set()
+    if p["status"] in ("active", "review", "blocked"):
+        heads = {code_tree(repo, rev(repo, b)) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)}
+
+    def at_head(j: Json) -> bool:
+        with contextlib.suppress(CampaignError, KeyError):
+            return code_tree(Path(j["spec"]["repo"]), j["spec"]["commit"]) in heads
+        return False
+
+    view["jobs"] = {
+        s: sum(1 for j in mine if j["state"].get("state") == s and (s in ("queued", "running") or at_head(j)))
+        for s in ("queued", "running", "failed", "timeout", "interrupted")
+    }
     view["landed"] = [x["commit"][:12] + ("" if x.get("final") else " (increment)") for x in p["landed"]]
     later = [load_job(jobs_dir() / j)["state"].get("state", "missing") for x in p["landed"] for j in x.get("later", [])]
     if later:
@@ -1421,7 +1428,10 @@ def cmd_status(a: argparse.Namespace) -> int:
                 print("  reviews: " + ", ".join(f"{k} {s}" for k, s in v["reviews"].items()))
         busy = {k: n for k, n in v["jobs"].items() if n}
         if busy:
-            print("  jobs: " + ", ".join(f"{n} {k}" for k, n in busy.items()))
+            print(
+                "  jobs: "
+                + ", ".join(f"{n} {k}" + ("" if k in ("queued", "running") else " at head") for k, n in busy.items())
+            )
         if v["landed"]:
             print("  landed: " + ", ".join(v["landed"]))
         if v.get("deferred"):
