@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from style import add_help, show_help
+
 
 def cmux(args: list[str], workspace: str | None = None) -> bool:
     """Runs a cmux command in the workspace (default: $CMUX_WORKSPACE_ID); False outside cmux."""
@@ -98,25 +100,42 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="report", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sub = ap.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("set", help='show a progress bar (e.g. 3/5 "phase 2 gates")')
+    sub = ap.add_subparsers(dest="command", metavar="COMMAND", title="commands", required=True)
+    p = sub.add_parser(
+        "set",
+        help='show a progress bar (e.g. 3/5 "phase 2 gates")',
+        description="Shows a progress bar: the workspace's in cmux, else a terminal bar or a line on stderr.",
+    )
     p.add_argument("value", type=fraction, metavar="N/M|PCT%|FRACTION")
     p.add_argument("label", nargs="?", default="")
-    p = sub.add_parser("clear", help="remove the progress bar")
-    p = sub.add_parser("status", help="set a sidebar pill (cmux only; e.g. icon hammer)")
-    p.add_argument("key")
-    p.add_argument("value")
-    p.add_argument("icon", nargs="?", default="")
-    p = sub.add_parser("unstatus", help="remove a sidebar pill")
-    p.add_argument("key")
-    p = sub.add_parser("notify", help="send a notification")
-    p.add_argument("title")
-    p.add_argument("body", nargs="?", default="")
+    sub.add_parser("clear", help="remove the progress bar", description="Removes the progress bar.")
+    p = sub.add_parser(
+        "status",
+        help="set a sidebar pill (cmux only)",
+        description="Sets the sidebar pill KEY to VALUE, with an optional icon (e.g. hammer, hourglass, map); "
+        "a second call with the same KEY replaces it. Outside cmux it does nothing.",
+    )
+    p.add_argument("key", metavar="KEY")
+    p.add_argument("value", metavar="VALUE")
+    p.add_argument("icon", metavar="ICON", nargs="?", default="")
+    p = sub.add_parser("unstatus", help="remove a sidebar pill", description="Removes the sidebar pill KEY.")
+    p.add_argument("key", metavar="KEY")
+    p = sub.add_parser(
+        "notify",
+        help="send a notification",
+        description="Sends a notification: the workspace's feed in cmux, else the desktop, else stderr.",
+    )
+    p.add_argument("title", metavar="TITLE")
+    p.add_argument("body", metavar="BODY", nargs="?", default="")
+    add_help(sub, "report")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    a = parser().parse_args(argv)
+    ap = parser()
+    a = ap.parse_args(argv)
+    if a.command == "help":
+        return show_help(ap, a.topic)
     if a.command == "set":
         progress(a.value, a.label)
     elif a.command == "clear":

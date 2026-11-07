@@ -2,21 +2,17 @@
 """quiet: share one machine between agents' builds, tests and measurements.
 
 Levels:
-  light      Builds, tests, fuzz. A few run at once (a quarter of the CPUs), at nice 19.
-             While a strict hold runs they use only the cores it leaves free.
-  strict     A measurement on its own cores (the upper half). One at a time; light
-             work keeps running on the other half. Expect some noise from the shared
-             cache and memory bandwidth.
-  exclusive  A measurement with the machine to itself: waits for every hold and for
-             the load to settle, and nothing else starts until it ends. Use it for
-             cache-sensitive A/Bs and numbers you publish.
+  light      Builds, tests, fuzz. A few run at once, at nice 19, on the cores a strict hold
+             leaves free.
+  strict     A measurement on its own cores, one at a time, beside light work. Macs can't
+             split cores, so there it is exclusive.
+  exclusive  A measurement with the machine to itself, for cache-sensitive A/Bs and numbers
+             you publish.
 
-NAME names the hold, MINUTES bounds it (it also ends when CMD exits), WHAT says what it is for.
-The level is recorded in the hold, so every agent's quiet honors it. A strict or exclusive hold
-lasts at most QUIET_MAX_MIN minutes (30), and its command is stopped at the deadline (exit 124):
-a measurement never runs on unheld. A light command keeps running unheld past its deadline unless
-QUIET_KILL=1. Holds are files in ~/.scratch/quiet/; dead or expired ones are removed on sight.
-`quiet COMMAND --help` documents each command.
+`quiet LEVEL NAME MINUTES WHAT -- CMD` waits for a turn at that level, then runs CMD under a hold
+every agent's quiet honors. NAME names the hold (one hold per name), MINUTES bounds it, WHAT says
+what it is for. A hold ends with CMD or at its deadline; dead or expired holds are removed on sight.
+`quiet help COMMAND` documents each command and its settings.
 """
 
 from __future__ import annotations
@@ -37,44 +33,75 @@ from pathlib import Path
 from types import FrameType
 
 import report
-from style import mark, paint
+from style import add_help, mark, paint, show_help
 
-EPILOG = """Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU machines
-can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light holds (SIGSTOP)
-while it runs and resumes them after. Local VMs: on Linux, strict also moves qemu VMs (QUIET_VM
-names the measured one), so a measurement inside a VM can be strict; elsewhere VM threads can't
-be pinned, so use exclusive.
-
-examples:
+EPILOG = """examples:
   quiet light build 30 "cargo test" -- cargo test -j4
   quiet strict smoke 20 "detector smoke" -- ./smoke.sh
   quiet exclusive ab 20 "gate A/B" -- ./bench.sh
 
-environment:
-  QUIET_LEVEL          level for `run` (light, strict, exclusive; default strict)
-  QUIET_STRICT_CPUS    the strict core set (default: upper half of the physical cores,
-                       SMT siblings together, e.g. 4-7)
-  QUIET_PAUSE          1: on a host that can't split cores, strict pauses the light holds
-                       instead of waiting for them (not exclusive, not VMs; light holds
-                       started from a terminal are not pausable and are waited for)
-  QUIET_VM             strict on Linux: the local VM being measured (pids or a pgrep -f
-                       pattern); its threads join the strict set, other qemu VMs of this
-                       user move to the light set, and both are restored after
+environment (every hold):
+  QUIET_DIR            state directory (default ~/.scratch/quiet)
+  QUIET_DISK_MIN_GB    no new hold below this free disk (default 5)
+  QUIET_WHO            holder name in `list` (default: user, directory, parent pid)
+  QUIET_NOTIFY_AFTER   notify when a run took this many seconds or more (default 300)
+
+quiet coordinates this machine only; a remote host runs its own quiet."""
+
+LEVEL_HELP = {
+    "light": (
+        "builds, tests, fuzz: wait for a light turn, then run CMD at nice 19",
+        """Waits for a light turn, then runs CMD at nice 19. A few light holds run at once; while a strict
+hold runs they use only the cores it leaves free. A light request waiting QUIET_STARVE_MIN minutes
+goes before new strict requests, so builds are never starved. A light command keeps running past
+its deadline unless QUIET_KILL=1. Inside another hold, CMD runs at once under it.""",
+        """environment:
   QUIET_LIGHT_SLOTS    light holds at once (default: CPUs / 4)
   QUIET_MAX_LOAD       no new light hold above this load (default: CPUs * 3 / 4)
-  QUIET_LOAD_WAIT      minutes exclusive waits for the load to settle (default 10)
-  QUIET_MAX_MIN        longest strict or exclusive hold, in minutes (default 30)
-  QUIET_KILL           1: stop a light command at its deadline too (job runners set it)
-  QUIET_STARVE_MIN     a light request waiting this long goes before new strict holds (10)
-  QUIET_DISK_MIN_GB    no new hold below this free disk (default 5)
-  QUIET_DISK_WARN_GB   `check` warns below this (default 20)
-  QUIET_WHO            holder name in `list` (default: user, directory, parent pid)
-  QUIET_NOTIFY_AFTER   notify (via report) when a run hold took this many seconds or
-                       more (default 300); its sidebar pill shows queued, then running
-  QUIET_DIR            state directory (default ~/.scratch/quiet)
+  QUIET_STARVE_MIN     minutes before a waiting light request goes first (default 10)
+  QUIET_KILL           1: stop the command at its deadline too (job runners set it)""",
+    ),
+    "strict": (
+        "a measurement: wait for a strict turn, then run CMD on its own cores",
+        """Waits for a strict turn, then runs CMD on its own cores (the upper half of the physical cores);
+strict holds go one at a time, in arrival order, and light work keeps running on the other half.
+Expect some noise from the shared cache and memory bandwidth. CMD is stopped at the deadline (exit
+124, an invalid result), which is at most QUIET_MAX_MIN minutes away: a measurement never runs
+unheld. Inside a strict or exclusive hold, CMD runs at once under it; inside a light one, it is
+refused, since it would wait for its own parent.
 
-quiet coordinates this machine only; a remote host runs its own quiet.
-"""
+Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU machines
+can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light holds (SIGSTOP)
+while it runs and resumes them after. On Linux strict also moves qemu VMs (QUIET_VM names the
+measured one), so a measurement inside a VM can be strict; elsewhere use exclusive.""",
+        """environment:
+  QUIET_STRICT_CPUS    the strict core set (default: upper half of the physical cores,
+                       SMT siblings together, e.g. 4-7)
+  QUIET_PAUSE          1: where cores can't be split, pause light holds instead of waiting
+                       (not exclusive, not VMs; light holds started from a terminal can't pause)
+  QUIET_VM             Linux: the local VM being measured (pids or a pgrep -f pattern); its
+                       threads join the strict set, other qemu VMs of this user move to the
+                       light set, and both are restored after
+  QUIET_LOAD_WAIT      minutes to wait for the load to settle where cores can't be split (10)
+  QUIET_MAX_MIN        longest strict or exclusive hold, in minutes (default 30)""",
+    ),
+    "exclusive": (
+        "a measurement alone: wait until the machine is quiet, then run CMD",
+        """Waits for every hold to end and for the load to settle (at most QUIET_LOAD_WAIT minutes), then
+runs CMD with the machine to itself; nothing else starts until it ends. Use it for cache-sensitive
+A/Bs and numbers you publish. CMD is stopped at its deadline (exit 124), at most QUIET_MAX_MIN
+minutes away. Inside an exclusive hold, CMD runs at once under it.""",
+        """environment:
+  QUIET_LOAD_WAIT      minutes to wait for the load to settle (default 10)
+  QUIET_MAX_MIN        longest strict or exclusive hold, in minutes (default 30)""",
+    ),
+    "run": (
+        "the same at $QUIET_LEVEL (default strict)",
+        """Runs CMD as `quiet light`, `strict` or `exclusive` would, by $QUIET_LEVEL.""",
+        """environment:
+  QUIET_LEVEL          light, strict or exclusive (default strict)""",
+    ),
+}
 
 Hold = dict[str, list[str]]
 
@@ -853,7 +880,8 @@ def show_holds(out: bool) -> int:
     return state
 
 
-def show_waiting() -> None:
+def show_waiting() -> int:
+    shown = 0
     for path in [*entries(".pending"), *entries(".starving")]:
         info = read(path)
         pid = get(info, "pid")
@@ -861,10 +889,14 @@ def show_waiting() -> None:
             print(
                 f"{mark('⏳')}{path.name} [waiting, {get(info, 'level')}]: {get(info, 'what')} (since {get(info, 'since')})"
             )
+            shown += 1
+    return shown
 
 
 def check() -> int:
-    code = {1: 0, 2: 2}.get(show_holds(True), 1)
+    held = show_holds(True)
+    code = {1: 0, 2: 2}.get(held, 1)
+    warned = False
     # free GiB on $HOME's volume: below QUIET_DISK_MIN_GB builds fail oddly, so it blocks
     free, low, warn, home = (
         free_gb(),
@@ -874,18 +906,20 @@ def check() -> int:
     )
     if free < low:
         print(f"{mark('❌')}{paint('disk', 'red')}: {free} GiB free on {home}'s volume, below {low}: free space first")
-        code = 1
+        code, warned = 1, True
     elif free < warn:
         print(
             f"{mark('❗')}{paint('disk', 'yellow')}: {free} GiB free on {home}'s volume, below {warn}: delete build dirs you no longer need"
         )
-        code = code or 2
+        code, warned = code or 2, True
     load, most = load1(), max_load()
     if load >= most:
         print(
             f"{mark('❗')}{paint('load', 'yellow')}: {load} on {NCPU} CPUs, above {most}: start no new build or test until it drops"
         )
-        code = code or 2
+        code, warned = code or 2, True
+    if held == 1 and not warned:
+        print(f"{mark('✅')}free")
     return code
 
 
@@ -905,6 +939,10 @@ def cmd_run(a: argparse.Namespace) -> int:
 
 def cmd_hold(a: argparse.Namespace) -> int:
     with locked():
+        info = read(DIR / a.name) if (DIR / a.name).exists() else {}
+        if info and live(info):
+            print(f"quiet: {a.name} is already held by pid {get(info, 'pid')} ({get(info, 'what')})", file=sys.stderr)
+            return 2
         write_hold(a.name, a.minutes, a.what, a.pid, level_from_env()[0])
     return 0
 
@@ -915,8 +953,9 @@ def cmd_release(a: argparse.Namespace) -> int:
 
 
 def cmd_list(_a: argparse.Namespace) -> int:
-    show_holds(True)
-    show_waiting()
+    held, waiting = show_holds(True), show_waiting()
+    if held == 1 and not waiting:
+        print("no holds and no waiting requests")
     return 0
 
 
@@ -939,35 +978,54 @@ def cmd_wait(a: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     raw = argparse.RawDescriptionHelpFormatter
     ap = argparse.ArgumentParser(prog="quiet", description=__doc__, epilog=EPILOG, formatter_class=raw)
-    sub = ap.add_subparsers(dest="command", required=True)
-    runs = {
-        "light": "wait for a light turn (builds, tests, fuzz), then run CMD at nice 19",
-        "strict": "wait for a strict turn (a measurement on its own cores), then run CMD",
-        "exclusive": "wait until the machine is quiet, then run CMD alone",
-        "run": "the same, at $QUIET_LEVEL (default strict)",
-    }
-    for verb, text in runs.items():
-        p = sub.add_parser(verb, help=text, description=text)
-        p.add_argument("name", metavar="NAME", help="the hold's name")
+    sub = ap.add_subparsers(dest="command", metavar="COMMAND", title="commands", required=True)
+    for verb, (summary, text, settings) in LEVEL_HELP.items():
+        p = sub.add_parser(verb, help=summary, description=text, epilog=settings, formatter_class=raw)
+        p.add_argument("name", metavar="NAME", help="the hold's name, one hold per name")
         p.add_argument("minutes", metavar="MINUTES", type=positive, help="its bound")
-        p.add_argument("what", metavar="WHAT", help="what it is for, shown by list")
+        p.add_argument("what", metavar="WHAT", help="what it is for, shown by list and the sidebar")
         p.add_argument("cmd", metavar="-- CMD", nargs=argparse.REMAINDER, help="the command and its arguments")
+        p.usage = "%(prog)s NAME MINUTES WHAT -- CMD [ARG ...]"
         p.set_defaults(fn=cmd_run)
-    p = sub.add_parser("hold", help="hold the machine until released, the deadline, or PID exits")
+    p = sub.add_parser(
+        "hold",
+        help="hold the machine until released, the deadline, or PID exits",
+        description="Records a hold at $QUIET_LEVEL (default strict) at once, without waiting for a turn or "
+        "running anything, for work started another way. It lasts until `quiet release NAME`, the deadline, or "
+        "PID's exit; check first that the machine is free (`quiet check`).",
+    )
     p.add_argument("name", metavar="NAME")
     p.add_argument("minutes", metavar="MINUTES", type=positive)
     p.add_argument("what", metavar="WHAT")
-    p.add_argument("pid", metavar="PID", type=int, nargs="?", default=0)
+    p.add_argument("pid", metavar="PID", type=int, nargs="?", default=0, help="the process the hold follows")
     p.set_defaults(fn=cmd_hold)
-    p = sub.add_parser("release", help="end a hold")
+    p = sub.add_parser("release", help="end a hold", description="Ends a hold taken with `quiet hold`.")
     p.add_argument("name", metavar="NAME")
     p.set_defaults(fn=cmd_release)
-    p = sub.add_parser("list", help="show the live holds and waiting requests: level, what, who, until")
+    p = sub.add_parser(
+        "list",
+        help="the live holds and waiting requests",
+        description="Prints each live hold (level, cores, what, since, until, who) and each waiting request.",
+    )
     p.set_defaults(fn=cmd_list)
-    help_check = "exit 0 free; 2 busy, work can still start; 1 blocked: exclusive hold or disk full"
-    p = sub.add_parser("check", help=help_check, description=help_check)
+    p = sub.add_parser(
+        "check",
+        help="exit 0 free; 2 busy, work can still start; 1 blocked",
+        description="""Prints the holds and any disk or load warning ("free" when there is none), and exits 0 when
+the machine is free, 2 when it is busy but light work can still start, and 1 when it is blocked (an
+exclusive hold, or too little disk). Run it before starting builds, tests or measurements.""",
+        epilog="""environment:
+  QUIET_DISK_MIN_GB    blocked below this free disk (default 5)
+  QUIET_DISK_WARN_GB   warn below this free disk (default 20)
+  QUIET_MAX_LOAD       busy above this load (default: CPUs * 3 / 4)""",
+        formatter_class=raw,
+    )
     p.set_defaults(fn=cmd_check)
-    p = sub.add_parser("wait", help="block until free")
+    p = sub.add_parser(
+        "wait",
+        help="block until free",
+        description="Blocks until no hold is live, or with --light until light work can start.",
+    )
     p.add_argument("--light", action="store_true", help="until light work can start")
     p.set_defaults(fn=cmd_wait)
     p = sub.add_parser("_watch")  # the pause watchdog, started by run
@@ -975,11 +1033,15 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("pid", type=int)
     p.add_argument("until", type=int)
     p.set_defaults(fn=cmd_watch)
+    add_help(sub, "quiet")
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    ap = parser()
+    args = ap.parse_args(argv)
+    if args.command == "help":
+        return show_help(ap, args.topic)
     (DIR / "pills").mkdir(parents=True, exist_ok=True)
     return int(args.fn(args))
 

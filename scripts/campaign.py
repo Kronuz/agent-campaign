@@ -3,7 +3,7 @@
 
 State lives in .campaign/NAME/state.json in the campaign's home repository and is written only by
 this tool, from that repository's main checkout. Jobs live in $CAMPAIGN_JOBS
-(~/.scratch/campaign/jobs) on the host that runs them. `campaign COMMAND --help` documents each
+(~/.scratch/campaign/jobs) on the host that runs them. `campaign help COMMAND` documents each
 command; the skill's SKILL.md says when to use it.
 """
 
@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import report
-from style import mark, paint, styled
+from style import add_help, mark, paint, show_help, styled
 
 SKILL = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL / "templates"
@@ -906,8 +906,14 @@ CONFIG = ("ci", "ci_later")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
-    """Prints the campaign-wide settings as key=value lines, after setting any given."""
-    if not a.assignments:
+    """Prints the campaign-wide settings as key=value lines, KEYs' values, or sets KEY=VALUEs."""
+    keys = [x for x in a.assignments if "=" not in x]
+    if keys and len(keys) < len(a.assignments):
+        die("give either KEYs to read or KEY=VALUE assignments")
+    unknown = [k for k in keys if k not in CONFIG]
+    if unknown:
+        die(f"no setting {', '.join(unknown)}; the settings are {', '.join(CONFIG)}")
+    if not a.assignments or keys:
         c = find_campaign(Path.cwd())
     else:
         with writing() as c:
@@ -920,9 +926,10 @@ def cmd_config(a: argparse.Namespace) -> int:
                 else:
                     die(f"campaign config takes ci=github|'' and ci_later=WORKFLOW,..., not {item!r}")
             c.save("campaign: config " + " ".join(a.assignments))
-    for key in CONFIG:
+    for key in keys or CONFIG:
         value = c.state.get(key) or ""
-        print(f"{key}={','.join(value) if isinstance(value, list) else value}")
+        text = ",".join(value) if isinstance(value, list) else str(value)
+        print(text if keys else f"{key}={text}")
     return 0
 
 
@@ -930,6 +937,8 @@ def cmd_new(a: argparse.Namespace) -> int:
     with writing() as c:
         if a.id in c.quests:
             die(f"{a.id} exists")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", a.id) or "--" in a.id:
+            die(f"quest id {a.id!r}: use lowercase letters, digits and single dashes")
         repo = (c.home / a.repo).resolve()
         if not git_ok(repo, "rev-parse", "--git-dir"):
             die(f"{repo} is not a git repository")
@@ -955,6 +964,48 @@ def cmd_new(a: argparse.Namespace) -> int:
             atomic_write(c.home / brief, template("quest.md", id=a.id, title=a.title, risk=a.risk))
         c.save(f"campaign: new {a.id} ({a.risk}): {a.title}", (brief,))
     print(f"{a.id}: planned; write its outcome and criteria in {brief}")
+    return 0
+
+
+QUEST_KEYS = ("title", "status", "risk", "reason", "repo", "milestone", "needs", "after", "provides", "consumes")
+QUEST_KEYS += ("files", "lenses", "check", "later", "branch", "worktree", "base", "tasks", "landed")
+TASK_KEYS = ("files", "status", "reason", "branch", "worktree", "base")
+
+
+def fields(record: Json, keys: tuple[str, ...]) -> list[tuple[str, str]]:
+    """A quest's or task's fields as (key, value) pairs, values in the form `set` takes."""
+    out: list[tuple[str, str]] = []
+    for key in keys:
+        if key in ("check", "later"):
+            out += [
+                (key, f"{c['name']}:{c['level']}:{c['minutes']}={c['cmd']}")
+                for c in record.get("checks", [])
+                if c.get("later", False) == (key == "later")
+            ]
+        elif key == "tasks":
+            out.append((key, ",".join(record.get("tasks", {}))))
+        elif key == "landed":
+            out.append((key, ",".join(x["commit"][:12] for x in record.get("landed", []))))
+        else:
+            value = record.get(key, "active" if key == "status" else "")
+            out.append((key, ",".join(value) if isinstance(value, list) else str(value)))
+    return out
+
+
+def cmd_get(a: argparse.Namespace) -> int:
+    c = find_campaign(Path.cwd())
+    p = c.quest(a.id)
+    record, known = p, QUEST_KEYS
+    if a.task:
+        record = p.get("tasks", {}).get(a.task)
+        if record is None:
+            die(f"{a.id} has no task {a.task}")
+        known = TASK_KEYS
+    unknown = [k for k in a.keys if k not in known]
+    if unknown:
+        die(f"no field {', '.join(unknown)}; the fields are {', '.join(known)}")
+    for key, value in fields(record, tuple(a.keys) or known):
+        print(value if a.keys else f"{key}={value}")
     return 0
 
 
@@ -1003,10 +1054,15 @@ def cmd_set(a: argparse.Namespace) -> int:
                 p["status"] = value
             elif key in ("needs", "after", "provides", "consumes", "files", "lenses"):
                 p[key] = csv(value)
+            elif key == "risk" and value not in RISKS:
+                die(f"risk is one of {', '.join(RISKS)}, not {value!r}")
             elif key in ("title", "risk", "reason", "repo", "milestone"):
                 p[key] = value
             else:
-                die(f"cannot set {key}")
+                die(
+                    f"no field {key} to set; the fields are title, status, risk, reason, repo, milestone, needs, "
+                    f"after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check and --later"
+                )
         if a.check:
             p["checks"] = [parse_check(x) for x in a.check] + deferred(p)
         if a.later:
@@ -2043,6 +2099,8 @@ def print_brief(b: Json) -> None:
             f"campaign {b['campaign']}: {in_flight(n)}, {n['planned']} planned, {n['landed']} landed; "
             f"jobs {jobs['queued']} queued, {jobs['running']} running"
         )
+    if not b["quests"] and "counts" in b:
+        print("nothing in flight or planned (`campaign new ID --title T` plans a quest)")
     for q in b["quests"]:
         where = f": {q['branch']} at {q['head']}, {plural(q['ahead'], 'commit')} ahead" if "branch" in q else ""
         print(f"{q['id']} {q['status']} {q['risk']}{where}")
@@ -2128,6 +2186,8 @@ def show_status(a: argparse.Namespace) -> int:
     print(
         f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
     )
+    if not views:
+        print("  no quests yet (`campaign new ID --title T` plans one)")
     if a.id:
         print_quest(views[0], full=True)
     else:
@@ -2670,6 +2730,7 @@ def cmd_verify(a: argparse.Namespace) -> int:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
     submit_checks(c, a.id, checks, commit, priority=1, fresh=a.fresh, force=a.force)
+    print(f"wait for them with `campaign wait --quest {a.id}`")
     return 0
 
 
@@ -3293,16 +3354,30 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
 
 def cmd_job_list(a: argparse.Namespace) -> int:
     reap()
+    ident = ""
+    if not a.all:  # this campaign's jobs, where one is found
+        with contextlib.suppress(CampaignError):
+            ident = find_campaign(Path.cwd()).ident
+    shown = 0
     for j in all_jobs():
         s, st = j["spec"], j["state"]
         if (a.quest and s.get("quest") != a.quest) or (a.state and st.get("state") != a.state):
             continue
+        if ident and s.get("campaign") != ident:
+            continue
+        if not shown:
+            print(
+                paint(f"{'' if not styled() else '   '}{'JOB':20}  {'STATE':11} {'LEVEL':9} {'QUEST':14} WHAT", "dim")
+            )
+        shown += 1
         exit_code = "" if st.get("exit") is None else f" exit {st['exit']}"
         state = st.get("state", "?")
         color, emoji = JOB_MARKS.get(state, ("dim", "❔"))
         print(
             f"{mark(emoji)}{j['id']}  {paint(f'{state:11}', color)} {s.get('level', '?'):9} {s.get('quest') or '-':14} {s.get('what', '')}{exit_code}"
         )
+    if not shown:
+        print("no jobs" + (" of this campaign (--all lists every campaign's)" if ident else ""))
     return 0
 
 
@@ -3548,118 +3623,177 @@ def cmd_wait(a: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- command line
 
 
+EXAMPLES = """examples:
+  campaign init --name shop                          # in the home repository's main checkout
+  campaign new cart --title "Cart totals" --risk normal --files 'src/cart/**' --check 'unit=make test'
+  campaign start cart                                # its branch and worktree
+  campaign brief                                     # in the worktree: what the quest still needs
+  campaign job submit --quest cart --level strict --minutes 10 -- ./bench.sh
+  campaign verify cart && campaign wait --quest cart
+  campaign accept cart correctness && campaign land cart
+  campaign note shop:cart "totals round half-even" --from scout   # from anywhere on the machine"""
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="campaign", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="campaign", description=__doc__, epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("-C", dest="chdir", metavar="DIR", help="run as if started in DIR, like git -C")
-    sub = ap.add_subparsers(dest="command", required=True)
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument(
-        "--campaign", metavar="NAME", help="which campaign, when its home holds several (default $CAMPAIGN)"
+    ap.add_argument(
+        "--campaign", metavar="NAME", help="which campaign: one its home holds, or any on this machine ($CAMPAIGN)"
     )
+    sub = ap.add_subparsers(dest="command", metavar="COMMAND", title="commands", required=True)
+    common = argparse.ArgumentParser(add_help=False)  # --campaign after the command too
+    common.add_argument("--campaign", metavar="NAME", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    check = "NAME[:LEVEL[:MIN]]=CMD"
 
-    p = sub.add_parser("init", help="start a campaign in this repository's main checkout")
-    p.add_argument("--name", help="campaign name (default: the directory's)")
-    p.add_argument("--ci", choices=("github", ""), default="", help="require green GitHub CI to land")
+    def command(name: str, summary: str, description: str, *, parents: bool = True) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[common] if parents else [], help=summary, description=description)
+
+    p = command(
+        "init",
+        "start a campaign in this repository's main checkout",
+        "Creates the campaign's directory (.campaign/NAME/: state.json and PLAN.md) in this repository's main "
+        "checkout, registers it on this machine and commits it. This repository becomes the campaign's home; "
+        "the patron writes its goals in PLAN.md.",
+        parents=False,
+    )
+    p.add_argument("--name", help="campaign name, unique on this machine (default: the directory's)")
+    p.add_argument(
+        "--ci", choices=("github", ""), default="", metavar="github", help="landing waits for green GitHub CI"
+    )
     p.set_defaults(fn=cmd_init)
 
-    p = sub.add_parser(
+    p = command(
         "config",
-        parents=[common],
-        help="show or set campaign-wide settings: ci, ci_later",
-        description="With no assignment, prints the settings as key=value lines. ci=github makes landing "
-        "wait for green GitHub CI; ci_later=WORKFLOW,... names workflows that do not gate it.",
+        "show or set campaign-wide settings: ci, ci_later",
+        "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE "
+        "assignments, sets them (from the home's main checkout). ci=github makes landing wait for green GitHub "
+        "CI; ci_later=WORKFLOW,... names workflows that do not gate it.",
     )
-    p.add_argument("assignments", nargs="*", metavar="key=value")
+    p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
 
-    p = sub.add_parser("new", parents=[common], help="plan a quest")
-    p.add_argument("id")
-    p.add_argument("--title", required=True)
-    p.add_argument("--risk", choices=RISKS, default="normal")
-    p.add_argument("--repo", default=".", help="its repository, relative to the home checkout")
-    p.add_argument("--needs", help="quests that must land before it starts")
-    p.add_argument("--after", help="quests that must land before it lands")
-    p.add_argument("--files", help="globs it may change")
-    p.add_argument("--provides", help="contracts it defines or changes")
-    p.add_argument("--consumes", help="contracts it builds against")
-    p.add_argument("--lenses", help="required reviews (default by risk)")
-    p.add_argument("--milestone", help="the PLAN milestone it belongs to (the sidebar counts the current one)")
+    p = command(
+        "new",
+        "plan a quest",
+        "Records a quest in state.json and writes its quest file (.campaign/NAME/quests/ID.md) from the "
+        "template. The game master fills in its outcome, acceptance criteria and contracts before it starts.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest's id: lowercase letters, digits and single dashes")
+    p.add_argument("--title", required=True, help="what it delivers, in a few words")
+    p.add_argument("--risk", choices=RISKS, default="normal", help="sets the reviews it needs (default normal)")
+    p.add_argument("--repo", default=".", metavar="PATH", help="its repository, relative to the home checkout")
+    p.add_argument("--needs", metavar="IDS", help="quests that must land before it starts")
     p.add_argument(
-        "--check",
-        action="append",
-        default=[],
-        metavar="NAME[:LEVEL[:MIN]]=CMD",
-        help="a gate check: must pass on the landed code",
+        "--after", metavar="IDS", help="quests that must land before it lands (NAME:ID for another campaign's)"
+    )
+    p.add_argument("--files", metavar="GLOBS", help="the files it may change")
+    p.add_argument("--provides", metavar="CONTRACTS", help="APIs, formats or protocols it defines or changes")
+    p.add_argument("--consumes", metavar="CONTRACTS", help="APIs, formats or protocols it builds against")
+    p.add_argument("--lenses", metavar="LENSES", help="the reviews it needs (default: by risk)")
+    p.add_argument("--milestone", metavar="NAME", help="the PLAN milestone it belongs to")
+    p.add_argument(
+        "--check", action="append", default=[], metavar=check, help="a gate check: must pass on the landed code"
     )
     p.add_argument(
         "--later",
         action="append",
         default=[],
-        metavar="NAME[:LEVEL[:MIN]]=CMD",
+        metavar=check,
         help="a deferred check: runs on the landed code at low priority; gates the milestone",
     )
     p.set_defaults(fn=cmd_new)
 
-    p = sub.add_parser("set", parents=[common], help="change a quest's fields")
-    p.add_argument("id")
-    p.add_argument("--task", help="update an existing task's files=GLOBS")
-    p.add_argument("assignments", nargs="*", metavar="key=value")
-    p.add_argument(
-        "--check", action="append", default=[], metavar="NAME[:LEVEL[:MIN]]=CMD", help="replace the gate checks"
+    p = command(
+        "get",
+        "print a quest's fields",
+        "Prints a quest's fields as key=value lines, the form `set` takes (checks as check= and later= lines); "
+        "with KEYs, only their values, one per line. With --task T, the task's.",
     )
-    p.add_argument(
-        "--later", action="append", default=[], metavar="NAME[:LEVEL[:MIN]]=CMD", help="replace the deferred checks"
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("keys", nargs="*", metavar="KEY", help="print only these fields' values")
+    p.add_argument("--task", metavar="TASK", help="one of the quest's tasks")
+    p.set_defaults(fn=cmd_get)
+
+    p = command(
+        "set",
+        "change a quest's fields",
+        "Sets a quest's fields: title, status, risk, reason, repo, milestone, needs, after, provides, consumes, "
+        "files, lenses, and with --check or --later its checks. A blocked or dropped status needs reason=R. "
+        "With --task T: the task's files=GLOBS, or status=dropped reason=R. `campaign get ID` prints them.",
     )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("--task", metavar="TASK", help="one of the quest's tasks")
+    p.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="the fields to set (lists comma-separated)")
+    p.add_argument("--check", action="append", default=[], metavar=check, help="replace the gate checks")
+    p.add_argument("--later", action="append", default=[], metavar=check, help="replace the deferred checks")
     p.set_defaults(fn=cmd_set)
 
-    p = sub.add_parser("start", parents=[common], help="branch and worktree for a quest or one of its tasks")
-    p.add_argument("id")
-    p.add_argument("--task", help="a parallel writer inside the quest, branched from it")
-    p.add_argument("--files", help="the task's file globs (default: the quest's)")
+    p = command(
+        "start",
+        "branch and worktree for a quest or one of its tasks",
+        "Creates the quest's branch (quest/CAMPAIGN/ID) in its own worktree with a journal, and makes it active. "
+        "With --task T, a parallel writer inside the quest: its own branch, worktree and journal, for --files.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("--task", metavar="TASK", help="a parallel writer inside the quest, branched from it")
+    p.add_argument("--files", metavar="GLOBS", help="the task's files (default: the quest's)")
     p.add_argument("--force", metavar="REASON", help="start before its needs landed, or over an overlapping file set")
     p.set_defaults(fn=cmd_start)
 
-    p = sub.add_parser(
+    p = command(
         "status",
-        parents=[common],
-        help="what is ready, running, waiting and landable",
-        description="Each quest and what it still needs to land. Progress counts the criteria in its quest "
-        "file that its journals' Evidence tables name with evidence (`| A1 | job ID |`); `status ID` lists "
-        "each criterion with the rows behind it. "
-        "Colored on a terminal (NO_COLOR turns it off); CAMPAIGN_BAR sets the progress bar's two characters "
-        "(default \u2588\u2591, e.g. \u25b0\u25b1).",
+        "each quest and what it still needs, for people",
+        "Each quest and what it still needs to land. Progress counts the criteria in its quest file that its "
+        "journals' Evidence tables name with evidence (`| A1 | job ID |`); `status ID` lists each criterion with "
+        "the rows behind it. In a quest's worktree, that quest. Colored on a terminal (NO_COLOR turns it off); "
+        "CAMPAIGN_BAR sets the progress bar's two characters (default \u2588\u2591, e.g. \u25b0\u25b1). "
+        "Agents read `campaign brief`.",
     )
-    p.add_argument("id", nargs="?")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
+    p.add_argument("--json", action="store_true", help="the same as JSON")
     p.add_argument("--reviews", action="store_true", help="verdicts and blocking findings per review file")
     p.add_argument("--all", action="store_true", help="every campaign on this machine")
     p.set_defaults(fn=cmd_status, brief=False)
 
-    p = sub.add_parser(
+    p = command(
         "brief",
-        parents=[common],
-        help="status for agents: one line per thing to act on",
-        description="What a quest still needs, one line each: landing gaps, open notes, failed jobs no journal "
-        "names yet, pending jobs. In a quest's worktree, that quest and its file set; elsewhere, every quest.",
+        "what each quest still needs, for agents",
+        "What a quest still needs, one line each: landing gaps, open notes, failed jobs no journal names yet, "
+        "pending jobs; --json gives the same as JSON. In a quest's worktree, that quest and its file set; "
+        "elsewhere, every quest not landed.",
     )
-    p.add_argument("id", nargs="?")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
+    p.add_argument("--json", action="store_true", help="the same as JSON")
     p.set_defaults(fn=cmd_status, brief=True, reviews=False, all=False)
 
-    p = sub.add_parser(
-        "usage", parents=[common], help="tokens, cost and time per quest, role and class (harness logs and jobs)"
+    p = command(
+        "usage",
+        "tokens, cost and time per quest, role and class",
+        "Agent runs and job time since the campaign began, per quest and per role, class, model and effort, "
+        "read from the harnesses' session logs (Copilot CLI, Codex) and the job records. Tokens are cumulative "
+        "(context rereads included); cost is in each harness's own unit.",
     )
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", help="the same as JSON")
     p.set_defaults(fn=cmd_usage)
 
-    p = sub.add_parser("check", parents=[common], help="contradictions between state, git, worktrees and jobs")
+    p = command(
+        "check",
+        "contradictions between state, git, worktrees and jobs",
+        "Reports errors and warnings where state.json, git, the worktrees and the job records disagree, and "
+        "what other campaigns on this machine overlap; exits 1 on an error. It changes nothing.",
+    )
     p.set_defaults(fn=cmd_check)
 
-    p = sub.add_parser("verify", parents=[common], help="queue a quest's gate checks at its branch head")
-    p.add_argument("id")
-    p.add_argument("--commit", help="verify this commit instead of the head")
+    p = command(
+        "verify",
+        "queue a quest's gate checks at its branch head",
+        "Queues the quest's gate checks as jobs at its branch head (or --commit), reusing identical results. "
+        "--all adds the deferred checks; --deferred reruns a landed quest's deferred checks on main.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("--commit", metavar="REF", help="verify this commit instead of the head")
     p.add_argument("--force", action="store_true", help="rerun even if an identical job succeeded")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--all", action="store_true", help="the deferred checks too")
@@ -3668,75 +3802,128 @@ def parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(fn=cmd_verify)
 
-    p = sub.add_parser(
-        "accept", parents=[common], help="record a review lens as passed for the quest's current content"
+    p = command(
+        "accept",
+        "record a review lens as passed for the quest's current content",
+        "Records a review lens as accepted for the quest's current content: its changed files, its quest file "
+        "and its merge base. After a CHANGES verdict, --jobs names the jobs that confirmed each blocking fix; "
+        "--waive skips the review of a low or normal risk quest with strong evidence.",
     )
-    p.add_argument("id")
-    p.add_argument("lens", choices=LENSES)
-    p.add_argument("--commit", help="the commit accepted (default: the branch head)")
-    p.add_argument("--jobs", help="jobs that confirmed each blocking fix (needed after CHANGES)")
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("lens", metavar="LENS", choices=LENSES, help=f"the review: {', '.join(LENSES)}")
+    p.add_argument("--commit", metavar="REF", help="the commit accepted (default: the branch head)")
+    p.add_argument("--jobs", metavar="JOBS", help="jobs that confirmed each blocking fix (needed after CHANGES)")
     p.add_argument("--waive", metavar="REASON", help="no review: low or normal risk with strong evidence")
-    p.add_argument("--note")
+    p.add_argument("--note", metavar="TEXT", help="a remark kept with the acceptance")
     p.set_defaults(fn=cmd_accept)
 
-    p = sub.add_parser("land", parents=[common], help="fast-forward (or cleanly merge) a quest onto main")
-    p.add_argument("id")
-    p.add_argument("--upto", metavar="COMMIT", help="land a prefix of the branch as an increment")
-    p.add_argument("--reason", help="why the increment is safe to land alone")
-    p.add_argument("--push", action="store_true")
-    p.add_argument("--no-ci", action="store_true")
-    p.add_argument("--record", metavar="COMMIT", help="record a landing that already happened")
+    p = command(
+        "land",
+        "land a quest on main",
+        "Lands the quest when nothing `campaign brief` lists is left: dependencies, rebase, file set, tasks, "
+        "criteria, notes, checks, reviews and CI. It fast-forwards main (or merges when only campaign files "
+        "differ), checks that the landed code is the tested code and records the landing. --upto lands a "
+        "prefix that is safe alone as an increment; --record records a landing that already happened.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("--upto", metavar="REF", help="land the branch up to this commit, as an increment")
+    p.add_argument("--reason", metavar="TEXT", help="why the increment is safe to land alone")
+    p.add_argument("--push", action="store_true", help="push main after landing")
+    p.add_argument("--no-ci", action="store_true", help="land without waiting for CI")
+    p.add_argument("--record", metavar="REF", help="record a landing that already happened")
     p.set_defaults(fn=cmd_land)
 
-    p = sub.add_parser("migrate", parents=[common], help=f"move the campaign's files from {LEGACY_META} to {META}")
-    p.set_defaults(fn=cmd_migrate)
-    p = sub.add_parser(
+    p = command(
         "note",
-        parents=[common],
-        help="pass a finding to a quest from anywhere on the machine",
-        description="Leaves a note for a quest ([NAME:]ID; NAME from anywhere on the machine). It stays open, "
-        "shown by status and blocking the landing, until one of the quest's journals names its id or the game "
-        "master closes it (--close ID --reason R, in the home's main checkout).",
+        "pass a finding to a quest from anywhere on the machine",
+        "Leaves a note for a quest ([NAME:]ID; NAME from anywhere on the machine). It stays open, shown by "
+        "status and brief and blocking the landing, until one of the quest's journals names its id or the game "
+        "master closes it (--close NOTE --reason R, from the home's main checkout).",
     )
-    p.add_argument("quest", metavar="[NAME:]ID")
-    p.add_argument("text", nargs="?", default="")
-    p.add_argument("--from", dest="by", default=os.environ.get("USER", "someone"), help="who found it")
+    p.add_argument("quest", metavar="[NAME:]ID", help="the quest, with its campaign's name from outside its home")
+    p.add_argument("text", metavar="TEXT", nargs="?", default="", help="what was found")
+    p.add_argument(
+        "--from",
+        dest="by",
+        metavar="WHO",
+        default=os.environ.get("USER", "someone"),
+        help="who found it (default $USER)",
+    )
     p.add_argument("--close", metavar="NOTE", help="close an open note (the game master)")
-    p.add_argument("--reason")
+    p.add_argument("--reason", metavar="TEXT", help="why it is closed")
     p.set_defaults(fn=cmd_note)
-    p = sub.add_parser("clean", parents=[common], help="remove a landed or dropped quest's worktrees and branches")
-    p.add_argument("id")
-    p.add_argument("--force", action="store_true")
+
+    p = command(
+        "clean",
+        "remove a landed or dropped quest's worktrees and branches",
+        "Removes a landed or dropped quest's worktrees, its merged branches and its build slot. A worktree with "
+        "uncommitted files and an unmerged branch are kept unless --force.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("--force", action="store_true", help="remove them anyway")
     p.set_defaults(fn=cmd_clean)
 
-    p = sub.add_parser(
-        "wait", parents=[common], help="block until jobs finish, or (--commits) until anything new happens; no tokens"
+    p = command(
+        "migrate",
+        f"move the campaign's files from {LEGACY_META} to {META}",
+        f"Moves an older campaign's files from {LEGACY_META}/ to {META}/NAME/ in one commit, once no quest is in "
+        "flight and no job is pending. Evidence recorded before the move still counts.",
     )
-    p.add_argument("jobs", nargs="*")
-    p.add_argument("--quest")
+    p.set_defaults(fn=cmd_migrate)
+
+    p = command(
+        "wait",
+        "block until jobs finish, or until anything new happens; no tokens",
+        "Blocks until the jobs finish (exit 0 all done, 1 a failure, 3 the timeout). With --commits, until "
+        "anything new happens in the campaign since the last such wait: a quest branch moves, a job ends, or "
+        "a note arrives.",
+    )
+    p.add_argument("jobs", nargs="*", metavar="JOB", help="the jobs to wait for")
+    p.add_argument("--quest", metavar="ID", help="every pending job of this quest")
     p.add_argument("--any", action="store_true", help="return when the first one finishes")
     p.add_argument(
         "--commits",
         action="store_true",
-        help="return at the first quest-branch commit or job of this campaign not seen by an earlier wait",
+        help="return at the first quest-branch commit, ended job or note of this campaign not seen by an earlier wait",
     )
-    p.add_argument("--timeout", type=float, default=0, help="seconds; exit 3 when it passes")
+    p.add_argument("--timeout", type=float, default=0, metavar="SECONDS", help="exit 3 when it passes (default: none)")
     p.set_defaults(fn=cmd_wait)
 
-    p = sub.add_parser("worker", help="run queued jobs; exits when the queue is empty")
+    p = command(
+        "worker",
+        "run queued jobs until the queue is empty",
+        "Runs queued jobs under quiet, in priority order, and exits when nothing is queued or running. A "
+        "submit or a wait starts one, so it is rarely run by hand.",
+        parents=False,
+    )
     p.set_defaults(fn=cmd_worker)
 
-    p = sub.add_parser("_run")
+    p = sub.add_parser("_run")  # a job's runner, started by the worker
     p.add_argument("jobdir")
     p.set_defaults(fn=cmd_run)
 
-    job = sub.add_parser("job", help="submit and inspect machine jobs").add_subparsers(
-        dest="job_command", required=True
+    jobs = command(
+        "job",
+        "submit and inspect machine jobs",
+        "Machine jobs: commands run at an exact commit in their own checkout under quiet, their results "
+        "recorded and reused by identity (code, command, toolchain).",
+        parents=False,
     )
-    p = job.add_parser("submit", parents=[common], help="queue a command at an exact commit")
-    p.add_argument("--quest")
-    p.add_argument("--repo", help="repository (default: this one, or the quest's)")
-    p.add_argument("--commit", help="ref to run (default: HEAD, or the quest branch)")
+    job = jobs.add_subparsers(dest="job_command", metavar="COMMAND", title="commands", required=True)
+
+    def job_command(name: str, summary: str, description: str) -> argparse.ArgumentParser:
+        return job.add_parser(name, parents=[common], help=summary, description=description)
+
+    p = job_command(
+        "submit",
+        "queue a command at an exact commit",
+        "Queues CMD to run at an exact commit (the quest's branch with --quest, else HEAD) in its own checkout, "
+        "under quiet at --level. An identical job that is pending or succeeded is returned instead; --sync "
+        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity.",
+    )
+    p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")
+    p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
+    p.add_argument("--commit", metavar="REF", help="the commit to run (default: HEAD, or the quest's branch)")
     p.add_argument(
         "--ref",
         action="append",
@@ -3744,39 +3931,57 @@ def parser() -> argparse.ArgumentParser:
         metavar="NAME=[PATH@]REF",
         help="another commit (of this or another repository) at $JOB_REF_NAME",
     )
-    p.add_argument("--cwd", help="subdirectory to run in")
-    p.add_argument("--level", choices=LEVELS, default="light")
-    p.add_argument("--minutes", type=int, default=30)
-    p.add_argument("--priority", type=int, default=0)
-    p.add_argument("--after", help="jobs that must succeed first")
-    p.add_argument("--env", action="append", default=[], metavar="K=V")
-    p.add_argument("--slot", help="reuse a named checkout (incremental builds)")
+    p.add_argument("--cwd", metavar="DIR", help="the directory to run in, inside the checkout")
+    p.add_argument("--level", choices=LEVELS, default="light", help="its quiet level (default light)")
+    p.add_argument("--minutes", type=int, default=30, metavar="N", help="its bound once it runs (default 30)")
+    p.add_argument("--priority", type=int, default=0, metavar="N", help="higher runs first (default 0)")
+    p.add_argument("--after", metavar="JOBS", help="jobs that must succeed first")
+    p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
+    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (incremental builds)")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
-    p.add_argument("--retries", type=int, default=0, help="requeues after a lost runner (only for jobs safe to rerun)")
-    p.add_argument("--what")
+    p.add_argument(
+        "--retries", type=int, default=0, metavar="N", help="requeues after a lost runner (only for jobs safe to rerun)"
+    )
+    p.add_argument("--what", metavar="TEXT", help="what it is for, shown by status and the sidebar")
     p.add_argument("--unversioned", action="store_true", help="run in --cwd as it is (probes; never evidence)")
     p.add_argument("--force", action="store_true", help="run even if an identical job succeeded")
     p.add_argument("--sync", action="store_true", help="run now and wait (no worker); same records")
-    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.add_argument("cmd", nargs=argparse.REMAINDER, metavar="-- CMD", help="the command and its arguments")
+    p.usage = "%(prog)s [options] -- CMD [ARG ...]"
     p.set_defaults(fn=cmd_job_submit)
-    p = job.add_parser("list", parents=[common])
-    p.add_argument("--quest")
-    p.add_argument("--state")
+    p = job_command(
+        "list",
+        "list jobs",
+        "Lists jobs, oldest first: id, state, level, quest, what and exit code. Where a campaign is found, only "
+        "its jobs; --all lists every campaign's on this machine.",
+    )
+    p.add_argument("--quest", metavar="ID", help="only this quest's")
+    p.add_argument("--state", help="queued, running, done, failed, timeout, interrupted, cancelled or skipped")
+    p.add_argument("--all", action="store_true", help="every campaign's jobs on this machine")
     p.set_defaults(fn=cmd_job_list)
-    p = job.add_parser("show", parents=[common])
-    p.add_argument("job")
+    p = job_command(
+        "show", "a job's spec and state", "Prints a job's spec and state, and where its log and output are, as JSON."
+    )
+    p.add_argument("job", metavar="JOB", help="the job's id")
     p.set_defaults(fn=cmd_job_show)
-    p = job.add_parser("log", parents=[common])
-    p.add_argument("job")
-    p.add_argument("-n", "--lines", type=int, default=40)
+    p = job_command("log", "the end of a job's log", "Prints the last lines of a job's log.")
+    p.add_argument("job", metavar="JOB", help="the job's id")
+    p.add_argument("-n", "--lines", type=int, default=40, metavar="N", help="how many (default 40)")
     p.set_defaults(fn=cmd_job_log)
-    p = job.add_parser("rerun", parents=[common], help="the same jobs at the quest's head (or --commit)")
-    p.add_argument("jobs", nargs="+", metavar="JOB")
-    p.add_argument("--commit", help="ref to run (default: the quest branch, else HEAD)")
+    p = job_command(
+        "rerun",
+        "the same jobs at the quest's head",
+        "Resubmits jobs with their command, level, directory, environment and other repositories at another "
+        "commit: by default the head of their quest's branch, else of their repository.",
+    )
+    p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
+    p.add_argument("--commit", metavar="REF", help="the commit to run (default: the quest's branch, else HEAD)")
     p.set_defaults(fn=cmd_job_rerun)
-    p = job.add_parser("cancel", parents=[common])
-    p.add_argument("job")
+    p = job_command("cancel", "cancel a queued or running job", "Cancels a queued job, or stops a running one.")
+    p.add_argument("job", metavar="JOB", help="the job's id")
     p.set_defaults(fn=cmd_job_cancel)
+
+    add_help(sub, "campaign")
     return ap
 
 
@@ -3788,11 +3993,15 @@ def main(argv: list[str] | None = None) -> int:
             os.chdir(args.chdir)
         except OSError as e:
             ap.error(f"-C {args.chdir}: {e.strerror}")
+    if args.command == "help":
+        return show_help(ap, args.topic)
     if getattr(args, "campaign", None):
         os.environ["CAMPAIGN"] = args.campaign  # job runners and the worker inherit it
-    # older argparse leaves key=value assignments after an option (`set ID --task T files=...`) unparsed
-    if extra and getattr(args, "fn", None) is cmd_set and all("=" in x and not x.startswith("-") for x in extra):
-        args.assignments += extra
+    # Python 3.9's argparse leaves a trailing list after an option unparsed (`get ID --task T files status`)
+    trailing = {"set": "assignments", "get": "keys", "config": "assignments", "wait": "jobs", "rerun": "jobs"}
+    dest = trailing.get(getattr(args, "job_command", None) or args.command, "")
+    if extra and dest and not any(x.startswith("-") for x in extra):
+        setattr(args, dest, [*getattr(args, dest), *extra])
     elif extra:
         ap.error(f"unrecognized arguments: {' '.join(extra)}")
     try:

@@ -78,6 +78,12 @@ class Quiet(unittest.TestCase):
             self.assertLess(time.time(), end, "timed out waiting")
             time.sleep(0.05)
 
+    def test_check_and_list_say_when_the_machine_is_free(self) -> None:
+        p = self.quiet("check", QUIET_DISK_WARN_GB="0")
+        out, _ = p.communicate(timeout=30)
+        self.assertEqual((p.returncode, out), (0, "free\n"))
+        self.assertEqual(self.listed(), "no holds and no waiting requests\n")
+
     def test_a_name_is_one_hold(self) -> None:
         first = self.quiet("strict", "bench", "10", "first", "--", "sleep", "4")
         self.until(lambda: "bench [" in self.listed())
@@ -202,7 +208,7 @@ class Quiet(unittest.TestCase):
         self.assertNotIn("late", out)
         with self.assertRaises(ProcessLookupError):
             os.killpg(group, 0)
-        self.assertEqual(self.listed(), "")
+        self.assertEqual(self.listed(), "no holds and no waiting requests\n")
 
     def test_a_pausing_strict_hold_stops_light_work_and_resumes_it(self) -> None:
         ticks = self.dir / "ticks"

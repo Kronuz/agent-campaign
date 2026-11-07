@@ -197,16 +197,20 @@ The pause test also passes against the bash `quiet`.
 Every tool is Python with an `argparse` interface: `campaign`, `quiet`, `pace`, `report` and
 `sync-agents` (`install.sh` stays shell, as the bootstrap). Help is colored on Python 3.14 and
 later, output is colored and marked with emoji on a terminal (`scripts/style.py`; `NO_COLOR` turns
-both off, `FORCE_COLOR` on) and plain words in pipes, which agents read, each command has `--help`,
-and usage errors exit 2. `campaign` and `quiet` import `report` instead of starting it, so a
-`quiet` run costs no extra process outside cmux. `sync-agents.py` writes the same bytes as the
-shell version for the four agent types plus edge cases (quotes, `%`, `$HOME`, a second `---`, no
-final newline, an unmapped model, a model override), apart from its mark. A campaign keeps its
-files in `.campaign/<name>/` at the root of its home repository, so one repository can hold
-several; branches are `quest/<campaign>/<id>` and worktrees `<repo>-wt/<campaign>/<id>`; jobs, wait
-records and sidebar pills are keyed by campaign. Older campaigns keep `docs/campaign/` until
-`campaign migrate`; their jobs keep the home as their tag, so jobs submitted before the upgrade
-still wake their game master.
+both off, `FORCE_COLOR` on) and plain words in pipes, which agents read, every command has a
+description, `TOOL help COMMAND` prints the same as `TOOL COMMAND --help` (a test checks both for
+every command of `campaign`, `quiet` and `report`), and usage errors exit 2. `campaign` takes `-C
+DIR` and `--campaign NAME` before any command (`--campaign` after it too); `campaign get` reads the
+fields `set` writes, in the form it takes, and `campaign config` reads with KEYs and writes with
+KEY=VALUE. `quiet`'s settings are documented with the commands they affect. `campaign` and `quiet`
+import `report` instead of starting it, so a `quiet` run costs no extra process outside cmux.
+`sync-agents.py` writes the same bytes as the shell version for the four agent types plus edge
+cases (quotes, `%`, `$HOME`, a second `---`, no final newline, an unmapped model, a model
+override), apart from its mark. A campaign keeps its files in `.campaign/<name>/` at the root of
+its home repository, so one repository can hold several; branches are `quest/<campaign>/<id>` and
+worktrees `<repo>-wt/<campaign>/<id>`; jobs, wait records and sidebar pills are keyed by campaign.
+Older campaigns keep `docs/campaign/` until `campaign migrate`; their jobs keep the home as their
+tag, so jobs submitted before the upgrade still wake their game master.
 
 ## Parallel tests and quest progress
 
@@ -311,6 +315,18 @@ together with recording a strict request). `quiet` gives its command `QUIET_HELD
 at that level or lower runs at once under the hold, and a stronger one is refused with the reason.
 A waiting request's pill says what it waits for: `queued (behind 2 light holds): ...`, `queued
 (load 9 settling): ...`. Each test fails with its fix reverted.
+
+## Command-line polish
+
+Every command of `campaign`, `quiet` and `report` has a description, help for each argument, and
+metavars that name what a value is (`--needs IDS`, `--files GLOBS`, `--commit REF`); `campaign
+--help` ends with an example flow. `quiet`'s settings moved from one page of environment variables
+to the commands they affect. `campaign job list` shows the current campaign's jobs under a header
+(`--all` for the machine's); empty states say so and how to begin (`no quests yet`, `no jobs`,
+`quiet check` printing `free`, `quiet list` printing `no holds`). Mistakes name the way out: an
+invalid quest id, a risk outside low to critical, a field `set` does not know (with the list),
+`verify` saying how to wait. A test walks every command of the three tools for a description and
+compares `help COMMAND` with `COMMAND --help`.
 
 ## Not run
 

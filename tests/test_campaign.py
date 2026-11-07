@@ -56,6 +56,57 @@ class Quests(CampaignCase):
         self.assertIn(f"{job}  done exit 0", self.ok(self.home, "wait", "--commits", "--timeout", "30").out)
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)
 
+    def test_mistakes_get_messages_that_say_what_to_do(self) -> None:
+        self.fails(self.home, "new", "Bad_ID", "--title", "x", match="quest id 'Bad_ID': use lowercase letters")
+        self.started("fix", files="app.py")
+        self.fails(self.home, "set", "fix", "risk=extreme", match="risk is one of low, normal, high, critical")
+        self.fails(self.home, "set", "fix", "colour=red", match="no field colour to set; the fields are title")
+        self.assertIn("wait for them with `campaign wait --quest fix`", self.ok(self.home, "verify", "fix").out)
+
+    def test_job_list_shows_this_campaigns_jobs(self) -> None:
+        self.started("fix", files="app.py")
+        mine = self.submit(self.home, "--quest", "fix", "--sync", "--", "true")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        theirs = self.submit(elsewhere, "--unversioned", "--sync", "--", "true")
+        here = self.ok(self.home, "job", "list").out
+        self.assertTrue(here.startswith("JOB "), here)
+        self.assertIn(mine, here)
+        self.assertNotIn(theirs, here)
+        for everything in (self.ok(self.home, "job", "list", "--all").out, self.ok(elsewhere, "job", "list").out):
+            self.assertIn(mine, everything)
+            self.assertIn(theirs, everything)
+
+    def test_an_empty_campaign_says_how_to_begin(self) -> None:
+        self.assertIn("  no quests yet (`campaign new ID --title T` plans one)\n", self.ok(self.home, "status").out)
+        self.assertIn("nothing in flight or planned (`campaign new ID --title T`", self.ok(self.home, "brief").out)
+        self.assertEqual(
+            self.ok(self.home, "job", "list").out, "no jobs of this campaign (--all lists every campaign's)\n"
+        )
+
+    def test_get_prints_what_set_takes_and_config_reads_a_key(self) -> None:
+        self.started("fix", files="app.py", check="unit=python3 app.py")
+        self.ok(self.home, "set", "fix", "--later", "soak::5=true")
+        out = self.ok(self.home, "get", "fix").out
+        self.assertTrue(out.startswith("title=fix\nstatus=active\nrisk=low\nreason=\n"), out)
+        for line in (
+            "files=app.py",
+            "check=unit:light:30=python3 app.py",
+            "later=soak:light:5=true",
+            "branch=quest/demo/fix",
+        ):
+            self.assertIn(f"\n{line}\n", out)
+        self.assertEqual(self.ok(self.home, "get", "fix", "status", "files").out, "active\napp.py\n")
+        self.fails(self.home, "get", "fix", "nope", match="no field nope; the fields are title, status")
+        self.ok(self.home, "start", "fix", "--task", "docs", "--files", "app.py")
+        self.assertEqual(self.ok(self.home, "get", "fix", "--task", "docs", "files", "status").out, "app.py\nactive\n")
+        self.assertEqual(self.ok(self.home, "config", "ci").out, "\n")
+        self.fails(self.home, "config", "ci", "ci=github", match="either KEYs to read or KEY=VALUE")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.assertEqual(self.ok(elsewhere, "--campaign", "demo", "get", "fix", "status").out, "active\n")
+        self.assertEqual(self.ok(elsewhere, "get", "fix", "status", "--campaign", "demo").out, "active\n")
+
     def test_task_file_scope_can_be_corrected_without_overlapping_a_peer(self) -> None:
         self.started("fix", files="app.py,lib/**,README.md")
         self.ok(self.home, "start", "fix", "--task", "one", "--files", "lib/**")

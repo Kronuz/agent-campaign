@@ -90,6 +90,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
 | `campaign migrate` | moves an older campaign's `docs/campaign/` to `.campaign/<name>/`, once no quest is in flight |
 | `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
+| `campaign get ID`, `set ID KEY=VALUE` | reads and changes a quest's fields; `campaign config` does the same for the campaign's settings |
 | `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
 | `campaign accept ID LENS` | records a paladin's verdict for the quest's current content |
@@ -99,6 +100,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign note NAME:ID "text"` | passes a finding to a quest from anywhere on the machine; it blocks landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and class |
+| `campaign help COMMAND` | each command's description and options (`quiet help`, `report help` too) |
 
 [`SKILL.md`](SKILL.md) is what agents read; [`references/`](references) holds the prompts, the
 review and measurement rules, the host tools and the per-harness notes.

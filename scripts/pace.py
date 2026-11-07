@@ -295,8 +295,9 @@ def parser() -> argparse.ArgumentParser:
         "harness",
         nargs="?",
         choices=(*HARNESSES, "all"),
+        metavar="HARNESS",
         default=os.environ.get("QUOTA_HARNESS") or "all",
-        help="whose quota (default $QUOTA_HARNESS, else all installed)",
+        help=f"{', '.join(HARNESSES)} or all (default $QUOTA_HARNESS, else all installed)",
     )
     return ap
 

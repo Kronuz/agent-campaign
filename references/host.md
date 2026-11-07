@@ -1,7 +1,7 @@
 # Host: jobs, quiet and the tools
 
 How machine work runs. Rules about when to use what are in SKILL.md; this is the mechanics.
-Every command has `--help`.
+`campaign help COMMAND` and `quiet help COMMAND` document each command.
 
 ## Install
 
