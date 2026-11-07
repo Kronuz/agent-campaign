@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import signal
@@ -12,15 +11,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import CAMPAIGN, CampaignCase, alive, session_members
+from harness import CampaignCase, alive, campaign_module, session_members
 
 
 class Races(unittest.TestCase):
     def test_a_heartbeat_removed_between_checks_reads_as_no_worker(self) -> None:
-        spec = importlib.util.spec_from_file_location("campaign_module", CAMPAIGN)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = campaign_module()
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": directory}):
             (Path(directory) / ".worker").mkdir()
             # the worker removes its heartbeat right after an existence check says it is there

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import shutil
@@ -14,12 +15,22 @@ import time
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
 QUIET = SKILL / "scripts" / "quiet.py"
 sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
+
+
+def campaign_module() -> ModuleType:
+    """campaign.py loaded as a module, for tests of its functions."""
+    spec = importlib.util.spec_from_file_location("campaign_module", CAMPAIGN)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def alone(test: Callable[..., None]) -> Callable[..., None]:

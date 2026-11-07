@@ -230,6 +230,16 @@ terminal without `NO_COLOR`. The jobs line counts the jobs at the quest's code t
 those that ended badly. Both tests fail against the previous `campaign.py`, and the bar assertion
 fails when `CAMPAIGN_BAR` is ignored.
 
+Status took 9.2 s on the Codex machine's dense-pages quest (96 finished jobs). A copy of its shape
+here (95 jobs, 131 commits) took 13.0 s and started 325 git processes, 294 of them `ls-tree` and
+`mktree` computing each job's code tree to see whether it ran at the quest's code. `code_tree` now
+reads raw trees through one `git cat-file --batch` and hashes the filtered entries itself, which
+gives the id `git mktree` writes: 1.6 s and 32 processes. A test compares it with `mktree` on
+every layout (`.campaign`, `docs/campaign`, `docs` holding only the campaign, `docs` as a file), so
+job keys from before the change still match, and another fails if status starts a git process per
+job (37 against 29 for four jobs before the change). 104 tests pass on macOS with Python 3.9 (167
+s) and 3.15 (176 s); the Linux run of this change waits for the VPN.
+
 ## Not run
 
 - Claude Code and Codex were not exercised live; Codex is not installed here. Agent files for

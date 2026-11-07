@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from harness import CAMPAIGN, CampaignCase
+from harness import CAMPAIGN, CampaignCase, campaign_module
 
 
 class Quests(CampaignCase):
@@ -152,6 +152,72 @@ class Ownership(CampaignCase):
 
 
 class Evidence(CampaignCase):
+    def reference_code_tree(self, repo: Path, commit: str) -> str:
+        """The code tree as `git ls-tree` and `git mktree` build it, which job keys have always used."""
+
+        def ls(tree: str) -> list[str]:
+            return [e for e in self.git(repo, "ls-tree", "-z", tree).split("\0") if e]
+
+        def mktree(entries: list[str]) -> str:
+            p = subprocess.run(
+                ["git", "-C", str(repo), "mktree", "-z"],
+                input="".join(e + "\0" for e in entries),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return p.stdout.strip()
+
+        kept = []
+        for e in ls(commit):
+            name = e.split("\t", 1)[1]
+            inner = [x for x in ls(e.split()[2]) if x.split("\t", 1)[1] != "campaign"] if " tree " in e else []
+            if name == "docs" and inner:
+                kept.append(f"040000 tree {mktree(inner)}\tdocs")
+            elif name not in (".campaign", "docs") or " tree " not in e:
+                kept.append(e)
+        return mktree(kept)
+
+    def test_status_starts_no_git_process_per_job(self) -> None:
+        wt = self.started("fix", files="app.py")
+
+        def git_processes() -> int:
+            trace = self.root / "git-trace.log"
+            self.ok(self.home, "status")  # warms anything status computes once
+            self.env["GIT_TRACE"] = str(trace)
+            self.ok(self.home, "status")
+            del self.env["GIT_TRACE"]
+            count = trace.read_text().count("trace: built-in: git")
+            trace.unlink()
+            return count
+
+        before = git_processes()
+        for n in range(4):  # each job at its own commit, so each has its own code tree
+            self.commit(wt, {"app.py": f"print({n})\n"})
+            self.submit(wt, "--quest", "fix", "--sync", "--", "true", str(n))
+        self.assertEqual(git_processes(), before)
+
+    def test_code_trees_match_what_git_mktree_builds(self) -> None:
+        campaign = campaign_module()
+        repo = self.repo("shapes", {"a.py": "1\n", "docs.md": "x\n", "docs-x/f": "y\n", "z/f": "z\n"})
+        commits = [self.git(repo, "rev-parse", "HEAD")]
+        for files in (
+            {".campaign/demo/state.json": "{}\n"},
+            {"docs/guide.md": "g\n"},
+            {"docs/campaign/state.json": "{}\n"},
+            {".campaign/demo/PLAN.md": "p\n"},
+        ):
+            commits.append(self.commit(repo, files))
+        self.git(repo, "rm", "-q", "docs/guide.md")  # docs/ now holds only the campaign
+        commits.append(self.commit(repo, {"a.py": "1\n"}))
+        commits.append(self.commit(self.repo("flat", {"docs": "a file\n", "b.py": "2\n"}), {"b.py": "3\n"}))
+        for commit in commits:
+            where = repo if commit != commits[-1] else self.root / "flat"
+            self.assertEqual(campaign.code_tree(where, commit), self.reference_code_tree(where, commit))
+        trees = [campaign.code_tree(repo, c) for c in commits[:-1]]
+        self.assertEqual(len(set(trees)), 2)  # campaign files never change it; docs/guide.md does
+        self.assertEqual(trees[0], trees[-1])
+
     def test_land_needs_green_checks_at_the_exact_head(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})

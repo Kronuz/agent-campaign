@@ -219,44 +219,73 @@ def game_master_file(path: str) -> bool:
     return rel is not None and any(rel == o or (o.endswith("/") and rel.startswith(o)) for o in GAME_MASTER_FILES)
 
 
-def mktree(repo: Path, entries: list[str]) -> str:
-    p = subprocess.run(
-        ["git", "-C", str(repo), "mktree", "-z"],
-        input="".join(e + "\0" for e in entries),
-        capture_output=True,
-        text=True,
-    )
-    if p.returncode != 0:
-        die(f"git mktree: {p.stderr.strip()}")
-    return p.stdout.strip()
+_cat: dict[str, tuple[int, subprocess.Popen[bytes]]] = {}
+_trees: dict[tuple[str, str], str] = {}
+
+
+def cat_object(repo: Path, name: str) -> tuple[str, bytes]:
+    """An object's id and raw content, through one `git cat-file --batch` per repository."""
+    held = _cat.get(str(repo))
+    if not held or held[0] != os.getpid():
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo), "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+        held = _cat[str(repo)] = (os.getpid(), proc)
+    proc = held[1]
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write(name.encode() + b"\n")
+    proc.stdin.flush()
+    header = proc.stdout.readline().split()
+    if len(header) != 3:
+        die(f"{repo}: no object {name}")
+    data = proc.stdout.read(int(header[2]))
+    proc.stdout.read(1)
+    return header[0].decode(), data
+
+
+def tree_entries(data: bytes, width: int) -> list[tuple[bytes, bytes]]:
+    """A raw tree's (name, entry bytes) pairs, in git's order."""
+    out: list[tuple[bytes, bytes]] = []
+    i = 0
+    while i < len(data):
+        nul = data.index(b"\0", i)
+        out.append((data[data.index(b" ", i) + 1 : nul], data[i : nul + 1 + width]))
+        i = nul + 1 + width
+    return out
+
+
+def tree_id(entries: list[bytes], width: int) -> bytes:
+    """The id git gives a tree of these entries (what `git mktree` writes), without writing it."""
+    body = b"".join(entries)
+    return hashlib.new("sha1" if width == 20 else "sha256", b"tree %d\0" % len(body) + body).digest()
 
 
 def code_tree(repo: Path, commit: str) -> str:
     """The commit's tree without the campaign's files (.campaign, and docs/campaign of older
     campaigns): what builds and tests see, so evidence survives commits that touch only campaign
-    files (a journal, a review, the move by `campaign migrate`)."""
-    root = [e for e in git(repo, "ls-tree", "-z", commit).split("\0") if e]
-    rest = [e for e in root if entry_name(e) not in (META, "docs")]
-    changed = any(entry_name(e) == META for e in root)
-    for e in root:
-        if entry_name(e) != "docs":
-            continue
-        mode, kind, sha = e.split("\t", 1)[0].split()
-        inner = [x for x in git(repo, "ls-tree", "-z", sha).split("\0") if x] if kind == "tree" else []
-        kept = [x for x in inner if entry_name(x) != "campaign"]
-        if len(kept) == len(inner):
-            rest.append(e)
-            continue
-        changed = True
-        if kept:
-            rest.append(f"{mode} {kind} {mktree(repo, kept)}\tdocs")
-    if not changed:
-        return git(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}")
-    return mktree(repo, rest)
-
-
-def entry_name(entry: str) -> str:
-    return entry.split("\t", 1)[1]
+    files (a journal, a review, the move by `campaign migrate`). Computed from the raw trees,
+    since status asks for every job's."""
+    key = (str(repo), commit)
+    if key in _trees:
+        return _trees[key]
+    oid, root = cat_object(repo, f"{commit}^{{tree}}")
+    width = len(oid) // 2
+    kept: list[bytes] = []
+    changed = False
+    for name, entry in tree_entries(root, width):
+        docs = name == b"docs" and entry.startswith(b"40000 ")
+        inner = tree_entries(cat_object(repo, entry[-width:].hex())[1], width) if docs else []
+        rest = [e for n, e in inner if n != b"campaign"]
+        if name == META.encode() or len(rest) != len(inner):
+            changed = True
+            if rest:
+                kept.append(b"40000 docs\0" + tree_id(rest, width))
+        else:
+            kept.append(entry)
+    tree = tree_id(kept, width).hex() if changed else oid
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):  # a ref may move; a commit's tree never does
+        _trees[key] = tree
+    return tree
 
 
 def blobs(repo: Path, commit: str, paths: list[str]) -> dict[str, str]:
