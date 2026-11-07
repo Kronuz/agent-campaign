@@ -1996,36 +1996,59 @@ def here_quest(c: Campaign, cwd: Path) -> str:
     return next((pid for pid in c.quests if any(b == branch for _, b, _, _ in branches(c, pid))), "")
 
 
-def print_brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -> None:
-    """Status for agents: one line per thing to act on, no decoration."""
+def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -> Json:
+    """Status for agents: per quest, only what to act on. Scoped to one quest, its file set too."""
+    out: Json = {"campaign": c.state["campaign"], "home": str(c.home), "jobs": queue}
     if not scoped:
-        n = overview(c)["counts"]
-        print(
-            f"campaign {c.state['campaign']}: {in_flight(n)}, {n['planned']} planned, {n['landed']} landed; "
-            f"jobs {queue['queued']} queued, {queue['running']} running"
-        )
+        out["counts"] = overview(c)["counts"]
+    quests: list[Json] = []
+    out["quests"] = quests
     for v in views:
         if v["status"] in ("landed", "dropped") and not scoped:
             continue
-        where = f": {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead" if "branch" in v else ""
-        print(f"{v['id']} {v['status']} {v['risk']}{where}")
+        q: Json = {"id": v["id"], "status": v["status"], "risk": v["risk"]}
+        if "branch" in v:
+            q.update(branch=v["branch"], head=v["head"], ahead=v["ahead"])
         if scoped:
-            print(f"  files: {', '.join(v['files']) or '(none)'}")
-        if v["ready"]:
-            print(f"  ready to start: `campaign start {v['id']}`")
-        elif "branch" in v and not v["missing"]:
-            print(f"  ready to land: `campaign land {v['id']}`")
-        for gap in v["missing"]:
+            q["files"] = v["files"]
+        q["next"] = (
+            f"campaign start {v['id']}"
+            if v["ready"]
+            else f"campaign land {v['id']}"
+            if "branch" in v and not v["missing"]
+            else ""
+        )
+        q["to_land"] = v["missing"]
+        q["notes"] = [{k: n[k] for k in ("id", "by", "at", "text")} for n in v.get("notes", []) if not n["answered"]]
+        q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
+        q["pending"] = {s: k for s, k in v["jobs"].items() if k}
+        quests.append(q)
+    return out
+
+
+def print_brief(b: Json) -> None:
+    """The brief as one line per thing to act on, no decoration."""
+    if "counts" in b:
+        n, jobs = b["counts"], b["jobs"]
+        print(
+            f"campaign {b['campaign']}: {in_flight(n)}, {n['planned']} planned, {n['landed']} landed; "
+            f"jobs {jobs['queued']} queued, {jobs['running']} running"
+        )
+    for q in b["quests"]:
+        where = f": {q['branch']} at {q['head']}, {plural(q['ahead'], 'commit')} ahead" if "branch" in q else ""
+        print(f"{q['id']} {q['status']} {q['risk']}{where}")
+        if "files" in q:
+            print(f"  files: {', '.join(q['files']) or '(none)'}")
+        if q["next"]:
+            print(f"  ready to {q['next'].split()[1]}: `{q['next']}`")
+        for gap in q["to_land"]:
             print(f"  - {gap}")
-        for n in v.get("notes", []):
-            if not n["answered"]:
-                print(f"  - {n['id']} from {n['by']}: {n['text']}")
-        for f in v["bad_at_head"]:
-            if not f["noted"]:
-                print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
-        pending = [f"{k} {s}" for s, k in v["jobs"].items() if k]
-        if pending:
-            print(f"  - jobs: {', '.join(pending)}")
+        for n in q["notes"]:
+            print(f"  - {n['id']} from {n['by']}: {n['text']}")
+        for f in q["failed"]:
+            print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
+        if q["pending"]:
+            print(f"  - jobs: {', '.join(f'{k} {s}' for s, k in q['pending'].items())}")
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -2038,7 +2061,7 @@ def cmd_status(a: argparse.Namespace) -> int:
 def show_status(a: argparse.Namespace) -> int:
     c = find_campaign(Path.cwd())
     reap()
-    if not a.id and not a.json:  # in a quest's worktree, that quest
+    if not a.id and (a.brief or not a.json):  # in a quest's worktree, that quest
         a.id = here_quest(c, Path.cwd())
     if not a.brief:
         sidebar(c)
@@ -2048,8 +2071,12 @@ def show_status(a: argparse.Namespace) -> int:
         c.quest(pid)
     views = [quest_view(c, pid, jobs, brief=a.brief) for pid in pids]
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
-    if a.brief and not a.json:
-        print_brief(c, views, queue, scoped=bool(a.id))
+    if a.brief:
+        b = brief(c, views, queue, scoped=bool(a.id))
+        if a.json:
+            print(json.dumps(b, indent=2))
+        else:
+            print_brief(b)
         return 0
     found: list[tuple[str, str]] = [] if a.brief else problems(c)
     reviews: list[Json] = review_rows(c) if a.reviews else []
@@ -3603,7 +3630,8 @@ def parser() -> argparse.ArgumentParser:
         "names yet, pending jobs. In a quest's worktree, that quest and its file set; elsewhere, every quest.",
     )
     p.add_argument("id", nargs="?")
-    p.set_defaults(fn=cmd_status, brief=True, json=False, reviews=False, all=False)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_status, brief=True, reviews=False, all=False)
 
     p = sub.add_parser(
         "usage", parents=[common], help="tokens, cost and time per quest, role and class (harness logs and jobs)"

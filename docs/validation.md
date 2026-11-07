@@ -277,7 +277,8 @@ unchecked, and with reruns not counted. The test harness clears the template's c
 
 `campaign status` grew into a view for people (bars, criteria, color). Agents now run `campaign
 brief`: one line per thing to act on (landing gaps, open notes, failed jobs no journal names,
-pending jobs), and in a quest's worktree only that quest and its file set. Both read each
+pending jobs), or the same as JSON with `--json`, and in a quest's worktree only that quest and its
+file set. Both read each
 repository's branch heads once and remember git answers keyed by commit ids, which never change.
 On a fixture shaped like dense-pages (15 criteria, 5 tasks, 132 commits, 98 jobs, journals citing
 jobs) on this Mac, under load:

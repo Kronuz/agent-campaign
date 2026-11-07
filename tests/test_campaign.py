@@ -1029,6 +1029,18 @@ class Style(CampaignCase):
         self.assertIn("campaign demo: 1 in flight (1 active), 1 planned, 0 landed; jobs 0 queued, 0 running\n", home)
         self.assertIn("other planned low\n  ready to start: `campaign start other`\n", home)
         self.assertNotIn("files:", home)
+        data = json.loads(self.ok(wt, "brief", "--json").out)  # the same, for parsing
+        self.assertNotIn("counts", data)
+        [quest] = data["quests"]
+        self.assertEqual((quest["id"], quest["files"], quest["next"]), ("fix", ["app.py"], ""))
+        self.assertTrue(any(g.startswith("check unit is not green") for g in quest["to_land"]), quest)
+        self.assertEqual([(n["id"], n["by"]) for n in quest["notes"]], [("note-1", "scout")])
+        self.assertEqual([f["job"] for f in quest["failed"]], [failed])
+        data = json.loads(self.ok(self.home, "brief", "--json").out)
+        self.assertEqual(data["counts"]["planned"], 1)
+        other = next(q for q in data["quests"] if q["id"] == "other")
+        self.assertEqual(other["next"], "campaign start other")
+        self.assertNotIn("files", other)
 
     def test_color_and_marks_only_on_a_terminal(self) -> None:
         wt = self.started("fix", files="app.py")

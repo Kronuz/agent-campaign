@@ -95,7 +95,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign accept ID LENS` | records a paladin's verdict for the quest's current content |
 | `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code |
 | `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
-| `campaign brief` | the same for agents: one line per thing to act on; in a quest's worktree, that quest |
+| `campaign brief [--json]` | the same for agents: one line (or JSON field) per thing to act on; in a quest's worktree, that quest |
 | `campaign note NAME:ID "text"` | passes a finding to a quest from anywhere on the machine; it blocks landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and class |
