@@ -1196,7 +1196,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
             "brief": brief_hash(c, a.id),
             "by": "waived" if a.waive else "review",
             "verdict": verdict,
-            "note": a.waive or a.note or "",
+            "note": a.waive or a.remark or "",
             "jobs": confirmations,
             "blobs": blobs(repo, commit, paths),
             "at": stamp(),
@@ -3814,7 +3814,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--commit", metavar="REF", help="the commit accepted (default: the branch head)")
     p.add_argument("--jobs", metavar="JOBS", help="jobs that confirmed each blocking fix (needed after CHANGES)")
     p.add_argument("--waive", metavar="REASON", help="no review: low or normal risk with strong evidence")
-    p.add_argument("--note", metavar="TEXT", help="a remark kept with the acceptance")
+    p.add_argument("--remark", metavar="TEXT", help="a remark kept with the acceptance")
     p.set_defaults(fn=cmd_accept)
 
     p = command(

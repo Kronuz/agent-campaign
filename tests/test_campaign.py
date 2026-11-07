@@ -477,7 +477,8 @@ class Reviews(CampaignCase):
         self.fails(self.home, "land", "feat", match="correctness review not accepted")
         self.fails(self.home, "accept", "feat", "correctness", match="no review")
         self.review("feat", "correctness", "APPROVE")
-        self.ok(self.home, "accept", "feat", "correctness")
+        self.ok(self.home, "accept", "feat", "correctness", "--remark", "read the error paths twice")
+        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["note"], "read the error paths twice")
         self.ok(self.home, "land", "feat")
 
     def test_changes_need_confirming_jobs_and_reject_cannot_be_accepted(self) -> None:

@@ -360,13 +360,18 @@ waits with `campaign wait` in bounded calls.
 6. **One repository per package.** Cross-repository work is ordered packages plus an integration
    job pinned to every repository's commit. Atomic multi-repository landing would need a
    coordinator nobody has asked for.
-7. **No messages between campaigns.** Campaigns on one machine see each other's overlapping
+7. **Notes, not yet a mailbox.** Campaigns on one machine see each other's overlapping
    quests, changing contracts and `NAME:ID` dependencies in `campaign check`; across machines they
-   see nothing, and the patron carries what one game master must tell another. A mailbox would
-   be outboxes in each home (`.campaign/<name>/outbox/<peer>/`, written only by their campaign),
-   read from peers' homes by path or fetched git URL, acknowledged in the reader's state, and
-   waking `campaign wait`; the tool would send what it already detects. It is not built: the
-   records hold no coordination failure between campaigns (the relays the patron made were
-   between ordinary sessions, or about the skill itself), and it costs about 200 lines, a fetch
-   loop and instruction words. Build it when two campaigns that share a repository or a contract
-   run at once, or when the patron relays between game masters more than occasionally.
+   see nothing, and the patron carries what one game master must tell another. Any agent on the
+   machine can leave a note for a quest of any campaign (`campaign note NAME:ID`): it waits in that
+   home's `.git`, wakes its game master's `campaign wait`, and blocks the quest's landing until a
+   journal answers it or the game master closes it. A mailbox would extend notes rather than add a
+   second mechanism: notes to a campaign (`campaign note NAME "text"`, for its game master), the
+   tool sending what it already detects (overlapping quests, a changed contract a peer consumes),
+   and committed outboxes in each home (`.campaign/<name>/outbox/<peer>/`, written only by their
+   campaign) read by path or a fetched git URL as the transport between machines, with the same
+   rule that a note is answered or closed. It is not built: the records hold no coordination
+   failure between campaigns (the relays the patron made were between ordinary sessions, or about
+   the skill itself), and it costs about 200 lines, a fetch loop and instruction words. Build it
+   when two campaigns that share a repository or a contract run at once on different machines, or
+   when the patron relays between game masters more than occasionally.
