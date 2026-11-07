@@ -97,7 +97,7 @@ The game master drives the tool; these are the commands it reaches for most.
 | `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code |
 | `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
 | `campaign brief [--json]` | the same for agents: one line (or JSON field) per thing to act on; in a quest's worktree, that quest |
-| `campaign note NAME:ID "text"` | passes a finding to a quest from anywhere on the machine; it blocks landing until answered |
+| `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's game master) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and class |
 | `campaign help COMMAND` | each command's description and options (`quiet help`, `report help` too) |

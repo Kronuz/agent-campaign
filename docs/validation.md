@@ -277,29 +277,41 @@ The tests fail with each gate removed, with merged tasks counted as unmerged, wi
 unchecked, and with reruns not counted. The test harness clears the template's criteria after
 `campaign new`, as a game master filling in the quest file would; the criteria tests keep them.
 
-## Agents' status, notes and other homes
+## Agents' status, messages and other homes
 
 `campaign status` grew into a view for people (bars, criteria, color). Agents now run `campaign
-brief`: one line per thing to act on (landing gaps, open notes, failed jobs no journal names,
+brief`: one line per thing to act on (landing gaps, open messages, failed jobs no journal names,
 pending jobs), or the same as JSON with `--json`, and in a quest's worktree only that quest and its
-file set. Both read each
-repository's branch heads once and remember git answers keyed by commit ids, which never change.
-On a fixture shaped like dense-pages (15 criteria, 5 tasks, 132 commits, 98 jobs, journals citing
-jobs) on this Mac, under load:
+file set. Both read each repository's branch heads once and remember git answers keyed by commit
+ids, which never change. On a fixture shaped like dense-pages (15 criteria, 5 tasks, 132 commits,
+98 jobs, journals citing jobs) on this Mac, under load:
 
 | Command | Before | Now | git processes |
 |---|---|---|---|
 | `campaign status` | 4.0 s | 2.05 s | 90, now 40 |
 | `campaign brief` | | 1.24 s | 20 |
 
-An agent outside a quest passes what it found with `campaign note NAME:ID "text" --from WHO`, from
-anywhere on the machine: the note waits in the home's `.git` (any agent can leave one without being
-the campaign's one writer), wakes a waiting game master, shows in status and brief, and blocks the
-landing until a journal of the quest names its id or the game master closes it with a reason; at
-landing it moves into the quest's state. A tool run outside the home names it with `-C HOME` (as
-git does), `--campaign NAME` (looked up in the machine's registry) or `$CAMPAIGN_HOME`; a write
-from a quest's worktree still refuses. The tests fail without the notes gate, without the
-worktree's scope, without `-C`, without the registry lookup, and with explicit homes refused.
+An agent outside a quest passes what it found with `campaign message NAME:ID "text" --from WHO`,
+from anywhere on the machine, or writes to a campaign's game master with `NAME:`. The message
+waits in the home's `.git` (any agent can leave one without being the campaign's one writer),
+wakes a waiting game master, and shows in status and brief; a quest's message blocks the landing
+until a journal of the quest names its id or the game master closes it with a reason, and at
+landing it moves into the quest's state. Starting a quest messages the game masters of the other
+campaigns on the machine whose files or contracts it overlaps. A campaign on another machine,
+named in `campaign config peers`, gets its messages through the sender's outbox: a ref of its own
+pushed to a remote both reach, fetched by the peer's `wait` and imported once each. A tool run
+outside the home names it with `-C HOME` (as git does), `--campaign NAME` (looked up in the
+machine's registry) or `$CAMPAIGN_HOME`; a write from a quest's worktree still refuses. The tests
+fail without the messages gate, without the worktree's scope, without `-C`, without the registry
+lookup, and with explicit homes refused.
+
+Messages work in every layout the tool supports, each with a test. Two campaigns in one home keep
+their quests' messages, their game masters' messages and their outbox refs apart, and a message
+sent from a quest's worktree reaches that worktree's campaign (fails with one outbox ref per
+home). A quest in a library repository takes messages sent from elsewhere and from its own
+worktree, shows them in its brief with its file set, runs and lists its jobs, and lands once its
+journal in the library names them. A campaign in the older `docs/campaign/` layout gates on them
+the same way.
 
 ## One name, one hold; quiet inside a hold
 
