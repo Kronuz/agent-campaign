@@ -418,7 +418,8 @@ QUEST_FIELDS: dict[str, type] = {
     "tasks": dict,
     "accepted": dict,
     "landed": list,
-    "notes": list,
+    "notes": list,  # messages filed before they were called messages
+    "messages": list,
     "reason": str,
     "milestone": str,
     "updated": str,
@@ -807,27 +808,96 @@ def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
     return out
 
 
-def note_inbox(c: Campaign, pid: str) -> Path:
-    """Where notes for a quest wait, in the home's .git: any agent on the machine can leave one there
-    without being the campaign's one writer."""
+def mailbox(c: Campaign, pid: str) -> Path:
+    """Where messages for a quest ("" for the campaign's game master) wait, in the home's .git: any
+    agent on the machine can leave one there without being the campaign's one writer."""
     common = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    return common / "campaign-notes" / c.state["campaign"] / pid
+    folder = common / "campaign-mail" / c.state["campaign"]
+    older = common / "campaign-notes" / c.state["campaign"]  # their name until 2026-11-07
+    if older.is_dir() and not folder.exists():
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            older.rename(folder)
+    return folder / (pid or "@")
 
 
-def inbox_notes(c: Campaign, pid: str) -> list[Json]:
+def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -> str:
+    """Leaves a message for a quest ("" for the game master) under a fresh id, and notifies."""
+    folder = mailbox(c, pid)
+    folder.mkdir(parents=True, exist_ok=True)
+    record = c.quests[pid] if pid else c.state
+    taken = [m["id"] for m in [*inbox(c, pid), *record.get("messages", []), *record.get("notes", [])]]
+    n = 1 + max([int(str(x).partition("-")[2] or 0) for x in taken] or [0])
+    tmp = folder / f".message.{os.getpid()}.tmp"
+    while True:  # a fresh id even when two agents write at once
+        message = {"id": f"msg-{n}", "at": stamp(), "by": by, "text": text, **({"origin": origin} if origin else {})}
+        tmp.write_text(json.dumps(message, indent=2) + "\n")
+        try:
+            os.link(tmp, folder / f"msg-{n}.json")
+            break
+        except FileExistsError:
+            n += 1
+        finally:
+            tmp.unlink(missing_ok=True)
+    notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
+    return f"msg-{n}"
+
+
+def tell_peers(c: Campaign, pid: str) -> list[str]:
+    """Messages for the game masters of the other campaigns on this machine whose work a quest just
+    started overlaps: the same files in the same repository, or a contract one changes and the other
+    consumes. Once per finding."""
+    p = c.quests[pid]
+    told: list[str] = []
+    found: list[tuple[str, str]] = [
+        (
+            other.split(":")[0],
+            f"{c.name}:{pid} started and may change files your {other.split(':')[1]} changes; "
+            f"order them (--after {c.name}:{pid}) or narrow the files",
+        )
+        for other in cross_overlaps(c, pid)
+    ]
+    for name, o in campaigns().items():
+        if name == c.name:
+            continue
+        for qid, q in o["state"].get("quests", {}).items():
+            if q.get("status") in ("planned", "active", "review"):
+                found += [
+                    (name, f"{c.name}:{pid} started and changes contract {x}, which your {qid} consumes")
+                    for x in sorted(set(p["provides"]) & set(q.get("consumes", [])))
+                ]
+            if q.get("status") in ("active", "review"):
+                found += [
+                    (name, f"{c.name}:{pid} started and builds against contract {x}, which your {qid} is changing")
+                    for x in sorted(set(p["consumes"]) & set(q.get("provides", [])))
+                ]
+    for name, text in found:
+        other = campaigns().get(name)
+        if other is None:
+            continue
+        peer = Campaign(Path(other["home"]), name)
+        if any(m["text"] == text for m in inbox(peer, "")):
+            continue
+        leave_message(peer, "", text, f"campaign {c.name}")
+        told.append(name)
+    return told
+
+
+def inbox(c: Campaign, pid: str) -> list[Json]:
+    """The open messages for a quest ("" for the game master), oldest first."""
     found: list[Json] = []
-    folder = note_inbox(c, pid)
-    for f in folder.glob("note-*.json") if folder.is_dir() else []:
+    folder = mailbox(c, pid)
+    for f in folder.glob("*-*.json") if folder.is_dir() else []:
         with contextlib.suppress(CampaignError):
-            note = read_json(f)
-            if note:
-                found.append(note)
+            message = read_json(f)
+            if message:
+                found.append(message)
     return sorted(found, key=lambda n: int(str(n["id"]).partition("-")[2] or 0))
 
 
-def answered(note: Json, journals: Collection[str]) -> bool:
-    """Whether a journal names the note by its id."""
-    return any(re.search(rf"\b{re.escape(str(note['id']))}\b", j) for j in journals)
+def answered(message: Json, journals: Collection[str]) -> bool:
+    """Whether a journal names the message by its id."""
+    return any(re.search(rf"\b{re.escape(str(message['id']))}\b", j) for j in journals)
 
 
 # ---------------------------------------------------------------- quest commands
@@ -902,7 +972,7 @@ def cmd_migrate(_a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later")
+CONFIG = ("ci", "ci_later", "peers", "outbox")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -923,8 +993,15 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["ci"] = value
                 elif key == "ci_later" and sep:
                     c.state["ci_later"] = csv(value)
+                elif key == "peers" and sep and all(re.fullmatch(r"[\w.-]+=\S+", x) for x in csv(value)):
+                    c.state["peers"] = csv(value)
+                elif key == "outbox" and sep:
+                    c.state["outbox"] = value
                 else:
-                    die(f"campaign config takes ci=github|'' and ci_later=WORKFLOW,..., not {item!r}")
+                    die(
+                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,... and "
+                        f"outbox=REMOTE, not {item!r}"
+                    )
             c.save("campaign: config " + " ".join(a.assignments))
     for key in keys or CONFIG:
         value = c.state.get(key) or ""
@@ -1153,6 +1230,9 @@ def cmd_start(a: argparse.Namespace) -> int:
         p["updated"] = stamp()
         c.save(f"campaign: start {name} on {branch} at {base[:12]}")
     print(f"{name}: {branch} in {wt}")
+    if not a.task:
+        for peer in tell_peers(c, a.id):
+            print(f"told campaign {peer}'s game master that {a.id} overlaps its work (a message)")
     return 0
 
 
@@ -1196,7 +1276,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
             "brief": brief_hash(c, a.id),
             "by": "waived" if a.waive else "review",
             "verdict": verdict,
-            "note": a.waive or a.remark or "",
+            "note": a.waive or a.note or "",
             "jobs": confirmations,
             "blobs": blobs(repo, commit, paths),
             "at": stamp(),
@@ -1326,10 +1406,10 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
         gaps.append(
             f"criteria without evidence in a journal's Evidence table at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
         )
-    unanswered = [n["id"] for n in inbox_notes(c, pid) if not answered(n, carried.values())] if final else []
+    unanswered = [m["id"] for m in inbox(c, pid) if not answered(m, carried.values())] if final else []
     if unanswered:
         gaps.append(
-            f"open notes: {', '.join(unanswered)}: answer each in a journal by its id, or close it (`campaign note {pid} --close NOTE --reason R`)"
+            f"unanswered messages: {', '.join(unanswered)}: answer each in a journal by its id, or close it (`campaign message {pid} --close MSG --reason R`)"
         )
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
     if stale:
@@ -1463,10 +1543,10 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{main} does not contain {target[:12]} after landing it")
         p["landed"].append(record)
         landed = record["commit"]
-        filed: list[Json] = inbox_notes(c, a.id) if final else []
+        filed: list[Json] = inbox(c, a.id) if final else []
         if final:
             p["status"] = "landed"
-            p.setdefault("notes", []).extend({**n, "answered": landed[:12]} for n in filed)
+            p.setdefault("messages", []).extend({**m, "answered": landed[:12]} for m in filed)
             if deferred(p):
                 try:
                     record["later"] = submit_checks(c, a.id, deferred(p), landed, priority=-1)
@@ -1474,8 +1554,8 @@ def cmd_land(a: argparse.Namespace) -> int:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
         p["updated"] = stamp()
         c.save(message + f" at {landed[:12]}")
-        for n in filed:
-            (note_inbox(c, a.id) / f"{n['id']}.json").unlink(missing_ok=True)
+        for m in filed:
+            (mailbox(c, a.id) / f"{m['id']}.json").unlink(missing_ok=True)
         notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
         if a.push:
             for where in dict.fromkeys([checkout, c.home]):
@@ -1867,7 +1947,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         }
     ended = [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
-    view["notes"] = [{**n, "answered": answered(n, texts.values())} for n in inbox_notes(c, pid)]
+    view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
     noted = "\n".join(texts.values())
     view["bad_at_head"] = [
         {**job_summary(j), "check": j["id"] in checked, "noted": j["id"] in noted}
@@ -2026,11 +2106,11 @@ def print_quest(v: Json, full: bool) -> None:
     else:
         for gap in v["missing"]:
             print(f"  {gap}")
-    for n in v.get("notes", []):
-        if not n["answered"]:
-            print(f"  {mark('📌')}" + paint(f"{n['id']} from {n['by']}", "yellow") + f" ({n['at'][:16]}): {n['text']}")
+    for m in v.get("messages", []):
+        if not m["answered"]:
+            print(f"  {mark('📨')}" + paint(f"{m['id']} from {m['by']}", "yellow") + f" ({m['at'][:16]}): {m['text']}")
         elif full:
-            print(f"  {mark('📌')}{n['id']} from {n['by']}: answered in a journal")
+            print(f"  {mark('📨')}{m['id']} from {m['by']}: answered in a journal")
     # a failure is part of iterating; one no journal mentions yet is the one to look at
     bad = v["bad_at_head"]
     unread = [f for f in bad if not f["noted"]]
@@ -2066,6 +2146,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
     out: Json = {"campaign": c.state["campaign"], "home": str(c.home), "jobs": queue}
     if not scoped:
         out["counts"] = overview(c)["counts"]
+        out["messages"] = [{k: m[k] for k in ("id", "by", "at", "text")} for m in inbox(c, "")]
     quests: list[Json] = []
     out["quests"] = quests
     for v in views:
@@ -2084,7 +2165,9 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
             else ""
         )
         q["to_land"] = v["missing"]
-        q["notes"] = [{k: n[k] for k in ("id", "by", "at", "text")} for n in v.get("notes", []) if not n["answered"]]
+        q["messages"] = [
+            {k: m[k] for k in ("id", "by", "at", "text")} for m in v.get("messages", []) if not m["answered"]
+        ]
         q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
         q["pending"] = {s: k for s, k in v["jobs"].items() if k}
         quests.append(q)
@@ -2099,6 +2182,8 @@ def print_brief(b: Json) -> None:
             f"campaign {b['campaign']}: {in_flight(n)}, {n['planned']} planned, {n['landed']} landed; "
             f"jobs {jobs['queued']} queued, {jobs['running']} running"
         )
+    for m in b.get("messages", []):
+        print(f"- {m['id']} for the game master, from {m['by']}: {m['text']}")
     if not b["quests"] and "counts" in b:
         print("nothing in flight or planned (`campaign new ID --title T` plans a quest)")
     for q in b["quests"]:
@@ -2110,8 +2195,8 @@ def print_brief(b: Json) -> None:
             print(f"  ready to {q['next'].split()[1]}: `{q['next']}`")
         for gap in q["to_land"]:
             print(f"  - {gap}")
-        for n in q["notes"]:
-            print(f"  - {n['id']} from {n['by']}: {n['text']}")
+        for m in q["messages"]:
+            print(f"  - {m['id']} from {m['by']}: {m['text']}")
         for f in q["failed"]:
             print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
         if q["pending"]:
@@ -2186,6 +2271,8 @@ def show_status(a: argparse.Namespace) -> int:
     print(
         f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
     )
+    for m in inbox(c, "") if not a.id else []:
+        print(f"  {mark('📨')}" + paint(f"{m['id']} for the game master, from {m['by']}", "yellow") + f": {m['text']}")
     if not views:
         print("  no quests yet (`campaign new ID --title T` plans one)")
     if a.id:
@@ -3401,52 +3488,152 @@ def cmd_job_log(a: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_note(a: argparse.Namespace) -> int:
-    """Passes a finding to a quest from anywhere on the machine, or (the game master) closes one."""
-    name, sep, pid = a.quest.rpartition(":")
+def outbox_ref(name: str) -> str:
+    """A campaign's outbox: a ref of its own in its home, published under the same name."""
+    return f"refs/campaign/outbox/{name}"
+
+
+def peers(c: Campaign) -> dict[str, str]:
+    """The campaigns on other machines this one exchanges messages with: name -> where its outbox is."""
+    return dict(x.split("=", 1) for x in c.state.get("peers", []) if "=" in x)
+
+
+def send_message(c: Campaign, peer: str, pid: str, text: str, by: str) -> str:
+    """Adds a message for a campaign on another machine to this campaign's outbox (a ref of its own,
+    never main) and pushes it; one that can't be pushed now goes with the next push."""
+    uid = f"{c.name}-{secrets.token_hex(4)}"
+    message = {"uid": uid, "from": c.name, "quest": pid, "at": stamp(), "by": by, "text": text}
+    blob = subprocess.run(
+        ["git", "-C", str(c.home), "hash-object", "-w", "--stdin"],
+        input=json.dumps(message, indent=2) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    index = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-dir")) / f"outbox.{os.getpid()}.index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+
+    def plumb(*args: str) -> str:
+        cmd = ["git", "-C", str(c.home), *args]
+        return subprocess.run(cmd, env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+    for _ in range(5):  # another agent may add a message at the same moment
+        parent = git(c.home, "rev-parse", "--verify", "--quiet", outbox_ref(c.name), check=False)
+        try:
+            plumb("read-tree", *([parent] if parent else ["--empty"]))
+            plumb("update-index", "--add", "--cacheinfo", f"100644,{blob},{peer}/{uid}.json")
+            parents = ["-p", parent] if parent else []
+            commit = plumb("commit-tree", plumb("write-tree"), *parents, "-m", f"campaign: message for {peer}")
+        finally:
+            index.unlink(missing_ok=True)
+        if git_ok(c.home, "update-ref", outbox_ref(c.name), commit, parent or "0" * 40):
+            push_outbox(c)
+            return uid
+    die("the outbox kept changing under this message; try again")
+
+
+def push_outbox(c: Campaign) -> bool:
+    """Publishes this campaign's outbox where its peers fetch it ($outbox remote, default origin)."""
+    if not git_ok(c.home, "rev-parse", "--verify", "--quiet", outbox_ref(c.name)):
+        return True
+    remote = c.state.get("outbox") or "origin"
+    ok = git_ok(c.home, "push", "--quiet", remote, f"{outbox_ref(c.name)}:{outbox_ref(c.name)}")
+    if not ok:
+        print(
+            f"campaign: the outbox could not be pushed to {remote}; the next message or wait retries", file=sys.stderr
+        )
+    return ok
+
+
+def fetch_peers(c: Campaign) -> list[str]:
+    """Fetches each peer's outbox and leaves the messages it holds for this campaign; their ids."""
+    imported = mailbox(c, "").parent / "imported.json"
+    seen: set[str] = set(((read_json(imported) if imported.exists() else None) or {}).get("uids", []))
+    left: list[str] = []
+    for name, where in peers(c).items():
+        local = f"refs/campaign/peer/{name}"
+        if not git_ok(c.home, "fetch", "--quiet", "--no-tags", where, f"+{outbox_ref(name)}:{local}"):
+            continue
+        for path in git(c.home, "ls-tree", "-r", "--name-only", local, "--", f"{c.name}/", check=False).splitlines():
+            with contextlib.suppress(ValueError, CampaignError):
+                message = json.loads(git(c.home, "show", f"{local}:{path}"))
+                if message["uid"] in seen:
+                    continue
+                pid = message.get("quest", "")
+                open_quest = pid in c.quests and c.quests[pid]["status"] not in ("landed", "dropped")
+                text = message["text"] if open_quest or not pid else f"for {pid}: {message['text']}"
+                left.append(
+                    leave_message(
+                        c, pid if open_quest else "", text, f"{message['from']}: {message['by']}", message["uid"]
+                    )
+                )
+                seen.add(message["uid"])
+    if left:
+        write_json(imported, {"uids": sorted(seen)})
+    return left
+
+
+def message_target(text: str) -> tuple[str, str]:
+    """(campaign name, quest id) from ID, NAME:ID, NAME: (its game master) or : (this campaign's)."""
+    name, sep, pid = text.rpartition(":")
+    return (name, pid) if sep else ("", text)
+
+
+def cmd_message(a: argparse.Namespace) -> int:
+    """Sends a message to a quest or a game master, from anywhere; or (the game master) closes one."""
+    name, pid = message_target(a.quest)
+    whom = pid or "the game master"
     if a.close:
         if not a.reason:
-            die("closing a note needs --reason R")
+            die("closing a message needs --reason R")
         with writing() as c:
-            p = c.quest(pid)
-            note = next((n for n in inbox_notes(c, pid) if n["id"] == a.close), None)
-            if note is None:
-                die(f"{pid} has no open note {a.close}")
-            p.setdefault("notes", []).append({**note, "closed": a.reason})
-            p["updated"] = stamp()
-            c.save(f"campaign: close {a.close} on {pid}")
-            (note_inbox(c, pid) / f"{a.close}.json").unlink()
-        print(f"{pid}: {a.close} closed")
+            if name and name != c.name:
+                die(f"close {name}'s messages from its home ({name}'s main checkout, or -C)")
+            record = c.quest(pid) if pid else c.state
+            message = next((m for m in inbox(c, pid) if m["id"] == a.close), None)
+            if message is None:
+                die(f"{whom} has no open message {a.close}")
+            record.setdefault("messages", []).append({**message, "closed": a.reason})
+            if pid:
+                record["updated"] = stamp()
+            c.save(f"campaign: close {a.close} for {whom}")
+            (mailbox(c, pid) / f"{a.close}.json").unlink()
+        print(f"{whom}: {a.close} closed")
         return 0
-    if sep:
+    if not a.text:
+        die("give the message's text")
+    here: Campaign | None = None
+    lost = ""
+    try:
+        here = find_campaign(Path.cwd())
+    except CampaignError as e:
+        lost = str(e)
+    if name and name not in campaigns() and here is not None and name in peers(here):
+        uid = send_message(here, name, pid, a.text, a.by)
+        print(f"{uid} for {name}:{pid or ''} queued in {here.name}'s outbox (`campaign wait` there fetches it)")
+        return 0
+    if name and here is not None and name == here.name:
+        c = here
+    elif name:
         other = campaigns().get(name)
         if other is None:
-            die(f"no campaign {name} on this machine (`campaign status --all` lists them)")
+            die(
+                f"no campaign {name} on this machine or among the peers (`campaign status --all`, `campaign config peers`)"
+            )
         c = Campaign(Path(other["home"]), name)
+    elif here is not None:
+        c = here
     else:
-        c = find_campaign(Path.cwd())
-    p = c.quest(pid)
-    if p["status"] in ("landed", "dropped"):
-        die(f"{pid} is {p['status']}: a finding about it is a new quest; tell the game master")
-    if not a.text:
-        die("give the note's text")
-    folder = note_inbox(c, pid)
-    folder.mkdir(parents=True, exist_ok=True)
-    taken = [n["id"] for n in [*inbox_notes(c, pid), *p.get("notes", [])]]
-    n = 1 + max([int(str(x).partition("-")[2] or 0) for x in taken] or [0])
-    tmp = folder / f".note.{os.getpid()}.tmp"
-    while True:  # a fresh id even when two agents write at once
-        note = {"id": f"note-{n}", "at": stamp(), "by": a.by, "text": a.text}
-        tmp.write_text(json.dumps(note, indent=2) + "\n")
-        try:
-            os.link(tmp, folder / f"note-{n}.json")
-            break
-        except FileExistsError:
-            n += 1
-        finally:
-            tmp.unlink(missing_ok=True)
-    notify(f"Note for {pid}", f"{a.by}: {a.text}"[:200])
-    print(f"note-{n} for {pid}: its journal answers it by that id, or the game master closes it")
+        die(f"{lost}; or address the message as NAME:ID or NAME:")
+    if pid:
+        p = c.quest(pid)
+        if p["status"] in ("landed", "dropped"):
+            die(
+                f"{pid} is {p['status']}: a finding about it is a new quest; tell the game master (`campaign message {c.name}: ...`)"
+            )
+    nid = leave_message(c, pid, a.text, a.by)
+    then = "its journal answers it by that id, or the game master closes it" if pid else "the game master closes it"
+    print(f"{nid} for {whom}: {then}")
     return 0
 
 
@@ -3511,16 +3698,20 @@ def wait_events(c: Campaign, timeout: float) -> int:
     recorded: Json | None = records.get(c.ident)
 
     def remember(heads: dict[str, str], ended: dict[str, Json]) -> None:
-        records[c.ident] = {"heads": heads, "jobs": sorted(ended), "notes": sorted(notes())}
+        records[c.ident] = {"heads": heads, "jobs": sorted(ended), "messages": sorted(messages())}
         write_json(seen_file, records)
 
-    def notes() -> dict[str, Json]:
-        return {
-            f"{pid} {n['id']}": n
-            for pid, q in c.quests.items()
-            if q["status"] not in ("landed", "dropped")
-            for n in inbox_notes(c, pid)
-        }
+    def messages() -> dict[str, Json]:
+        open_quests = [pid for pid, q in c.quests.items() if q["status"] not in ("landed", "dropped")]
+        return {f"{pid or c.name + ':'} {m['id']}": m for pid in ["", *open_quests] for m in inbox(c, pid)}
+
+    exchanged = [0.0]
+
+    def exchange() -> None:  # the peers' outboxes, and this one's, about once a minute
+        if peers(c) and time.time() - exchanged[0] >= float(os.environ.get("CAMPAIGN_PEER_SECONDS", "60")):
+            fetch_peers(c)
+            push_outbox(c)
+            exchanged[0] = time.time()
 
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
     start = time.time()
@@ -3537,22 +3728,23 @@ def wait_events(c: Campaign, timeout: float) -> int:
     heads, ended = current()
     if recorded is None:  # the first wait starts from now
         remember(heads, ended)
-        seen_heads, seen_jobs, seen_notes = dict(heads), set(ended), set(notes())
+        seen_heads, seen_jobs, seen_messages = dict(heads), set(ended), set(messages())
     else:
         seen_heads = {str(k): str(v) for k, v in dict(recorded.get("heads") or {}).items()}
         seen_jobs = {str(x) for x in recorded.get("jobs") or []}
-        seen_notes = {str(x) for x in recorded.get("notes") or []}
+        seen_messages = {str(x) for x in recorded.get("messages") or []}
     while True:
         reap()
+        exchange()
         heads, ended = current()
-        waiting = notes()
+        waiting = messages()
         moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
         finished = sorted(set(ended) - seen_jobs)
-        arrived = sorted(set(waiting) - seen_notes)
+        arrived = sorted(set(waiting) - seen_messages)
         if moved or finished or arrived:
             break
         running = [j for j in all_jobs() if j["spec"].get("campaign") == c.ident]
-        if not heads and not any(j["state"].get("state") not in TERMINAL for j in running):
+        if not heads and not peers(c) and not any(j["state"].get("state") not in TERMINAL for j in running):
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
         if timeout and time.time() - start >= timeout:
@@ -3566,7 +3758,9 @@ def wait_events(c: Campaign, timeout: float) -> int:
         print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch, '')}")
     for key in arrived:
         n = waiting[key]
-        print(f"{key.split()[0]}: {n['id']} from {n['by']}: {n['text']}")
+        target = key.split()[0]
+        whom = f" for the game master, from {n['by']}" if target.endswith(":") else f" from {n['by']}"
+        print(f"{target.rstrip(':')}: {n['id']}{whom}: {n['text']}")
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
@@ -3631,7 +3825,7 @@ EXAMPLES = """examples:
   campaign job submit --quest cart --level strict --minutes 10 -- ./bench.sh
   campaign verify cart && campaign wait --quest cart
   campaign accept cart correctness && campaign land cart
-  campaign note shop:cart "totals round half-even" --from scout   # from anywhere on the machine"""
+  campaign message shop:cart "totals round half-even" --from scout   # from anywhere on the machine"""
 
 
 def parser() -> argparse.ArgumentParser:
@@ -3666,10 +3860,12 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "config",
-        "show or set campaign-wide settings: ci, ci_later",
+        "show or set campaign-wide settings: ci, ci_later, peers, outbox",
         "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE "
         "assignments, sets them (from the home's main checkout). ci=github makes landing wait for green GitHub "
-        "CI; ci_later=WORKFLOW,... names workflows that do not gate it.",
+        "CI; ci_later=WORKFLOW,... names workflows that do not gate it. peers=NAME=URL,... names campaigns on "
+        "other machines and where their outboxes are (a repository they push to); outbox=REMOTE is where this "
+        "campaign pushes its own (default origin).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -3760,7 +3956,7 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "brief",
         "what each quest still needs, for agents",
-        "What a quest still needs, one line each: landing gaps, open notes, failed jobs no journal names yet, "
+        "What a quest still needs, one line each: landing gaps, unanswered messages, failed jobs no journal names yet, "
         "pending jobs; --json gives the same as JSON. In a quest's worktree, that quest and its file set; "
         "elsewhere, every quest not landed.",
     )
@@ -3814,14 +4010,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--commit", metavar="REF", help="the commit accepted (default: the branch head)")
     p.add_argument("--jobs", metavar="JOBS", help="jobs that confirmed each blocking fix (needed after CHANGES)")
     p.add_argument("--waive", metavar="REASON", help="no review: low or normal risk with strong evidence")
-    p.add_argument("--remark", metavar="TEXT", help="a remark kept with the acceptance")
+    p.add_argument("--note", metavar="TEXT", help="a remark kept with the acceptance")
     p.set_defaults(fn=cmd_accept)
 
     p = command(
         "land",
         "land a quest on main",
         "Lands the quest when nothing `campaign brief` lists is left: dependencies, rebase, file set, tasks, "
-        "criteria, notes, checks, reviews and CI. It fast-forwards main (or merges when only campaign files "
+        "criteria, messages, checks, reviews and CI. It fast-forwards main (or merges when only campaign files "
         "differ), checks that the landed code is the tested code and records the landing. --upto lands a "
         "prefix that is safe alone as an increment; --record records a landing that already happened.",
     )
@@ -3834,13 +4030,17 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_land)
 
     p = command(
-        "note",
-        "pass a finding to a quest from anywhere on the machine",
-        "Leaves a note for a quest ([NAME:]ID; NAME from anywhere on the machine). It stays open, shown by "
-        "status and brief and blocking the landing, until one of the quest's journals names its id or the game "
-        "master closes it (--close NOTE --reason R, from the home's main checkout).",
+        "message",
+        "send a finding to a quest or a game master, from anywhere",
+        "Sends a message to a quest (ID, or NAME:ID from outside its home) or to a campaign's game master "
+        "(NAME:, or : for this campaign's), from anywhere on the machine. A quest's message stays open, shown by "
+        "status and brief and blocking its landing, until one of its journals names the message's id or the "
+        "game master closes it; a game master's message until it is closed (--close MSG --reason R, from the "
+        "home). For a campaign on another machine named in `campaign config peers`, the message goes to this "
+        "campaign's outbox, which `campaign wait` there fetches. Starting a quest sends a message to the game "
+        "masters of the other campaigns on this machine whose work it overlaps.",
     )
-    p.add_argument("quest", metavar="[NAME:]ID", help="the quest, with its campaign's name from outside its home")
+    p.add_argument("quest", metavar="TARGET", help="ID, NAME:ID, NAME: or :")
     p.add_argument("text", metavar="TEXT", nargs="?", default="", help="what was found")
     p.add_argument(
         "--from",
@@ -3849,9 +4049,9 @@ def parser() -> argparse.ArgumentParser:
         default=os.environ.get("USER", "someone"),
         help="who found it (default $USER)",
     )
-    p.add_argument("--close", metavar="NOTE", help="close an open note (the game master)")
+    p.add_argument("--close", metavar="MSG", help="close an open message (the game master)")
     p.add_argument("--reason", metavar="TEXT", help="why it is closed")
-    p.set_defaults(fn=cmd_note)
+    p.set_defaults(fn=cmd_message)
 
     p = command(
         "clean",
@@ -3876,7 +4076,7 @@ def parser() -> argparse.ArgumentParser:
         "block until jobs finish, or until anything new happens; no tokens",
         "Blocks until the jobs finish (exit 0 all done, 1 a failure, 3 the timeout). With --commits, until "
         "anything new happens in the campaign since the last such wait: a quest branch moves, a job ends, or "
-        "a note arrives.",
+        "a message arrives.",
     )
     p.add_argument("jobs", nargs="*", metavar="JOB", help="the jobs to wait for")
     p.add_argument("--quest", metavar="ID", help="every pending job of this quest")
@@ -3884,7 +4084,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--commits",
         action="store_true",
-        help="return at the first quest-branch commit, ended job or note of this campaign not seen by an earlier wait",
+        help="return at the first quest-branch commit, ended job or message of this campaign not seen by an earlier wait",
     )
     p.add_argument("--timeout", type=float, default=0, metavar="SECONDS", help="exit 3 when it passes (default: none)")
     p.set_defaults(fn=cmd_wait)

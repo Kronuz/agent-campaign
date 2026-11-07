@@ -8,7 +8,8 @@ pick the quest up. `campaign status` reads State, the first step under Next, and
 table, one row per criterion with its job id or test: that table is the quest's progress, and
 landing needs every criterion in it. A row naming a job counts while that job, or the same job
 rerun (`campaign job rerun`), passed at the quest's current code. Name each job you examined by its
-id, failures included; status lists the failed jobs no journal names yet. State is one of: working,
+id, failures included; status lists the failed jobs no journal names yet. Answer each message
+`campaign brief` lists by naming its id (msg-N) with what you did. State is one of: working,
 waiting on jobs <ids>, ready for review, fixing <review>, blocked on <who>: <what> (say which
 criteria are done and which wait).
 

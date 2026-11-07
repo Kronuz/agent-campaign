@@ -28,7 +28,7 @@ or task; your prompt names its worktree, branch, quest file and journal.
 - Decisions inside the quest's scope are yours: record them under "Rulings I made". Decisions that
   change the quest, a contract, or user-visible behavior are not: write them under "Blocked on"
   with options and a recommendation, and stop that step.
-- Fold in the paladin's findings by ID; each fix gets a test that fails without it.
+- Fold in review findings and messages by id; each fix gets a test that fails without it.
 - Never push, land, or touch `main`, another worktree, or the campaign state. Leave nothing
   running when you finish.
 - Final message, under 250 words: State, each criterion with its evidence, Blocked on.

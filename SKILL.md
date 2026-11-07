@@ -96,8 +96,8 @@ launch costs more. Harness specifics (launching, background runs, resuming, wait
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work.
-- **Notes:** an agent that finds something for another quest runs `campaign note NAME:ID "text"
-  --from WHO`; the note blocks that quest's landing until its journal names the note or the game
+- **Messages:** `campaign message NAME:ID "text" --from WHO` passes a finding to a quest (`NAME:`
+  to that campaign's game master); it blocks landing until a journal names its id or the game
   master closes it with a reason.
 - **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
   can land alone), then to the adventurer; superseded work is `campaign set ID status=dropped
