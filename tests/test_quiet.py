@@ -78,6 +78,41 @@ class Quiet(unittest.TestCase):
             self.assertLess(time.time(), end, "timed out waiting")
             time.sleep(0.05)
 
+    def test_a_name_is_one_hold(self) -> None:
+        first = self.quiet("strict", "bench", "10", "first", "--", "sleep", "4")
+        self.until(lambda: "bench [" in self.listed())
+        second = self.quiet("strict", "bench", "1", "second", "--", "true")
+        _, err = second.communicate(timeout=20)
+        self.assertEqual(second.returncode, 2)  # refused at once, not run beside the first
+        self.assertIn(f"bench is already held or awaited by pid {first.pid} (first)", err)
+        first.communicate(timeout=30)
+        self.assertEqual(first.returncode, 0)
+
+    def test_quiet_inside_a_hold_runs_under_it_or_refuses(self) -> None:
+        inner = f"{sys.executable} {QUIET} strict inner 1 inner -- echo inner-ran"
+        p = self.quiet("strict", "outer", "1", "outer", "--", "bash", "-c", inner)
+        out, err = p.communicate(timeout=30)  # would wait behind its own parent until the deadline
+        self.assertEqual((p.returncode, out), (0, "inner-ran\n"), err)
+        p = self.quiet("light", "build", "1", "build", "--", "bash", "-c", inner)
+        out, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("runs inside build's light hold, so a strict request would wait for its own parent", err)
+
+    def test_a_waiting_holds_pill_says_what_it_waits_for(self) -> None:
+        stub = self.dir / "bin"
+        stub.mkdir()
+        (stub / "cmux").write_text(f'#!/bin/sh\necho "$*" >> {self.dir / "cmux.log"}\n')
+        (stub / "cmux").chmod(0o755)
+        env = {"PATH": f"{stub}:{self.env['PATH']}", "CMUX_WORKSPACE_ID": "ws"}
+        first = self.quiet("strict", "a", "10", "first", "--", "sleep", "3", **env)
+        self.until(lambda: "a [" in self.listed())
+        second = self.quiet("strict", "b", "10", "second", "--", "true", **env)
+        second.communicate(timeout=30)
+        first.communicate(timeout=30)
+        pills = (self.dir / "cmux.log").read_text()
+        self.assertIn("set-status quiet-b queued (behind a strict hold): second --icon hourglass", pills)
+        self.assertIn("set-status quiet-b strict: second --icon hammer", pills)
+
     def test_a_measurement_is_stopped_at_its_deadline(self) -> None:
         # a starved shell may outlive its TERM until the KILL 10 s later, so `&&`: a run that was never
         # stopped prints "late" at 30 s, and how soon a stopped one ends depends on the CPU it gets

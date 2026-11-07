@@ -383,50 +383,98 @@ def locked() -> Iterator[None]:
 # Taking a hold
 
 
-def try_hold(name: str, level: str, exclusive: bool, start: float) -> tuple[str, str] | None:
-    """The hold's cores and pause flag once its level's rule allows it, else None."""
+def try_hold(name: str, level: str, exclusive: bool, start: float) -> tuple[tuple[str, str] | None, str]:
+    """The hold's cores and pause flag once its level's rule allows it, else None and why not."""
     if free_gb() < int(env("QUIET_DISK_MIN_GB", "5")):
-        return None
+        return None, "low disk"
     if level == "strict":
-        if count("strict", name) or older_pending(name) or starving(name):
-            return None
+        if count("strict", name):
+            return None, "behind a strict hold"
+        if older_pending(name):
+            return None, "behind an earlier strict request"
+        if starving(name):
+            return None, "a long-waiting light request goes first"
         cpus = strict_set(exclusive)
         if cpus:  # only light holds on other cores may overlap
-            return None if unpinned_light(name, complement(cpus)) else (cpus, "")
+            return (None, "light holds on its cores") if unpinned_light(name, complement(cpus)) else ((cpus, ""), "")
         if env("QUIET_PAUSE", "") == "1" and not exclusive:  # light holds are paused instead of waited out
-            return None if unpausable_light(name) else ("", "1")
-        if count("light", name):
-            return None
+            return (None, "a light hold that can't pause") if unpausable_light(name) else (("", "1"), "")
+        lights = count("light", name)
+        if lights:
+            return None, f"behind {lights} light hold{'s' if lights > 1 else ''}"
         # let the load settle, but not forever: other sessions' work isn't ours to wait out
-        if load1() >= QUARTER and time.time() - start < 60 * float(env("QUIET_LOAD_WAIT", "10")):
-            return None
-        return "", ""
+        load = load1()
+        if load >= QUARTER and time.time() - start < 60 * float(env("QUIET_LOAD_WAIT", "10")):
+            return None, f"load {load:g} settling"
+        return ("", ""), ""
     beside = strict_beside(name, (DIR / f"{name}.starving").exists())
     if beside is None:
+        return None, "a strict hold has the machine"
+    if count("light", name) >= int(env("QUIET_LIGHT_SLOTS", str(QUARTER))):
+        return None, "light slots full"
+    load = load1()
+    if load >= max_load():
+        return None, f"load {load:g}"
+    return ((complement(beside) if beside else ""), ""), ""
+
+
+def claim_name(name: str, minutes: int, what: str, level: str, exclusive: bool) -> str:
+    """Who else holds or waits under NAME, else "" after recording a strict request, which queues
+    ahead of new light holds: one name is one hold, so a second can't take it or its sidebar pill."""
+    with locked():
+        for path in (DIR / name, DIR / f"{name}.pending", DIR / f"{name}.starving"):
+            info = read(path) if path.exists() else {}
+            if info and live(info) and get(info, "pid") != str(os.getpid()):
+                return f"pid {get(info, 'pid')} ({get(info, 'what')})"
+        if level == "strict":
+            put(
+                DIR / f"{name}.pending",
+                [
+                    ("pid", os.getpid()),
+                    ("until", int(time.time()) + 60 * (minutes + 120)),
+                    ("cpus", strict_set(exclusive)),
+                    ("what", what),
+                    ("since", time.strftime("%H:%M:%S")),
+                    ("level", "strict"),
+                ],
+            )
+    return ""
+
+
+RANK = {"light": 0, "strict": 1, "exclusive": 2}
+
+
+def nested(level: str, exclusive: bool, cmd: list[str]) -> int | None:
+    """Inside a live hold ($QUIET_HELD, set for its command), a request it covers runs right away
+    under it; a stronger one would wait for its own parent, so it is refused. None outside a hold."""
+    held = os.environ.get("QUIET_HELD", "").split()
+    if len(held) != 3:
         return None
-    if count("light", name) >= int(env("QUIET_LIGHT_SLOTS", str(QUARTER))) or load1() >= max_load():
+    name, kind, pid = held
+    info = read(DIR / name) if (DIR / name).exists() else {}
+    if not info or not live(info) or get(info, "pid") != pid:
         return None
-    return (complement(beside) if beside else ""), ""
+    want = "exclusive" if exclusive else level
+    if RANK[want] > RANK.get(kind, 0):
+        print(
+            f"quiet: this runs inside {name}'s {kind} hold, so a {want} request would wait for its own parent; "
+            "run it as its own hold or job",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as e:
+        print(f"quiet: cannot run {cmd[0]}: {e}", file=sys.stderr)
+        return 127 if isinstance(e, FileNotFoundError) else 126
 
 
 def acquire(name: str, minutes: int, what: str, level: str, exclusive: bool) -> bool:
     """Waits for the hold; False when a signal ended the wait."""
     me = os.getpid()
-    if level == "strict":  # queue ahead of new light holds
-        until = int(time.time()) + 60 * (minutes + 120)
-        put(
-            DIR / f"{name}.pending",
-            [
-                ("pid", me),
-                ("until", until),
-                ("cpus", strict_set(exclusive)),
-                ("what", what),
-                ("since", time.strftime("%H:%M:%S")),
-                ("level", "strict"),
-            ],
-        )
     marker = DIR / f"{name}.starving"
     start = time.time()
+    shown = ""
     while not STOPPING:
         # a light request that waited long enough goes before new strict holds (bounded service);
         # it says so before taking the lock, which busy pollers may hold most of the time
@@ -447,12 +495,15 @@ def acquire(name: str, minutes: int, what: str, level: str, exclusive: bool) -> 
                 ],
             )
         with locked():
-            got = try_hold(name, level, exclusive, start)
+            got, why = try_hold(name, level, exclusive, start)
             if got is not None:
                 write_hold(name, minutes, what, me, level, cpus=got[0], pause=got[1])
                 for path in (DIR / f"{name}.pending", marker):
                     path.unlink(missing_ok=True)
                 return True
+        if why != shown:  # the pill says what it waits for
+            pill(name, minutes, f"queued ({why}): {what}", "hourglass")
+            shown = why
         nap(float(env("QUIET_POLL", "5")))
     return False
 
@@ -721,6 +772,13 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
     if not cmd:
         print("quiet: no command to run after --", file=sys.stderr)
         return 2
+    inside = nested(level, exclusive, cmd)
+    if inside is not None:
+        return inside
+    clash = claim_name(name, minutes, what, level, exclusive)
+    if clash:
+        print(f"quiet: {name} is already held or awaited by {clash}; use another name", file=sys.stderr)
+        return 2
     hold = DIR / name
     started, code = 0.0, 1
     guard: subprocess.Popen[bytes] | None = None
@@ -736,6 +794,8 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
         pill(name, minutes, f"{level}: {what}", "hammer")
         info = read(hold)
         cpus, until = get(info, "cpus"), int(get(info, "until"))
+        kind = "exclusive" if exclusive or (level == "strict" and not cpus) else level
+        os.environ["QUIET_HELD"] = f"{name} {kind} {os.getpid()}"  # quiet inside the command runs under this hold
         if level == "strict" and get(info, "pause") == "1":
             pause_light(name)
             guard = watchdog(hold, until)

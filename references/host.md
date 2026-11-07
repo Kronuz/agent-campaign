@@ -71,11 +71,12 @@ quiet exclusive NAME MIN "what" -- cmd   # timing with the machine to itself
 quiet list | check                       # check: 0 free, 2 light work only, 1 nothing
 ```
 
-- A hold names what it is for, who holds it, and its deadline. It ends with its process or at the
-  deadline, so a crashed holder blocks no one for long.
+- A hold ends with its process or at its deadline, so a crashed holder blocks no one for long. A
+  name is one hold: a second request under a held name is refused. Inside a hold, `quiet` runs a
+  request at that level or lower at once and refuses a stronger one, which would wait for its own
+  parent.
 - Strict and exclusive holds last at most 30 minutes (`QUIET_MAX_MIN`) and their command is
-  stopped at the deadline: a measurement never runs unheld. The hold outlives the stop by 15 s,
-  so the next measurement starts only after the last one is gone. A light command keeps running
+  stopped at the deadline: a measurement never runs unheld. A light command keeps running
   past its deadline unless `QUIET_KILL=1` (the job runner sets it).
 - Strict requests are served in arrival order and block new light holds; a light request waiting
   10 minutes (`QUIET_STARVE_MIN`) goes before new strict holds, so builds are never starved.

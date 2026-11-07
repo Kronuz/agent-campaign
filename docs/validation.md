@@ -296,6 +296,21 @@ git does), `--campaign NAME` (looked up in the machine's registry) or `$CAMPAIGN
 from a quest's worktree still refuses. The tests fail without the notes gate, without the
 worktree's scope, without `-C`, without the registry lookup, and with explicit homes refused.
 
+## One name, one hold; quiet inside a hold
+
+Two `quiet` bugs, both reproduced before the fix. A second request under a held name took the hold
+at once (the level counts skipped holds of the requester's own name), so two strict measurements
+ran together and shared one sidebar pill, the waiting one's "queued" over the running one's. And a
+`quiet` call inside a hold, such as a benchmark wrapped in `quiet strict` inside a strict campaign
+job, waited behind its own parent until the parent's deadline stopped both, its pill reading
+"queued" the whole time.
+
+A name held or requested by another live process is now refused at once (checked under the lock,
+together with recording a strict request). `quiet` gives its command `QUIET_HELD`; a nested request
+at that level or lower runs at once under the hold, and a stronger one is refused with the reason.
+A waiting request's pill says what it waits for: `queued (behind 2 light holds): ...`, `queued
+(load 9 settling): ...`. Each test fails with its fix reverted.
+
 ## Not run
 
 - Claude Code and Codex were not exercised live; Codex is not installed here. Agent files for
