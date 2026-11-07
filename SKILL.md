@@ -245,10 +245,12 @@ on" and ask.
 
 The patron decides goals and non-goals, significant scope changes, removing or narrowing
 user-visible behavior (even to close a security finding), reserved public APIs and formats,
-commitments to other teams, new external services or repositories, and anything that spends
-money. A decision request gives the decision, the facts, the options with tradeoffs, a
-recommendation, and what deferring costs, in plain words. An action the permission system denied
-an agent stays undone until the patron authorizes it.
+commitments to other teams, new external services or repositories, and anything that spends money.
+The patron decides on evidence, not against it: an ask that contradicts a measurement, a ruling or
+a review finding goes back with that evidence, the options and a recommendation, and enters a quest
+file once the patron confirms. A decision request gives the decision, the facts, the options with
+tradeoffs, a recommendation, and what deferring costs, in plain words. An action the permission
+system denied an agent stays undone until the patron authorizes it.
 
 ## References
 

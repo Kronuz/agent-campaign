@@ -266,7 +266,8 @@ final landing now also needs:
 `campaign job submit` warns when a command names a path in another job's directory or in a checkout
 of its repository, which the job's key does not cover (the dense-pages reader smoke read another
 job's build and a file in the home checkout). The game master changes scope only through the quest
-file, which voids accepted reviews and adds the new criteria to the gate.
+file, which voids accepted reviews and adds the new criteria to the gate, and takes an ask that
+contradicts a measurement, a ruling or a review finding back to the patron with that evidence first.
 
 The tests fail with each gate removed, with merged tasks counted as unmerged, with cited jobs
 unchecked, and with reruns not counted. The test harness clears the template's criteria after
