@@ -15,7 +15,7 @@ Quest: <home>/.campaign/<campaign>/quests/<ID>.md (outcome, criteria, contracts;
 Journal: .campaign/<campaign>/journal/<ID>.md in your worktree; keep it current and commit it with your work.
 Context: <only what the files do not say: a ruling, a finding to fold in, a related quest>.
 
-Start with `campaign status <ID>`, `git log --oneline main..HEAD` and `git status`. Change only files
+Start with `campaign brief`, `git log --oneline main..HEAD` and `git status`. Change only files
 in the quest's file set. Prove each criterion as the quest file says, with jobs:
 `campaign job submit --quest <ID> --level <L> --minutes <M> -- <cmd>` and `campaign verify <ID>`.
 Wait at most once per turn (`campaign wait <ids> --timeout 600`); if jobs still run, record their
@@ -63,7 +63,7 @@ Final message, under 200 words: the cause with numbers, the change and its evide
 
 ```
 You resume quest <ID> of campaign <name> (<home repo path>) after the previous adventurer stopped. Worktree <path>,
-branch <branch>. Run `campaign status <ID>` and `campaign check`, then read the journal, the quest file,
+branch <branch>. Run `campaign brief` and `campaign check`, then read the journal, the quest file,
 `git log --oneline main..HEAD` and `git status`. Uncommitted changes are the previous adventurer's work:
 keep what is right, never discard them blindly. Jobs it submitted are in `campaign job list
 --quest <ID>`; their results stand, do not rerun them. Continue from the journal's "Doing".

@@ -81,7 +81,7 @@ usually a few hundred to ~1,500 changed lines. Fields (`state.json`):
 - `lenses`: the reviews required before final landing (from risk; the lead may add).
 - `branch`, `worktree`, `base`, optional `tasks` (parallel writers inside one package, each on
   `pkg/<id>--<task>`, merged into the package branch by the lead).
-- `accepted`: per lens, the commit, the merge base, the brief's hash, and the mode and blob of
+- `accepted`: per lens, the commit, the merge base, the quest file's hash, and the mode and blob of
   each changed path when the lead accepted it, or a waiver with its reason.
 - `landed`: each landing (increments and final) with the evidence that justified it.
 

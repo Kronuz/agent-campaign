@@ -97,12 +97,12 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
 
 ## Several campaigns
 
-Each campaign registers its name and home in `~/.scratch/campaign/campaigns/` on every write;
-names are unique on the machine (they name build slots). Campaigns share the job queue, the
-worker, `quiet` and `pace`, and reuse each other's identical evidence. A landing into a repository
-other than the home also takes that repository's lock; a busy lock fails after
-`CAMPAIGN_LOCK_WAIT` seconds (120) and the landing is retried. `campaign check` only reads other
-campaigns' state.
+Each campaign registers its name and home in `~/.scratch/campaign/campaigns/` on every write; names
+are unique on the machine (they name build slots). Campaigns share the job queue, the worker,
+`quiet` and `pace`, and reuse each other's identical evidence. A landing into a repository other
+than the home also takes that repository's lock; a busy lock fails after `CAMPAIGN_LOCK_WAIT`
+seconds (120) and the landing is retried. `campaign check` only reads other campaigns' state. From
+outside a home, name it: `campaign -C HOME ...`, `--campaign NAME`, or `$CAMPAIGN_HOME`.
 
 ## Other tools
 
@@ -114,7 +114,4 @@ campaigns' state.
   It is information for decisions (will this batch exhaust the week before the milestone?), never
   a reason to launch work. It does not see Claude Code's purchased credits.
 - **`report`** draws the patron's sidebar progress and notifications (cmux; elsewhere the terminal
-  or desktop). Inside cmux, every state change and `campaign status` update the bar (the current
-  milestone's quests), the `campaign` pill (the whole project) and a `campaign-<id>` pill per
-  quest in flight, sending only what changed; landings and blocks notify. `quiet` adds a pill
-  per hold, in the workspace that submitted the job, and notifies when a hold ran 5 minutes or more.
+  or desktop); `campaign` and `quiet` keep it current by themselves.

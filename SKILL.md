@@ -96,6 +96,9 @@ launch costs more. Harness specifics (launching, background runs, resuming, wait
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work.
+- **Notes:** an agent that finds something for another quest runs `campaign note NAME:ID "text"
+  --from WHO`; the note blocks that quest's landing until its journal names the note or the game
+  master closes it with a reason.
 - **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
   can land alone), then to the adventurer; superseded work is `campaign set ID status=dropped
   reason=...`.
@@ -222,12 +225,12 @@ with `--after NAME:ID`, which landing enforces, and tell their game master (`cam
 
 ## Recovery
 
-Every session, game master or adventurer, starts with `campaign status` (the quest log) and
-`campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
-job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
-completed or cleared by the next state-writing command; a merged but unrecorded branch is recorded
-with `campaign land ID --record COMMIT`. Never invent a missing decision: write it under "Blocked
-on" and ask.
+Every session, game master or adventurer, starts with `campaign brief` (in a worktree, its quest)
+and `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees
+and job records over any document. A dirty worktree is kept, never discarded. An interrupted
+landing is completed or cleared by the next state-writing command; a merged but unrecorded branch
+is recorded with `campaign land ID --record COMMIT`. Never invent a missing decision: write it
+under "Blocked on" and ask.
 
 ## Cost
 

@@ -475,7 +475,7 @@ class Reviews(CampaignCase):
         self.review("feat", "correctness", "APPROVE")
         self.ok(self.home, "accept", "feat", "correctness")
         self.commit(self.home, {".campaign/demo/quests/feat.md": "new criteria\n"})
-        self.fails(self.home, "land", "feat", match="brief changed")
+        self.fails(self.home, "land", "feat", match="quest file changed")
 
     def test_upstream_code_changes_void_high_risk_acceptance_only(self) -> None:
         wt = self.started("dur", files="lib/**", risk="high", check="unit=true")
@@ -958,7 +958,78 @@ class SharedHome(CampaignCase):
         self.assertIn("quest/perf/fix moved", self.ok(self.home, "wait", "--commits", "--campaign", "perf").out)
 
 
+class Notes(CampaignCase):
+    def test_an_agent_outside_the_home_names_it(self) -> None:
+        wt = self.started("fix", files="app.py")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        unrelated = self.repo("unrelated", {"x.txt": "x\n"})  # a repository that holds no campaign
+        self.assertTrue(self.ok(elsewhere, "-C", str(self.home), "brief").out.startswith("campaign demo:"))
+        self.assertIn("fix active low", self.ok(unrelated, "brief", "--campaign", "demo").out)
+        self.ok(elsewhere, "-C", str(self.home), "set", "fix", "title=renamed")  # writes too
+        self.assertEqual(self.quest("fix")["title"], "renamed")
+        self.env["CAMPAIGN_HOME"] = str(self.home)
+        self.ok(elsewhere, "set", "fix", "risk=normal")
+        self.assertEqual(self.quest("fix")["risk"], "normal")
+        del self.env["CAMPAIGN_HOME"]
+        self.fails(wt, "set", "fix", "risk=high", match="run this there, or with -C")  # an adventurer never writes
+        self.fails(elsewhere, "brief", "--campaign", "nope", match="no campaign nope here or on this machine")
+        self.fails(elsewhere, "brief", match="pass -C DIR, --campaign NAME, or set CAMPAIGN_HOME")
+
+    def test_a_note_from_outside_wakes_the_game_master_and_must_be_answered_to_land(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.run_cli(self.home, "wait", "--commits", "--timeout", "1")  # the game master has seen it all
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        r = self.ok(elsewhere, "note", "demo:fix", "util rounds wrong past 2^53", "--from", "scout hunt-lib")
+        self.assertIn("note-1 for fix", r.out)
+        woke = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
+        self.assertIn("fix: note-1 from scout hunt-lib: util rounds wrong past 2^53", woke)
+        self.assertIn("note-1 from scout hunt-lib", self.ok(self.home, "status").out)
+        self.fails(self.home, "land", "fix", match="open notes: note-1")
+        self.commit(wt, {".campaign/demo/journal/fix.md": "note-1: util.py is outside this quest; no change\n"})
+        self.assertNotIn("note-1 from", self.ok(self.home, "status").out)  # answered
+        self.ok(self.home, "land", "fix")
+        filed = self.quest("fix")["notes"]
+        self.assertEqual([(n["id"], n["by"]) for n in filed], [("note-1", "scout hunt-lib")])
+        self.assertTrue(filed[0]["answered"])
+        self.fails(elsewhere, "note", "demo:fix", "late", match="fix is landed")
+
+    def test_the_game_master_closes_a_note_with_a_reason(self) -> None:
+        self.started("fix", files="app.py")
+        self.ok(self.home, "note", "fix", "cache the parse", "--from", "patron")
+        self.fails(self.home, "note", "fix", "--close", "note-1", match="needs --reason")
+        self.ok(self.home, "note", "fix", "--close", "note-1", "--reason", "measured: no gain")
+        self.assertNotIn("note-1", self.ok(self.home, "status").out)
+        self.assertEqual(self.quest("fix")["notes"][0]["closed"], "measured: no gain")
+        self.assertIn("note-2 for fix", self.ok(self.home, "note", "fix", "another").out)  # ids are not reused
+
+
 class Style(CampaignCase):
+    def test_brief_status_shows_what_to_act_on_and_a_worktree_sees_its_quest(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.ok(self.home, "new", "other", "--title", "other", "--risk", "low", "--files", "README.md")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
+        self.run_cli(self.home, "wait", failed, "--timeout", "60")
+        self.ok(self.home, "note", "fix", "check the overflow", "--from", "scout")
+        brief = self.ok(wt, "brief").out  # in the quest's worktree: that quest only
+        self.assertTrue(brief.startswith("fix active low: quest/demo/fix at "), brief)
+        self.assertIn("  files: app.py\n", brief)
+        self.assertIn("  - check unit is not green at", brief)
+        self.assertIn("  - open notes: note-1:", brief)
+        self.assertIn("  - note-1 from scout: check the overflow\n", brief)
+        self.assertIn(f"  - {failed} failed, in no journal yet: exit 1 at ", brief)
+        self.assertNotIn("other", brief)
+        self.assertNotIn("criteria", brief)
+        self.assertNotIn("\nother  planned", self.ok(wt, "status").out)  # the full view lists only this quest too
+        home = self.ok(self.home, "brief").out
+        self.assertIn("campaign demo: 1 in flight (1 active), 1 planned, 0 landed; jobs 0 queued, 0 running\n", home)
+        self.assertIn("other planned low\n  ready to start: `campaign start other`\n", home)
+        self.assertNotIn("files:", home)
+
     def test_color_and_marks_only_on_a_terminal(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})

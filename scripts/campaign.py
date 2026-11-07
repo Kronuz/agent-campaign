@@ -25,7 +25,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Collection, Generator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -185,21 +185,65 @@ def main_branch(repo: Path) -> str:
     die(f"{repo}: no main or master branch (set CAMPAIGN_MAIN)")
 
 
+SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_fixed: dict[tuple[str, ...], Any] = {}  # answers about commits, which never change
+_heads: list[dict[str, dict[str, str]]] = []  # branch heads, while a command only reads
+
+
+@contextlib.contextmanager
+def frozen_heads() -> Generator[None, None, None]:
+    """Reads each repository's branch heads once, for a command that only reads (status asks about
+    each branch many times); commands that move branches always ask git."""
+    _heads.append({})
+    try:
+        yield
+    finally:
+        _heads.clear()
+
+
+def branch_head(repo: Path, ref: str) -> str | None:
+    if not _heads or SHA.fullmatch(ref):
+        return None
+    snapshot = _heads[0]
+    if str(repo) not in snapshot:
+        listing = git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", check=False)
+        pairs = (x.partition(" ") for x in listing.splitlines())
+        snapshot[str(repo)] = {r[len("refs/heads/") :]: sha for sha, _, r in pairs}
+    return snapshot[str(repo)].get(ref)
+
+
+def on_commits(key: tuple[str, ...], ask: Callable[[], Any]) -> Any:
+    """ask(), remembered when every argument after the first two is a commit id."""
+    if not all(SHA.fullmatch(x) for x in key[2:]):
+        return ask()
+    if key not in _fixed:
+        _fixed[key] = ask()
+    return _fixed[key]
+
+
 def rev(repo: Path, ref: str) -> str:
-    return git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return branch_head(repo, ref) or git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
 
 
 def has_ref(repo: Path, ref: str) -> bool:
-    return git_ok(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return bool(branch_head(repo, ref)) or git_ok(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
 
 
 def ancestor(repo: Path, a: str, b: str) -> bool:
-    return git_ok(repo, "merge-base", "--is-ancestor", a, b)
+    return bool(on_commits(("ancestor", str(repo), a, b), lambda: git_ok(repo, "merge-base", "--is-ancestor", a, b)))
+
+
+def merge_base(repo: Path, a: str, b: str) -> str:
+    return str(on_commits(("merge-base", str(repo), a, b), lambda: git(repo, "merge-base", a, b)))
 
 
 def changed(repo: Path, a: str, b: str) -> list[str]:
     """Paths that differ between the trees of a and b."""
-    return [x for x in git(repo, "diff", "--name-only", a, b).splitlines() if x]
+    return list(
+        on_commits(
+            ("changed", str(repo), a, b), lambda: [x for x in git(repo, "diff", "--name-only", a, b).splitlines() if x]
+        )
+    )
 
 
 def meta_rel(path: str) -> str | None:
@@ -302,18 +346,28 @@ def blobs(repo: Path, commit: str, paths: list[str]) -> dict[str, str]:
 # ---------------------------------------------------------------- campaign state
 
 
-def locate(cwd: Path) -> tuple[Path, str]:
-    """The home repository and, in a quest's worktree, the campaign it belongs to."""
+def locate(cwd: Path) -> tuple[Path, str, bool]:
+    """The home repository, the campaign a quest's worktree belongs to, and whether the home was named
+    explicitly ($CAMPAIGN_HOME, or a $CAMPAIGN/--campaign this repository does not hold, found in the
+    machine's registry) rather than found from the current directory."""
     env = os.environ.get("CAMPAIGN_HOME")
     if env:
-        return Path(env).resolve(), ""
-    if not git_ok(cwd, "rev-parse", "--git-dir"):
-        die("not in a git repository, and CAMPAIGN_HOME is unset")
-    pointer = Path(git(cwd, "rev-parse", "--path-format=absolute", "--git-dir")) / "campaign-home"
-    if pointer.exists():
-        home, _, name = pointer.read_text().strip().partition("\n")
-        return Path(home), name.strip()
-    return main_checkout(cwd), ""
+        return Path(env).resolve(), "", True
+    name = os.environ.get("CAMPAIGN", "")
+    if git_ok(cwd, "rev-parse", "--git-dir"):
+        pointer = Path(git(cwd, "rev-parse", "--path-format=absolute", "--git-dir")) / "campaign-home"
+        if pointer.exists():
+            home, _, pinned = pointer.read_text().strip().partition("\n")
+            return Path(home), pinned.strip(), False
+        home = main_checkout(cwd)
+        if not name or name in campaigns_in(home):
+            return home, "", False
+    other = campaigns().get(name) if name else None
+    if other:
+        return Path(other["home"]), name, True
+    if name:
+        die(f"no campaign {name} here or on this machine (`campaign status --all` lists them)")
+    die("not in a git repository: pass -C DIR, --campaign NAME, or set CAMPAIGN_HOME")
 
 
 def campaigns_in(home: Path) -> dict[str, str]:
@@ -342,7 +396,7 @@ def select(home: Path, name: str) -> tuple[str, str]:
 
 
 def find_campaign(cwd: Path) -> Campaign:
-    home, pinned = locate(cwd)
+    home, pinned, _ = locate(cwd)
     return Campaign(home, os.environ.get("CAMPAIGN") or pinned)
 
 
@@ -364,6 +418,7 @@ QUEST_FIELDS: dict[str, type] = {
     "tasks": dict,
     "accepted": dict,
     "landed": list,
+    "notes": list,
     "reason": str,
     "milestone": str,
     "updated": str,
@@ -637,9 +692,9 @@ def sidebar(c: Campaign) -> None:
 def writing() -> Generator[Campaign, None, None]:
     """The one writer: the home repository's main checkout, on its main branch, under a lock."""
     cwd = Path.cwd()
-    home, pinned = locate(cwd)
-    if not git_ok(cwd, "rev-parse", "--git-dir") or toplevel(cwd) != home:
-        die(f"state is written from the campaign's main checkout ({home}); run this there")
+    home, pinned, named = locate(cwd)
+    if not named and (not git_ok(cwd, "rev-parse", "--git-dir") or toplevel(cwd) != home):
+        die(f"state is written from the campaign's main checkout ({home}); run this there, or with -C {home}")
     branch = git(home, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     if branch != main_branch(home):
         die(f"{home} is on {branch or 'a detached HEAD'}, not {main_branch(home)}")
@@ -750,6 +805,29 @@ def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
     for task, t in sorted(p.get("tasks", {}).items()):
         out.append((f"{pid}--{task}", t["branch"], t.get("worktree", ""), t.get("base", "")))
     return out
+
+
+def note_inbox(c: Campaign, pid: str) -> Path:
+    """Where notes for a quest wait, in the home's .git: any agent on the machine can leave one there
+    without being the campaign's one writer."""
+    common = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    return common / "campaign-notes" / c.state["campaign"] / pid
+
+
+def inbox_notes(c: Campaign, pid: str) -> list[Json]:
+    found: list[Json] = []
+    folder = note_inbox(c, pid)
+    for f in folder.glob("note-*.json") if folder.is_dir() else []:
+        with contextlib.suppress(CampaignError):
+            note = read_json(f)
+            if note:
+                found.append(note)
+    return sorted(found, key=lambda n: int(str(n["id"]).partition("-")[2] or 0))
+
+
+def answered(note: Json, journals: Collection[str]) -> bool:
+    """Whether a journal names the note by its id."""
+    return any(re.search(rf"\b{re.escape(str(note['id']))}\b", j) for j in journals)
 
 
 # ---------------------------------------------------------------- quest commands
@@ -985,7 +1063,7 @@ def cmd_start(a: argparse.Namespace) -> int:
             die(f"{wt} exists")
         if has_ref(repo, branch):
             git(repo, "worktree", "add", "-q", str(wt), branch)
-            base = git(repo, "merge-base", base, branch)
+            base = merge_base(repo, base, branch)
         else:
             git(repo, "worktree", "add", "-q", "-b", branch, str(wt), base)
         gitdir = Path(git(wt, "rev-parse", "--path-format=absolute", "--git-dir"))
@@ -1045,7 +1123,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
                 die(f"job {jid} is {job['state'].get('state')}, not done")
             confirmations.append(job_summary(job))
         main_head = rev(repo, main_branch(repo))
-        base = git(repo, "merge-base", main_head, commit)
+        base = merge_base(repo, main_head, commit)
         paths = [x for x in changed(repo, base, commit) if not is_meta(x)]
         p.setdefault("accepted", {})[a.lens] = {
             "commit": commit,
@@ -1069,7 +1147,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
 def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> list[str]:
     """Quest paths whose content at target differs from what was accepted. Only the quest's own
     changes count, the paths accept records; what main changed is the rebase's business."""
-    base = git(repo, "merge-base", main_head, target)
+    base = merge_base(repo, main_head, target)
     now_paths = [x for x in changed(repo, base, target) if not is_meta(x)]
     at_target = blobs(repo, target, now_paths)
     out = [x for x in now_paths if accepted.get(x) != at_target[x]]
@@ -1155,7 +1233,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     if unmet:
         gaps.append(f"land {', '.join(unmet)} first")
     main_head = rev(repo, main)
-    base = git(repo, "merge-base", main_head, target)
+    base = merge_base(repo, main_head, target)
     moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
     if moved:
         gaps.append(
@@ -1176,11 +1254,17 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
                 f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)"
             )
     wanted = criteria(c, pid) if final else {}
-    rows = evidence(journals_at(c, repo, target, pid), list(wanted), cited_jobs([target])) if wanted else {}
+    carried = journals_at(c, repo, target, pid) if final else {}
+    rows = evidence(carried, list(wanted), cited_jobs([target])) if wanted else {}
     unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
     if unproven:
         gaps.append(
             f"criteria without evidence in a journal's Evidence table at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
+        )
+    unanswered = [n["id"] for n in inbox_notes(c, pid) if not answered(n, carried.values())] if final else []
+    if unanswered:
+        gaps.append(
+            f"open notes: {', '.join(unanswered)}: answer each in a journal by its id, or close it (`campaign note {pid} --close NOTE --reason R`)"
         )
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
     if stale:
@@ -1193,7 +1277,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
         if not acc:
             gaps.append(f"{lens} review not accepted: {review_step(verdict(c, pid, lens), pid, lens)}")
         elif acc.get("brief") != brief_hash(c, pid):
-            gaps.append(f"the brief changed after {lens} was accepted: re-accept against the current criteria")
+            gaps.append(f"the quest file changed after {lens} was accepted: re-accept against the current criteria")
         elif lens != "design":  # design approves the approach before the code exists
             moved_since = drift(repo, main_head, target, acc["blobs"])
             upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
@@ -1276,7 +1360,7 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
         evidence = check_evidence(c, p, target)[1]
         main_head = rev(repo, main)
-        base = git(repo, "merge-base", main_head, target)
+        base = merge_base(repo, main_head, target)
         message = f"campaign: land {a.id}" + ("" if final else f" increment ({a.reason})")
         mode = "ff" if base == main_head else "merge"
         c.state["landing"] = {
@@ -1314,8 +1398,10 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{main} does not contain {target[:12]} after landing it")
         p["landed"].append(record)
         landed = record["commit"]
+        filed: list[Json] = inbox_notes(c, a.id) if final else []
         if final:
             p["status"] = "landed"
+            p.setdefault("notes", []).extend({**n, "answered": landed[:12]} for n in filed)
             if deferred(p):
                 try:
                     record["later"] = submit_checks(c, a.id, deferred(p), landed, priority=-1)
@@ -1323,6 +1409,8 @@ def cmd_land(a: argparse.Namespace) -> int:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
         p["updated"] = stamp()
         c.save(message + f" at {landed[:12]}")
+        for n in filed:
+            (note_inbox(c, a.id) / f"{n['id']}.json").unlink(missing_ok=True)
         notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
         if a.push:
             for where in dict.fromkeys([checkout, c.home]):
@@ -1540,7 +1628,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                     )
                 )
             against = rev(repo, main) if name == pid else rev(repo, p["branch"])
-            paths = changed(repo, git(repo, "merge-base", against, head), head)
+            paths = changed(repo, merge_base(repo, against, head), head)
             owned = [x for x in paths if game_master_file(x)]
             if owned:
                 out.append(("warning", f"{name}: edits the game master's files {', '.join(owned[:5])}"))
@@ -1631,11 +1719,13 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
     return out
 
 
-def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
+def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> Json:
     """A quest as status shows it: what it still needs ("missing"), its branch, checks, reviews and
-    journals, and the jobs that failed at its current code, each noted or not in a journal."""
+    journals, and the jobs that failed at its current code, each noted or not in a journal. Brief
+    keeps only what an agent acts on."""
     p = c.quests[pid]
     view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"], "missing": []}
+    view["files"] = p["files"]
     unmet = [d for d in p["needs"] if not c.landed(d)]
     view["ready"] = p["status"] == "planned" and not unmet
     if p["status"] == "planned" and unmet:
@@ -1667,6 +1757,11 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
         view["missing"] = landing_gaps(c, pid, head, final=True, ci=False)
+        if brief:
+            for name, branch, rel, _ in branches(c, pid):
+                texts[name] = journal_text(c, name, branch, rel)
+    if not brief and "branch" in view:
+        head = rev(repo, p["branch"])
         checks: dict[str, str] = {}
         view["checks"] = checks
         view["later"] = [x["name"] for x in deferred(p)]
@@ -1707,6 +1802,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         }
     ended = [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
+    view["notes"] = [{**n, "answered": answered(n, texts.values())} for n in inbox_notes(c, pid)]
     noted = "\n".join(texts.values())
     view["bad_at_head"] = [
         {**job_summary(j), "check": j["id"] in checked, "noted": j["id"] in noted}
@@ -1865,6 +1961,11 @@ def print_quest(v: Json, full: bool) -> None:
     else:
         for gap in v["missing"]:
             print(f"  {gap}")
+    for n in v.get("notes", []):
+        if not n["answered"]:
+            print(f"  {mark('📌')}" + paint(f"{n['id']} from {n['by']}", "yellow") + f" ({n['at'][:16]}): {n['text']}")
+        elif full:
+            print(f"  {mark('📌')}{n['id']} from {n['by']}: answered in a journal")
     # a failure is part of iterating; one no journal mentions yet is the one to look at
     bad = v["bad_at_head"]
     unread = [f for f in bad if not f["noted"]]
@@ -1889,20 +1990,69 @@ def print_quest(v: Json, full: bool) -> None:
         print(f"  {mark('⏳')}deferred checks: " + ", ".join(f"{n} {s}" for s, n in v["deferred"].items()))
 
 
+def here_quest(c: Campaign, cwd: Path) -> str:
+    """The quest whose worktree (or a task's) this is; "" elsewhere."""
+    branch = git(cwd, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    return next((pid for pid in c.quests if any(b == branch for _, b, _, _ in branches(c, pid))), "")
+
+
+def print_brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -> None:
+    """Status for agents: one line per thing to act on, no decoration."""
+    if not scoped:
+        n = overview(c)["counts"]
+        print(
+            f"campaign {c.state['campaign']}: {in_flight(n)}, {n['planned']} planned, {n['landed']} landed; "
+            f"jobs {queue['queued']} queued, {queue['running']} running"
+        )
+    for v in views:
+        if v["status"] in ("landed", "dropped") and not scoped:
+            continue
+        where = f": {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead" if "branch" in v else ""
+        print(f"{v['id']} {v['status']} {v['risk']}{where}")
+        if scoped:
+            print(f"  files: {', '.join(v['files']) or '(none)'}")
+        if v["ready"]:
+            print(f"  ready to start: `campaign start {v['id']}`")
+        elif "branch" in v and not v["missing"]:
+            print(f"  ready to land: `campaign land {v['id']}`")
+        for gap in v["missing"]:
+            print(f"  - {gap}")
+        for n in v.get("notes", []):
+            if not n["answered"]:
+                print(f"  - {n['id']} from {n['by']}: {n['text']}")
+        for f in v["bad_at_head"]:
+            if not f["noted"]:
+                print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
+        pending = [f"{k} {s}" for s, k in v["jobs"].items() if k]
+        if pending:
+            print(f"  - jobs: {', '.join(pending)}")
+
+
 def cmd_status(a: argparse.Namespace) -> int:
     if a.all:
         return machine_status()
+    with frozen_heads():
+        return show_status(a)
+
+
+def show_status(a: argparse.Namespace) -> int:
     c = find_campaign(Path.cwd())
     reap()
-    sidebar(c)
+    if not a.id and not a.json:  # in a quest's worktree, that quest
+        a.id = here_quest(c, Path.cwd())
+    if not a.brief:
+        sidebar(c)
     jobs = all_jobs()
     pids = [a.id] if a.id else list(c.quests)
     for pid in pids:
         c.quest(pid)
-    views = [quest_view(c, pid, jobs) for pid in pids]
-    found = problems(c)
-    reviews: list[Json] = review_rows(c) if a.reviews else []
+    views = [quest_view(c, pid, jobs, brief=a.brief) for pid in pids]
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
+    if a.brief and not a.json:
+        print_brief(c, views, queue, scoped=bool(a.id))
+        return 0
+    found: list[tuple[str, str]] = [] if a.brief else problems(c)
+    reviews: list[Json] = review_rows(c) if a.reviews else []
     o = overview(c)
     if a.json:
         print(
@@ -2407,7 +2557,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
 
 
 def cmd_check(a: argparse.Namespace) -> int:
-    home, pinned = locate(Path.cwd())
+    home, pinned, _ = locate(Path.cwd())
     path = home / select(home, os.environ.get("CAMPAIGN") or pinned)[1] / "state.json"
     data = read_json(path)
     if data is None:
@@ -3140,6 +3290,55 @@ def cmd_job_log(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_note(a: argparse.Namespace) -> int:
+    """Passes a finding to a quest from anywhere on the machine, or (the game master) closes one."""
+    name, sep, pid = a.quest.rpartition(":")
+    if a.close:
+        if not a.reason:
+            die("closing a note needs --reason R")
+        with writing() as c:
+            p = c.quest(pid)
+            note = next((n for n in inbox_notes(c, pid) if n["id"] == a.close), None)
+            if note is None:
+                die(f"{pid} has no open note {a.close}")
+            p.setdefault("notes", []).append({**note, "closed": a.reason})
+            p["updated"] = stamp()
+            c.save(f"campaign: close {a.close} on {pid}")
+            (note_inbox(c, pid) / f"{a.close}.json").unlink()
+        print(f"{pid}: {a.close} closed")
+        return 0
+    if sep:
+        other = campaigns().get(name)
+        if other is None:
+            die(f"no campaign {name} on this machine (`campaign status --all` lists them)")
+        c = Campaign(Path(other["home"]), name)
+    else:
+        c = find_campaign(Path.cwd())
+    p = c.quest(pid)
+    if p["status"] in ("landed", "dropped"):
+        die(f"{pid} is {p['status']}: a finding about it is a new quest; tell the game master")
+    if not a.text:
+        die("give the note's text")
+    folder = note_inbox(c, pid)
+    folder.mkdir(parents=True, exist_ok=True)
+    taken = [n["id"] for n in [*inbox_notes(c, pid), *p.get("notes", [])]]
+    n = 1 + max([int(str(x).partition("-")[2] or 0) for x in taken] or [0])
+    tmp = folder / f".note.{os.getpid()}.tmp"
+    while True:  # a fresh id even when two agents write at once
+        note = {"id": f"note-{n}", "at": stamp(), "by": a.by, "text": a.text}
+        tmp.write_text(json.dumps(note, indent=2) + "\n")
+        try:
+            os.link(tmp, folder / f"note-{n}.json")
+            break
+        except FileExistsError:
+            n += 1
+        finally:
+            tmp.unlink(missing_ok=True)
+    notify(f"Note for {pid}", f"{a.by}: {a.text}"[:200])
+    print(f"note-{n} for {pid}: its journal answers it by that id, or the game master closes it")
+    return 0
+
+
 def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
     by default the head of their quest's branch, else of their repository."""
@@ -3201,8 +3400,16 @@ def wait_events(c: Campaign, timeout: float) -> int:
     recorded: Json | None = records.get(c.ident)
 
     def remember(heads: dict[str, str], ended: dict[str, Json]) -> None:
-        records[c.ident] = {"heads": heads, "jobs": sorted(ended)}
+        records[c.ident] = {"heads": heads, "jobs": sorted(ended), "notes": sorted(notes())}
         write_json(seen_file, records)
+
+    def notes() -> dict[str, Json]:
+        return {
+            f"{pid} {n['id']}": n
+            for pid, q in c.quests.items()
+            if q["status"] not in ("landed", "dropped")
+            for n in inbox_notes(c, pid)
+        }
 
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
     start = time.time()
@@ -3219,16 +3426,19 @@ def wait_events(c: Campaign, timeout: float) -> int:
     heads, ended = current()
     if recorded is None:  # the first wait starts from now
         remember(heads, ended)
-        seen_heads, seen_jobs = dict(heads), set(ended)
+        seen_heads, seen_jobs, seen_notes = dict(heads), set(ended), set(notes())
     else:
         seen_heads = {str(k): str(v) for k, v in dict(recorded.get("heads") or {}).items()}
         seen_jobs = {str(x) for x in recorded.get("jobs") or []}
+        seen_notes = {str(x) for x in recorded.get("notes") or []}
     while True:
         reap()
         heads, ended = current()
+        waiting = notes()
         moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
         finished = sorted(set(ended) - seen_jobs)
-        if moved or finished:
+        arrived = sorted(set(waiting) - seen_notes)
+        if moved or finished or arrived:
             break
         running = [j for j in all_jobs() if j["spec"].get("campaign") == c.ident]
         if not heads and not any(j["state"].get("state") not in TERMINAL for j in running):
@@ -3243,6 +3453,9 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for key in moved:
         name, branch = key.split(" ", 1)
         print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch, '')}")
+    for key in arrived:
+        n = waiting[key]
+        print(f"{key.split()[0]}: {n['id']} from {n['by']}: {n['text']}")
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
@@ -3303,6 +3516,7 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="campaign", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    ap.add_argument("-C", dest="chdir", metavar="DIR", help="run as if started in DIR, like git -C")
     sub = ap.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -3379,7 +3593,17 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.add_argument("--reviews", action="store_true", help="verdicts and blocking findings per review file")
     p.add_argument("--all", action="store_true", help="every campaign on this machine")
-    p.set_defaults(fn=cmd_status)
+    p.set_defaults(fn=cmd_status, brief=False)
+
+    p = sub.add_parser(
+        "brief",
+        parents=[common],
+        help="status for agents: one line per thing to act on",
+        description="What a quest still needs, one line each: landing gaps, open notes, failed jobs no journal "
+        "names yet, pending jobs. In a quest's worktree, that quest and its file set; elsewhere, every quest.",
+    )
+    p.add_argument("id", nargs="?")
+    p.set_defaults(fn=cmd_status, brief=True, json=False, reviews=False, all=False)
 
     p = sub.add_parser(
         "usage", parents=[common], help="tokens, cost and time per quest, role and class (harness logs and jobs)"
@@ -3423,6 +3647,20 @@ def parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("migrate", parents=[common], help=f"move the campaign's files from {LEGACY_META} to {META}")
     p.set_defaults(fn=cmd_migrate)
+    p = sub.add_parser(
+        "note",
+        parents=[common],
+        help="pass a finding to a quest from anywhere on the machine",
+        description="Leaves a note for a quest ([NAME:]ID; NAME from anywhere on the machine). It stays open, "
+        "shown by status and blocking the landing, until one of the quest's journals names its id or the game "
+        "master closes it (--close ID --reason R, in the home's main checkout).",
+    )
+    p.add_argument("quest", metavar="[NAME:]ID")
+    p.add_argument("text", nargs="?", default="")
+    p.add_argument("--from", dest="by", default=os.environ.get("USER", "someone"), help="who found it")
+    p.add_argument("--close", metavar="NOTE", help="close an open note (the game master)")
+    p.add_argument("--reason")
+    p.set_defaults(fn=cmd_note)
     p = sub.add_parser("clean", parents=[common], help="remove a landed or dropped quest's worktrees and branches")
     p.add_argument("id")
     p.add_argument("--force", action="store_true")
@@ -3502,6 +3740,11 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ap = parser()
     args, extra = ap.parse_known_args(argv)
+    if args.chdir:
+        try:
+            os.chdir(args.chdir)
+        except OSError as e:
+            ap.error(f"-C {args.chdir}: {e.strerror}")
     if getattr(args, "campaign", None):
         os.environ["CAMPAIGN"] = args.campaign  # job runners and the worker inherit it
     # older argparse leaves key=value assignments after an option (`set ID --task T files=...`) unparsed

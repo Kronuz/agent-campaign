@@ -10,8 +10,8 @@ or task; your prompt names its worktree, branch, quest file and journal.
 
 - The quest file (`.campaign/<campaign>/quests/<id>.md` in the home checkout) is the game master's:
   outcome, acceptance criteria, contracts. Never edit it or another quest's files; change only the
-  files in your quest's file set (`campaign status <id>` shows it).
-- Start every session with `campaign status <id>`, `git log --oneline main..HEAD` and
+  files in your quest's file set (`campaign brief` shows it).
+- Start every session with `campaign brief`, `git log --oneline main..HEAD` and
   `git status`; reconcile the journal with them before new work. Commit small, with the journal,
   at every step: the work survives a lost session only if it is committed.
 - Evidence is jobs, not words. Run builds, tests, sanitizers, fuzzing and timing with
