@@ -569,8 +569,10 @@ class DirectPath(CampaignCase):
         self.ok(self.home, "check")
 
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
-        self.ok(self.home, "config", "ci=github", "ci_later=macos")
+        self.assertEqual(self.ok(self.home, "config").out, "ci=\nci_later=\n")
+        self.assertEqual(self.ok(self.home, "config", "ci=github", "ci_later=macos").out, "ci=github\nci_later=macos\n")
         wt = self.started("fix", files="app.py", check="unit=true")
+        self.assertEqual(self.ok(wt, "config").out, "ci=github\nci_later=macos\n")  # readable from a worktree
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
         gh = self.root / "bin" / "gh"

@@ -902,18 +902,27 @@ def cmd_migrate(_a: argparse.Namespace) -> int:
     return 0
 
 
+CONFIG = ("ci", "ci_later")
+
+
 def cmd_config(a: argparse.Namespace) -> int:
-    with writing() as c:
-        for item in a.assignments:
-            key, sep, value = item.partition("=")
-            if key == "ci" and sep and value in ("github", ""):
-                c.state["ci"] = value
-            elif key == "ci_later" and sep:
-                c.state["ci_later"] = csv(value)
-            else:
-                die(f"campaign config takes ci=github|'' and ci_later=WORKFLOW,..., not {item!r}")
-        c.save("campaign: config " + " ".join(a.assignments))
-    print(json.dumps({k: c.state.get(k) for k in ("ci", "ci_later")}))
+    """Prints the campaign-wide settings as key=value lines, after setting any given."""
+    if not a.assignments:
+        c = find_campaign(Path.cwd())
+    else:
+        with writing() as c:
+            for item in a.assignments:
+                key, sep, value = item.partition("=")
+                if key == "ci" and sep and value in ("github", ""):
+                    c.state["ci"] = value
+                elif key == "ci_later" and sep:
+                    c.state["ci_later"] = csv(value)
+                else:
+                    die(f"campaign config takes ci=github|'' and ci_later=WORKFLOW,..., not {item!r}")
+            c.save("campaign: config " + " ".join(a.assignments))
+    for key in CONFIG:
+        value = c.state.get(key) or ""
+        print(f"{key}={','.join(value) if isinstance(value, list) else value}")
     return 0
 
 
@@ -3555,8 +3564,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--ci", choices=("github", ""), default="", help="require green GitHub CI to land")
     p.set_defaults(fn=cmd_init)
 
-    p = sub.add_parser("config", parents=[common], help="campaign-wide settings: ci, ci_later")
-    p.add_argument("assignments", nargs="+", metavar="key=value")
+    p = sub.add_parser(
+        "config",
+        parents=[common],
+        help="show or set campaign-wide settings: ci, ci_later",
+        description="With no assignment, prints the settings as key=value lines. ci=github makes landing "
+        "wait for green GitHub CI; ci_later=WORKFLOW,... names workflows that do not gate it.",
+    )
+    p.add_argument("assignments", nargs="*", metavar="key=value")
     p.set_defaults(fn=cmd_config)
 
     p = sub.add_parser("new", parents=[common], help="plan a quest")
