@@ -2946,6 +2946,21 @@ def parse_ref(top: Path, item: str) -> tuple[str, Json]:
     return name, {"repo": str(repo), "commit": rev(repo, ref if at and Path(where).is_dir() else value)}
 
 
+def outside_inputs(command: str, repo: str) -> list[str]:
+    """Paths in a command into another job's files or a checkout of its repository: inputs that are
+    not part of the job's identity, so a rerun at the same code may see different files."""
+    roots = [jobs_dir().resolve()]
+    if repo:
+        listing = git(Path(repo), "worktree", "list", "--porcelain", check=False)
+        roots += [Path(x[len("worktree ") :]).resolve() for x in listing.splitlines() if x.startswith("worktree ")]
+    found: list[str] = []
+    for token in re.findall(r"(?<![\w.~/-])~?/[^\s'\"`;|&()<>,=]+", command):
+        path = Path(token).expanduser().resolve()
+        if any(path == r or path.is_relative_to(r) for r in roots):
+            found.append(token)
+    return list(dict.fromkeys(found))
+
+
 def cmd_job_submit(a: argparse.Namespace) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
@@ -2988,6 +3003,14 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             print(
                 f"note: uncommitted changes in {top} are not in the job; it runs {spec['commit'][:12]}", file=sys.stderr
             )
+    outside = outside_inputs(command, spec.get("repo", ""))
+    if outside:
+        print(
+            f"warning: {', '.join(outside)} {'is' if len(outside) == 1 else 'are'} outside this job's own checkout, so "
+            "not part of its identity: a rerun at the same code may see other files. Build it in this job, or pass "
+            "another repository with --ref NAME=PATH@REF",
+            file=sys.stderr,
+        )
     spec["cmux"] = os.environ.get("CMUX_WORKSPACE_ID", "")
     spec["what"] = a.what or command[:60] + (f" at {spec['commit'][:12]}" if spec.get("commit") else "")
     spec.setdefault("quest", "")

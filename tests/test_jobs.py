@@ -25,6 +25,18 @@ class Races(unittest.TestCase):
 
 
 class Identity(CampaignCase):
+    def test_submit_warns_about_inputs_outside_the_jobs_checkout(self) -> None:
+        wt = self.started("fix", files="app.py")
+        first = self.submit(wt, "--quest", "fix", "--", "true")
+        other = self.root / "jobs" / first / "a1/out/oracle"
+        r = self.ok(
+            wt, "job", "submit", "--quest", "fix", "--", f"{other} {self.home}/.scratch/expected.bin x=/usr/bin/env"
+        )
+        self.assertIn(f"warning: {other}, {self.home}/.scratch/expected.bin are outside this job's own checkout", r.err)
+        self.assertNotIn("/usr/bin/env", r.err)  # a system path is not the job's code
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--", 'python3 app.py --out "$JOB_OUT/x"')
+        self.assertEqual(r.err, "")
+
     def test_explicit_head_uses_the_submitting_task_worktree(self) -> None:
         self.started("fix", files="app.py,lib/**")
         self.ok(self.home, "start", "fix", "--task", "index", "--files", "lib/**")
