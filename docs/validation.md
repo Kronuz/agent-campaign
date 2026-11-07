@@ -223,16 +223,18 @@ the crash tests wait out a 10-second stale threshold and Scenario F about 18 s.
 | Linux | Python 3.15 | 102 | 215 s (95 tests) | 88 s |
 
 `campaign status` shows each quest's progress: the acceptance criteria in its quest file that its
-journals' Evidence tables (the quest's and its tasks') name with evidence, the journal's next
-step, and the campaign's share (landed quests whole, plus criteria with evidence). Bars use
+journals' Evidence tables (the quest's and its tasks') name with evidence, the journal's next step,
+and the campaign's share (landed quests whole, plus criteria with evidence). Bars use
 `CAMPAIGN_BAR`'s two characters (default `█░`, which every terminal font has; `#-` when the output
 cannot encode them), and color only on a terminal without `NO_COLOR`. The jobs line counts the jobs
-at the quest's code that finished and those that ended badly. A row whose evidence is a
+at the quest's code that passed and failed, and lists the failures no journal names by id yet
+(failing is part of iterating; an unread failure is what needs a look). A row whose evidence is a
 `<placeholder>` or reads pending, queued, running, failed or missing does not count; the quest line
-names the criteria met and those no journal lists yet, and `campaign status ID` lists every
-criterion as met, pending or with no row, with the rows behind it. The tests fail against the
-previous `campaign.py`, with task journals ignored, with pending rows counted, without the list,
-and with `CAMPAIGN_BAR` ignored.
+names the criteria met and those no journal lists yet (the quest template's `<criterion>`
+placeholder is not one), and `campaign status ID` lists every criterion as met, pending or with no
+row, with the rows behind it. The tests fail against the previous `campaign.py`, with task journals
+ignored, with pending rows counted, without the list, with journals' job ids ignored, and with
+`CAMPAIGN_BAR` ignored.
 
 Status took 9.2 s on the Codex machine's dense-pages quest (96 finished jobs). A copy of its shape
 here (95 jobs, 131 commits) took 13.0 s and started 325 git processes, 294 of them `ls-tree` and

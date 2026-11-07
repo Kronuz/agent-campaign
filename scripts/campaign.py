@@ -1380,7 +1380,8 @@ def criteria(c: Campaign, pid: str) -> dict[str, str]:
     text = section(brief.read_text() if brief.exists() else "", "Acceptance criteria")
     found: dict[str, str] = {}
     for cid, line in re.findall(r"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(.*)$", text, re.M):
-        found.setdefault(cid, line.strip())
+        if not line.startswith("<"):  # the template's unfilled placeholder
+            found.setdefault(cid, line.strip())
     return found
 
 
@@ -1565,7 +1566,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
 
 def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     """A quest as status shows it: what it still needs ("missing"), its branch, checks, reviews and
-    journals, and the jobs that ended badly at its current code without being its checks."""
+    journals, and the jobs that failed at its current code, each noted or not in a journal."""
     p = c.quests[pid]
     view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"], "missing": []}
     unmet = [d for d in p["needs"] if not c.landed(d)]
@@ -1592,6 +1593,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     if later:
         view["deferred"] = {s: later.count(s) for s in sorted(set(later))}
     checked: set[str] = set()
+    texts: dict[str, str] = {}
     if p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
         main = main_branch(repo)
         head = rev(repo, p["branch"])
@@ -1614,7 +1616,6 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
                 )
         work: dict[str, Json] = {}
         view["journal"] = work
-        texts: dict[str, str] = {}
         for name, branch, rel, _ in branches(c, pid):
             wt = (c.home / rel).resolve() if rel else None
             dirty = len(git(wt, "status", "--porcelain").splitlines()) if wt and wt.exists() else -1
@@ -1635,8 +1636,9 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         }
     ended = [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
+    noted = "\n".join(texts.values())
     view["bad_at_head"] = [
-        {**job_summary(j), "check": j["id"] in checked}
+        {**job_summary(j), "check": j["id"] in checked, "noted": j["id"] in noted}
         for j in ended
         if j["state"].get("state") in ("failed", "timeout", "interrupted")
     ]
@@ -1777,17 +1779,24 @@ def print_quest(v: Json, full: bool) -> None:
     else:
         for gap in v["missing"]:
             print(f"  {gap}")
+    # a failure is part of iterating; one no journal mentions yet is the one to look at
     bad = v["bad_at_head"]
-    counts = [f"{v['done_at_head']} done"] if v["done_at_head"] else []
-    counts += [paint(f"{len(bad)} ended badly", "red")] if bad else []
+    unread = [f for f in bad if not f["noted"]]
+    counts = [f"{v['done_at_head']} passed"] if v["done_at_head"] else []
+    failed = f"{len(bad)} failed"
+    counts += [paint(failed, "yellow") if unread else failed] if bad else []
     counts += [f"{n} {k}" for k, n in v["jobs"].items() if n]
     if counts:
-        print(f"  jobs at this code: {', '.join(counts)}")
-    for f in bad:
-        code = "" if f["exit"] is None else f" (exit {f['exit']})"
-        print(f"    {f['job']}  {f['state']}{code}  {f['what']}" + (" (a check)" if f["check"] else ""))
-    if any(not f["check"] for f in bad):
-        print("    only the quest's checks gate landing; `campaign job log ID` shows why a job failed")
+        line = f"  jobs at this code: {', '.join(counts)}"
+        if unread:
+            some = "" if len(unread) == len(bad) else f"{len(unread)} "
+            line += f"; {some}not in a journal yet (`campaign job log ID`):"
+        elif bad:
+            line += " (noted in the journals)"
+        print(line)
+    for f in unread:
+        how = "" if f["state"] == "failed" else f"{f['state']}: "
+        print(f"    {f['job']}  {how}{f['what']}" + (" (a check)" if f["check"] else ""))
     if full and v["landed"]:
         print("  landed: " + ", ".join(v["landed"]))
     if v.get("deferred"):

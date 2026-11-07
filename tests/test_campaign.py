@@ -239,10 +239,22 @@ class Evidence(CampaignCase):
         failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         out = self.ok(self.home, "status").out
-        self.assertIn("jobs at this code: 1 done, 1 ended badly", out)  # the check passed, the probe did not
-        self.assertIn(f"    {failed}  failed (exit 1)  exit 1", out)  # which job, and how it ended
+        # the check passed, the probe did not, and no journal mentions it yet
+        self.assertIn("jobs at this code: 1 passed, 1 failed; not in a journal yet (`campaign job log ID`):", out)
+        self.assertIn(f"    {failed}  exit 1 at ", out)  # which job and what it ran
+        self.assertIn("0 of 1 criterion with evidence", out)  # the template's <criterion> is not one
         self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
-        self.assertIn(f"    {failed}  failed (exit 1)", self.ok(self.home, "status").out)
+        self.assertIn(f"    {failed}  exit 1 at ", self.ok(self.home, "status").out)
+        self.commit(wt, {".campaign/demo/journal/fix.md": f"{failed} ran the wrong command\n"})
+        out = self.ok(self.home, "status").out
+        self.assertIn("jobs at this code: 1 passed, 1 failed (noted in the journals)\n", out)
+        self.assertNotIn(f"    {failed}", out)
+        other = self.submit(self.home, "--quest", "fix", "--", "exit 2")
+        self.run_cli(self.home, "wait", other, "--timeout", "60")
+        out = self.ok(self.home, "status").out  # one noted, one not: only the unread one is listed
+        self.assertIn("jobs at this code: 1 passed, 2 failed; 1 not in a journal yet (`campaign job log ID`):", out)
+        self.assertIn(f"    {other}  exit 2 at ", out)
+        self.assertNotIn(f"    {failed}", out)
         self.commit(wt, {"app.py": "print(3)\n"})
         self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
 
@@ -494,7 +506,7 @@ class DirectPath(CampaignCase):
         self.assertIn("fix forward or revert", r.out)
         status = self.ok(self.home, "status").out
         self.assertIn("deferred checks: 1 done, 1 failed", status)
-        self.assertNotIn("ended badly", status)  # a landed quest's failures are history
+        self.assertNotIn("not in a journal yet", status)  # a landed quest's failures are history
         # the fix lands like any quest; rerunning the deferred checks on main clears the error
         self.ok(self.home, "set", "fast", "--later", "soak=true", "--later", "other-platform=echo other")
         self.ok(self.home, "verify", "fast", "--deferred")
