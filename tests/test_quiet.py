@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
-from harness import alone
+from harness import alone, scratch
 
 QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.py"
 LINUX = sys.platform == "linux"
@@ -33,10 +33,7 @@ def vcpus(pid: int) -> int:
 
 class Quiet(unittest.TestCase):
     def setUp(self) -> None:
-        base = os.environ.get("CAMPAIGN_TEST_TMP")
-        if base:
-            Path(base).mkdir(parents=True, exist_ok=True)
-        self._tmp = tempfile.TemporaryDirectory(dir=base)
+        self._tmp = tempfile.TemporaryDirectory(dir=scratch())
         self.dir = Path(self._tmp.name)
         self.log = self.dir / "log"
         self.env = dict(

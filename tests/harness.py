@@ -24,6 +24,14 @@ QUIET = SKILL / "scripts" / "quiet.py"
 sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
 
 
+def scratch() -> str | None:
+    """Where tests make their temporary directories: $CAMPAIGN_TEST_TMP, created on first use."""
+    base = os.environ.get("CAMPAIGN_TEST_TMP")
+    if base:
+        Path(base).mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def campaign_module() -> ModuleType:
     """campaign.py loaded as a module, for tests of its functions."""
     spec = importlib.util.spec_from_file_location("campaign_module", CAMPAIGN)
@@ -79,10 +87,7 @@ class CampaignCase(unittest.TestCase):
     keep_criteria = False  # a test of criteria keeps the quest template's
 
     def setUp(self) -> None:
-        base = os.environ.get("CAMPAIGN_TEST_TMP")
-        if base:
-            Path(base).mkdir(parents=True, exist_ok=True)
-        self.root = Path(tempfile.mkdtemp(dir=base)).resolve()
+        self.root = Path(tempfile.mkdtemp(dir=scratch())).resolve()
         self.env = dict(os.environ)
         for key in (
             "CAMPAIGN_HOME",

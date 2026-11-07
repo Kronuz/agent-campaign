@@ -9,13 +9,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harness import scratch
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "sync-agents.py"
 
 
 class Agents(unittest.TestCase):
     def test_max_effort_survives_generation_and_drift_check(self) -> None:
-        base = os.environ.get("CAMPAIGN_TEST_TMP")
-        with tempfile.TemporaryDirectory(dir=base) as temporary:
+        with tempfile.TemporaryDirectory(dir=scratch()) as temporary:
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
@@ -33,8 +34,7 @@ class Agents(unittest.TestCase):
             subprocess.run([sys.executable, str(SCRIPT), "--check"], env=env, check=True, capture_output=True)
 
     def test_files_generated_by_the_shell_version_are_replaced_and_others_kept(self) -> None:
-        base = os.environ.get("CAMPAIGN_TEST_TMP")
-        with tempfile.TemporaryDirectory(dir=base) as temporary:
+        with tempfile.TemporaryDirectory(dir=scratch()) as temporary:
             root = Path(temporary)
             (root / "source").mkdir()
             (root / "copilot").mkdir()
