@@ -250,7 +250,7 @@ gives the id `git mktree` writes: 1.6 s and 32 processes. A test compares it wit
 every layout (`.campaign`, `docs/campaign`, `docs` holding only the campaign, `docs` as a file), so
 job keys from before the change still match, and another fails if status starts a git process per
 job (37 against 29 for four jobs before the change). 104 tests pass on macOS with Python 3.9 (167
-s) and 3.15 (176 s); the Linux run of this change waits for the VPN.
+s) and 3.15 (176 s); Linux ran it later, with the rest (see "Linux, with messages").
 
 ## Criteria, tasks and cited jobs gate landing
 
@@ -339,6 +339,22 @@ to the commands they affect. `campaign job list` shows the current campaign's jo
 invalid quest id, a risk outside low to critical, a field `set` does not know (with the list),
 `verify` saying how to wait. A test walks every command of the three tools for a description and
 compares `help COMMAND` with `COMMAND --help`.
+
+## Linux, with messages
+
+The full suite, 126 tests including the message layouts, on both machines:
+
+| Host | Python | Result | Time |
+|---|---|---|---|
+| macOS | 3.9.6 | OK, 2 skipped (Linux only) | 239 s |
+| macOS | 3.15 | OK, 2 skipped (Linux only) | 247 s |
+| Linux | 3.9.19 | OK | 113 s |
+| Linux | 3.15 | OK | 103 s |
+
+The first Linux run, from an empty scratch directory, failed both `test_agents` tests: they used
+`$CAMPAIGN_TEST_TMP` without creating it, and the parallel runner started them before any harness
+test had. One helper now creates it for every suite; the tests fail without it from a base that
+does not exist.
 
 ## Not run
 
