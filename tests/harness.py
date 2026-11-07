@@ -76,6 +76,7 @@ class CampaignCase(unittest.TestCase):
     root: Path
     home: Path
     env: dict[str, str]
+    keep_criteria = False  # a test of criteria keeps the quest template's
 
     def setUp(self) -> None:
         base = os.environ.get("CAMPAIGN_TEST_TMP")
@@ -182,6 +183,8 @@ class CampaignCase(unittest.TestCase):
             env=self.env,
             timeout=timeout,
         )
+        if args and args[0] == "new" and p.returncode == 0 and not self.keep_criteria:
+            self.no_criteria(Path(cwd), args[1])
         return Result(p)
 
     def ok(self, cwd: Path, *args: str, timeout: float = 120) -> Result:
@@ -243,3 +246,18 @@ class CampaignCase(unittest.TestCase):
         self.ok(self.home, *args)
         self.ok(self.home, "start", pid)
         return self.wt(pid)
+
+    def no_criteria(self, home: Path, pid: str) -> None:
+        """Clears the template's criteria from a new quest file, as a game master filling it in would:
+        most tests prove only their checks, and the criteria a landing needs have their own tests."""
+        for brief in [*home.glob(f".campaign/*/quests/{pid}.md"), *home.glob(f"docs/campaign/quests/{pid}.md")]:
+            text = brief.read_text()
+            start = text.index("## Acceptance criteria")
+            end = text.index("\n## ", start + 1)
+            cleared = text[:start] + "## Acceptance criteria\n\nNone in this test.\n" + text[end:]
+            if cleared == text:
+                continue
+            committed = not self.git(home, "status", "--porcelain", "--", str(brief))
+            brief.write_text(cleared)
+            if committed:
+                self.git(home, "commit", "-q", "-m", f"{pid}: no criteria", "--", str(brief))

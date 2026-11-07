@@ -206,8 +206,9 @@ the foreground and records the same result. Mechanics: `references/host.md`.
 ## Integration
 
 `campaign land` checks, in order: dependencies landed; the target is on the branch and `main`
-changed nothing but `.campaign/` since it branched (otherwise rebase, `campaign verify`,
-retry); no edits to the game master's files or outside the file set; every check passed on the
+changed nothing but `.campaign/` since it branched (otherwise rebase, `campaign verify`, retry); no
+edits to the game master's files or outside the file set; every task merged or dropped with a
+reason; every criterion with evidence in a journal's Evidence table; every check passed on the
 target's code; every required lens accepted for the current content (and, for high risk, no
 upstream code change since); CI green when configured. It fast-forwards `main`, or merges when only
 campaign metadata differs, verifies the landed code equals the tested code, records the landing,
@@ -223,18 +224,17 @@ with `--after NAME:ID`, which landing enforces, and tell their game master (`cam
 
 Every session, game master or adventurer, starts with `campaign status` (the quest log) and
 `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
-job records over any document. A dirty worktree is kept, never discarded. An interrupted landing
-is completed or cleared by the next state-writing command; a job whose runner died is requeued (if
-it allows retries) or marked interrupted; a merged but unrecorded branch is recorded with
-`campaign land ID --record COMMIT`. Never invent a missing decision: write it under "Blocked on"
-and ask.
+job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
+completed or cleared by the next state-writing command; a merged but unrecorded branch is recorded
+with `campaign land ID --record COMMIT`. Never invent a missing decision: write it under "Blocked
+on" and ask.
 
 ## Cost
 
-- No minimum number of agents and no utilization target. `pace` reports quota: check it before
+- No minimum number of agents, no utilization target. `pace` reports quota: check it before
   launching agents in parallel, which multiplies the burn. `campaign usage` shows what each quest,
-  role and class cost. Idle capacity is not waste.
-- Prompts point at files and commits; final reports stay under ~250 words, the detail in the
+  role and class cost.
+- Prompts point at files and commits; final reports stay under ~250 words, detail in the
   journal or review file.
 - Report to the patron on events (a landing, a blocker, a decision); any periodic report is built
   from `campaign status`, never by waking agents. Inside cmux the tool and `quiet` keep the sidebar

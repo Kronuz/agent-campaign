@@ -65,7 +65,7 @@ class Quests(CampaignCase):
         self.fails(self.home, "set", "fix", "--task", "one", "files=app.py", match="overlap")
         self.assertEqual(self.quest("fix")["tasks"]["one"]["files"], ["lib/**", "README.md"])
         self.fails(self.home, "set", "fix", "--task", "missing", "files=lib/**", match="no task")
-        self.fails(self.home, "set", "fix", "--task", "one", "status=review", match="files=")
+        self.fails(self.home, "set", "fix", "--task", "one", "status=review", match="dropped or active")
 
     def test_start_records_branch_worktree_base_and_work_file(self) -> None:
         wt = self.started("fix", files="app.py")
@@ -218,6 +218,58 @@ class Evidence(CampaignCase):
         self.assertEqual(len(set(trees)), 2)  # campaign files never change it; docs/guide.md does
         self.assertEqual(trees[0], trees[-1])
 
+    def test_land_needs_every_criterion_proven_and_every_task_merged_or_dropped(self) -> None:
+        wt = self.started("fix", files="app.py,lib/**,README.md")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: unit\n- A2 helper: unit"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        self.ok(self.home, "start", "fix", "--task", "docs", "--files", "README.md")
+        self.commit(self.wt("fix--lib"), {"lib/util.py": "X = 2\n"})  # work that never reaches the quest branch
+        self.commit(self.wt("fix--docs"), {"README.md": "app, documented\n"})
+        self.git(wt, "merge", "-q", "--no-edit", "quest/demo/fix--docs")
+        journal = "## Evidence\n\n| Criterion | Evidence |\n|---|---|\n| A1 | job 1 |\n| A2 | pending |\n"
+        self.commit(wt, {"app.py": "print(2)\n", ".campaign/demo/journal/fix.md": journal})
+        self.verified("fix")
+        r = self.fails(self.home, "land", "fix")
+        self.assertIn("task lib is not merged into", r.text)
+        self.assertNotIn("task docs", r.text)  # merged
+        self.assertIn("criteria without evidence in a journal's Evidence table at", r.text)
+        self.assertIn(": A2 (`campaign status fix` lists them)", r.text)
+        self.fails(self.home, "set", "fix", "--task", "lib", "status=dropped", match="needs reason=R")
+        self.ok(self.home, "set", "fix", "--task", "lib", "status=dropped", "reason=superseded by the docs task")
+        self.assertIn("lib: dropped: superseded by the docs task", self.ok(self.home, "status").out)
+        self.commit(wt, {".campaign/demo/journal/fix.md": journal.replace("| A2 | pending |", "| A2 | job 2 |")})
+        self.ok(self.home, "land", "fix")  # the journal commit keeps the checks' evidence
+
+    def test_cited_jobs_count_only_when_they_passed_at_the_code_being_landed(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        probe = self.submit(wt, "--quest", "fix", "--", "python3 app.py | grep -q 2")
+        broken = self.submit(wt, "--quest", "fix", "--", "exit 3")
+        self.ok(self.home, "wait", probe)
+        self.run_cli(self.home, "wait", broken, "--timeout", "60")
+        journal = ".campaign/demo/journal/fix.md"
+        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {broken} |\n"})
+        self.verified("fix")
+        out = self.ok(self.home, "status", "fix").out
+        self.assertIn("    A1  pending  prints two: a probe\n", out)
+        self.assertIn(f"journal: {broken} ({broken} failed)\n", out)
+        self.fails(self.home, "land", "fix", match="criteria without evidence")
+        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.assertIn("    A1  met      prints two: a probe\n", self.ok(self.home, "status", "fix").out)
+        self.commit(wt, {"app.py": "print(2)  # the code moves on after the probe\n"})
+        self.verified("fix")
+        r = self.fails(self.home, "land", "fix")
+        self.assertIn(f"evidence jobs ran other code than {self.git(wt, 'rev-parse', 'HEAD')[:12]}", r.text)
+        self.assertIn(f"`campaign job rerun {probe}`", r.text)
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        self.ok(self.home, "land", "fix")  # the row still names the probe; its rerun at this code counts
+
     def test_land_needs_green_checks_at_the_exact_head(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
@@ -233,6 +285,7 @@ class Evidence(CampaignCase):
         self.assertEqual(record["evidence"][0]["state"], "done")
 
     def test_status_counts_failures_only_at_the_code_the_quest_has_now(self) -> None:
+        self.keep_criteria = True
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")

@@ -248,6 +248,30 @@ job keys from before the change still match, and another fails if status starts 
 job (37 against 29 for four jobs before the change). 104 tests pass on macOS with Python 3.9 (167
 s) and 3.15 (176 s); the Linux run of this change waits for the VPN.
 
+## Criteria, tasks and cited jobs gate landing
+
+`campaign land` checked dependencies, the rebase, the file set, gate checks at the exact code,
+reviews for the current content and CI, but not the quest's own criteria or tasks: a quest could
+land with none of its criteria shown, and a task's unmerged commits would silently stay behind. A
+final landing now also needs:
+
+- every task merged into the target, or dropped with a reason (`campaign set ID --task T
+  status=dropped reason=R`; status shows it as dropped and stops counting it);
+- every criterion in the quest file with evidence in an Evidence table of the journals in the
+  commit being landed (the template's `<criterion>` placeholder is not one);
+- every job such a row names passed at that code: a failed, missing or unversioned job does not
+  count, and one that ran older code counts once the same job passes at this code. `campaign job
+  rerun ID...` resubmits it at the quest's head, and the gap names the ids to rerun.
+
+`campaign job submit` warns when a command names a path in another job's directory or in a checkout
+of its repository, which the job's key does not cover (the dense-pages reader smoke read another
+job's build and a file in the home checkout). The game master changes scope only through the quest
+file, which voids accepted reviews and adds the new criteria to the gate.
+
+The tests fail with each gate removed, with merged tasks counted as unmerged, with cited jobs
+unchecked, and with reruns not counted. The test harness clears the template's criteria after
+`campaign new`, as a game master filling in the quest file would; the criteria tests keep them.
+
 ## Not run
 
 - Claude Code and Codex were not exercised live; Codex is not installed here. Agent files for

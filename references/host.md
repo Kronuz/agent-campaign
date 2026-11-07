@@ -20,7 +20,7 @@ campaign job submit [--quest ID] [--commit REF] [--ref NAME=[PATH@]REF] [--cwd D
 campaign verify ID            # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
-campaign job list | show J | log J | cancel J
+campaign job list | show J | log J | rerun J... | cancel J   # rerun: same jobs at the quest's head
 campaign usage [--json]       # agent runs and jobs per quest, role and class
 ```
 
@@ -33,7 +33,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
   form the job's key. An identical job that is pending or succeeded is returned instead of rerun;
   `--force` reruns. Name unpinned inputs (a dataset version, a download) in `--env` so they are part
   of the key. Upgrading `campaign` can change how keys are computed; run `campaign verify` again
-  after an upgrade.
+  after an upgrade. A journal's Evidence row naming a job counts only while that job, or the same
+  job rerun, passed at the quest's current code.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; it is verified
   clean at the job's commit before every run, and one job uses it at a time. `campaign verify` uses
   a slot per quest, except for critical quests and `--fresh`, which check out afresh.
@@ -44,19 +45,14 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
   checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.
-- **Supervision.** Each attempt has a runner: the leader of its own session, writing a heartbeat
-  every 15 s. The command runs in its own process group under `quiet` at the job's level (bounded:
-  `quiet` stops it at its deadline). When the command ends, the runner kills every process left in
-  its session, so helpers never outlive their job.
+- **Supervision.** The command runs under `quiet` at the job's level, which stops it at its
+  deadline; its runner keeps a 15-second heartbeat and kills whatever the command leaves behind.
 
 | Event | What happens |
 |---|---|
 | Timeout (`--minutes` after the hold is granted) | TERM, then KILL after 10 s; state `timeout`, exit 124; never valid evidence |
 | Runner or worker killed, host suspended past 2 min | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt, and requeues it if `--retries` allows, else marks it `interrupted` |
 | Host rebooted | The same, without killing anything (the boot id changed, so old pids mean nothing) |
-| Command finished but the runner died before recording | The exit code was written first; the reaper records it |
-| Old runner wakes after its attempt was replaced | It no longer owns the attempt and writes nothing |
-| Job submitted twice | The key returns the first |
 | Dependency (`--after`) failed | `skipped` |
 | Disk below 5 GiB | `quiet` admits nothing until space is freed |
 | No worker can run | `--sync` runs the job in the foreground through the same runner and records the same result |

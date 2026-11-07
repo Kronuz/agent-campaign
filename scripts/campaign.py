@@ -878,22 +878,33 @@ def cmd_set(a: argparse.Namespace) -> int:
             task = p.get("tasks", {}).get(a.task)
             if task is None:
                 die(f"{a.id} has no task {a.task}")
-            if len(a.assignments) != 1 or not a.assignments[0].startswith("files=") or a.check or a.later:
-                die("set --task takes one files=GLOBS assignment")
-            files = csv(a.assignments[0].partition("=")[2])
-            if not files:
-                die("a task's file set cannot be empty")
-            clash = [
-                t
-                for t, x in p["tasks"].items()
-                if t != a.task and x.get("worktree") and overlap(files, x.get("files", []))
-            ]
-            if clash:
-                die(f"task {a.task}'s files overlap tasks {', '.join(clash)}")
-            task["files"] = files
+            given = dict(x.partition("=")[::2] for x in a.assignments)
+            if not given or set(given) - {"files", "status", "reason"} or a.check or a.later:
+                die("set --task takes files=GLOBS, or status=dropped reason=R (status=active undoes it)")
+            if "files" in given:
+                files = csv(given["files"])
+                if not files:
+                    die("a task's file set cannot be empty")
+                clash = [
+                    t
+                    for t, x in p["tasks"].items()
+                    if t != a.task and x.get("worktree") and overlap(files, x.get("files", []))
+                ]
+                if clash:
+                    die(f"task {a.task}'s files overlap tasks {', '.join(clash)}")
+                task["files"] = files
+            if given.get("status") == "dropped":
+                if not given.get("reason"):
+                    die("dropping a task needs reason=R: its unmerged work will not land")
+                task.update(status="dropped", reason=given["reason"])
+            elif given.get("status") == "active":
+                task.pop("status", None)
+                task.pop("reason", None)
+            elif "status" in given:
+                die("a task's status is dropped or active")
             p["updated"] = stamp()
-            c.save(f"campaign: set {a.id} task {a.task} files")
-            print(f"{a.id} task {a.task}: files updated")
+            c.save(f"campaign: set {a.id} task {a.task} " + " ".join(a.assignments))
+            print(f"{a.id} task {a.task}: " + ("dropped" if task.get("status") == "dropped" else "updated"))
             return 0
         for item in a.assignments:
             key, sep, value = item.partition("=")
@@ -1159,6 +1170,21 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
         gaps.append(
             f"{p['branch']} changes files outside its file set ({', '.join(p['files'])}): {', '.join(stray[:8])}"
         )
+    for task, t in sorted(p.get("tasks", {}).items()) if final else []:
+        if t.get("status") != "dropped" and has_ref(repo, t["branch"]) and not ancestor(repo, t["branch"], target):
+            gaps.append(
+                f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)"
+            )
+    wanted = criteria(c, pid) if final else {}
+    rows = evidence(journals_at(c, repo, target, pid), list(wanted), cited_jobs([target])) if wanted else {}
+    unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
+    if unproven:
+        gaps.append(
+            f"criteria without evidence in a journal's Evidence table at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
+        )
+    stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
+    if stale:
+        gaps.append(f"evidence jobs ran other code than {target[:12]}: `campaign job rerun {' '.join(stale)}`")
     for missing in check_evidence(c, p, target)[0]:
         name, _, why = missing.partition(": ")
         gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
@@ -1361,6 +1387,14 @@ def journal_text(c: Campaign, name: str, branch: str, rel: str) -> str:
     return ""
 
 
+def journals_at(c: Campaign, repo: Path, commit: str, pid: str) -> dict[str, str]:
+    """The quest's and its tasks' journals in a commit: what a landing would carry."""
+    folder = f"{c.meta}/journal"
+    names = git(repo, "ls-tree", "--name-only", f"{commit}:{folder}", check=False).splitlines()
+    mine = sorted(n for n in names if n == f"{pid}.md" or (n.startswith(f"{pid}--") and n.endswith(".md")))
+    return {n[:-3]: git(repo, "show", f"{commit}:{folder}/{n}", check=False) for n in mine}
+
+
 def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
     return state_of(journal_text(c, name, branch, rel))
 
@@ -1389,10 +1423,39 @@ def criteria(c: Campaign, pid: str) -> dict[str, str]:
 UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b", re.I)
 
 
-def evidence(journals: dict[str, str], ids: list[str]) -> dict[str, list[Json]]:
+JOB_ID = re.compile(r"\b\d{6}-\d{6}-[0-9a-f]{6}\b")
+
+
+def cited_jobs(commits: list[str]) -> Callable[[str], str]:
+    """What is wrong with a job an Evidence row cites; "" when it, or the same job rerun, passed at
+    the code of one of these commits (`campaign job rerun` makes that one command)."""
+
+    def problem(jid: str) -> str:
+        d = jobs_dir() / jid
+        if not (d / "spec.json").exists():
+            return f"{jid} is not a job on this machine"
+        job = load_job(d)
+        state = job["state"].get("state")
+        if state != "done":
+            return f"{jid} {state or 'has no result'}"
+        if not job["spec"].get("commit"):
+            return f"{jid} is unversioned"
+        for commit in commits:
+            with contextlib.suppress(CampaignError, KeyError):
+                twin = job_with_key({**job["spec"], "commit": commit})
+                if twin and twin["state"].get("state") == "done":
+                    return ""
+        return f"{jid} ran other code"
+
+    return problem
+
+
+def evidence(
+    journals: dict[str, str], ids: list[str], cited: Callable[[str], str] | None = None
+) -> dict[str, list[Json]]:
     """Each criterion's rows in the journals' Evidence tables (the quest's and its tasks'): which
     journal, what it cites, and whether that is evidence, a row whose other cells are not empty, a
-    <placeholder>, pending or failed."""
+    <placeholder>, pending or failed, and whose cited jobs (checked by `cited`) all passed at the code."""
     rows: dict[str, list[Json]] = {x: [] for x in ids}
     for name, text in journals.items():
         for row in section(text, "Evidence").splitlines():
@@ -1401,9 +1464,12 @@ def evidence(journals: dict[str, str], ids: list[str]) -> dict[str, list[Json]]:
                 continue
             rest = [x for x in cells[1:] if x]
             met = bool(rest) and not any(UNMET.match(x) or set(x) <= set("-: ") for x in rest)
+            why = [w for w in map(cited, dict.fromkeys(JOB_ID.findall(" ".join(rest)))) if w] if met and cited else []
             for cid in re.findall(r"\bA\d+\b", cells[0]):
                 if cid in rows:
-                    rows[cid].append({"journal": name, "evidence": " | ".join(rest), "met": met})
+                    rows[cid].append(
+                        {"journal": name, "evidence": " | ".join(rest), "met": met and not why, "why": why}
+                    )
     return rows
 
 
@@ -1621,11 +1687,15 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
             wt = (c.home / rel).resolve() if rel else None
             dirty = len(git(wt, "status", "--porcelain").splitlines()) if wt and wt.exists() else -1
             texts[name] = journal_text(c, name, branch, rel)
-            work[name] = {"state": state_of(texts[name]), "dirty": dirty, "worktree": rel}
+            task = p.get("tasks", {}).get(name.partition("--")[2], {})
+            state = f"dropped: {task.get('reason', '')}" if task.get("status") == "dropped" else state_of(texts[name])
+            work[name] = {"state": state, "dirty": dirty, "worktree": rel}
         journal = texts.get(pid) or journal_text(c, pid, p["branch"], p.get("worktree", ""))
         wanted = criteria(c, pid)
-        tasks = [w["state"] for name, w in work.items() if name != pid]
-        rows = evidence({pid: journal, **{n: t for n, t in texts.items() if n != pid}}, list(wanted))
+        tasks = [w["state"] for name, w in work.items() if name != pid and not w["state"].startswith("dropped: ")]
+        tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
+        journals = {pid: journal, **{n: t for n, t in texts.items() if n != pid}}
+        rows = evidence(journals, list(wanted), cited_jobs(tips))
         view["progress"] = {
             "criteria": len(wanted),
             "met": [x for x, r in rows.items() if any(e["met"] for e in r)],
@@ -1730,7 +1800,7 @@ def print_criteria(pid: str, detail: list[Json]) -> None:
         print(f"    {mark(emoji)}{d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(d['text'], indent)}")
         for r in d["rows"]:
             where = "journal" if r["journal"] == pid else r["journal"].split("--", 1)[-1]
-            line = f"{where}: {r['evidence']}"
+            line = f"{where}: {r['evidence']}" + (f" ({'; '.join(r['why'])})" if r.get("why") else "")
             print(f"    {lead}{'':<{pad}}  {'':<7}  {fit(line, indent)}")
 
 
@@ -1739,6 +1809,7 @@ def task_mark(state: str) -> str:
     marks = {
         "complete": "✅",
         "done": "✅",
+        "dropped": "🚫",
         "parked": "💤",
         "waiting": "⏳",
         "blocked": "🚧",
@@ -2472,6 +2543,11 @@ def job_for_check(repo: Path, commit: str, check: Json) -> Json | None:
         "level": check["level"],
         "env": nothing,
     }
+    return job_with_key(spec)
+
+
+def job_with_key(spec: Json) -> Json | None:
+    """The job with this spec's identity (code, command, toolchain), if one was submitted."""
     link = jobs_dir() / "keys" / job_key(spec)
     if not link.is_symlink():
         return None
@@ -3064,6 +3140,31 @@ def cmd_job_log(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_job_rerun(a: argparse.Namespace) -> int:
+    """The same jobs (command, level, directory, environment, other repositories) at another commit:
+    by default the head of their quest's branch, else of their repository."""
+    branch = ""
+    for jid in a.jobs:
+        spec = dict(resolve_job(jid)["spec"])
+        if not spec.get("commit"):
+            die(f"{jid} is unversioned: submit it again")
+        if not a.commit and spec.get("quest"):
+            with contextlib.suppress(CampaignError):
+                branch = find_campaign(Path.cwd()).quest(spec["quest"]).get("branch", "")
+        commit = rev(Path(spec["repo"]), a.commit or branch or "HEAD")
+        what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
+        spec.update(
+            commit=commit,
+            after=[],
+            cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
+            what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
+        )
+        new, reused = submit(spec)
+        print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}")
+    ensure_worker()
+    return 0
+
+
 def cmd_job_cancel(a: argparse.Namespace) -> int:
     j = resolve_job(a.job)
     state = j["state"].get("state")
@@ -3388,6 +3489,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("job")
     p.add_argument("-n", "--lines", type=int, default=40)
     p.set_defaults(fn=cmd_job_log)
+    p = job.add_parser("rerun", parents=[common], help="the same jobs at the quest's head (or --commit)")
+    p.add_argument("jobs", nargs="+", metavar="JOB")
+    p.add_argument("--commit", help="ref to run (default: the quest branch, else HEAD)")
+    p.set_defaults(fn=cmd_job_rerun)
     p = job.add_parser("cancel", parents=[common])
     p.add_argument("job")
     p.set_defaults(fn=cmd_job_cancel)
