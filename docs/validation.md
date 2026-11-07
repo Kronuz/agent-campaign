@@ -223,12 +223,12 @@ the crash tests wait out a 10-second stale threshold and Scenario F about 18 s.
 | Linux | Python 3.15 | 102 | 215 s (95 tests) | 88 s |
 
 `campaign status` shows each quest's progress: the acceptance criteria in its quest file that its
-journal's Evidence table names with evidence, the journal's next step, and the campaign's share
-(landed quests whole, the rest by criteria met). Bars use `CAMPAIGN_BAR`'s two characters (default
-`█░`, which every terminal font has; `#-` when the output cannot encode them), and color only on a
-terminal without `NO_COLOR`. The jobs line counts the jobs at the quest's code that finished and
-those that ended badly. Both tests fail against the previous `campaign.py`, and the bar assertion
-fails when `CAMPAIGN_BAR` is ignored.
+journals' Evidence tables (the quest's and its tasks') name with evidence, the journal's next
+step, and the campaign's share (landed quests whole, plus criteria with evidence). Bars use
+`CAMPAIGN_BAR`'s two characters (default `█░`, which every terminal font has; `#-` when the output
+cannot encode them), and color only on a terminal without `NO_COLOR`. The jobs line counts the jobs
+at the quest's code that finished and those that ended badly. The tests fail against the previous
+`campaign.py`, with task journals ignored, and with `CAMPAIGN_BAR` ignored.
 
 Status took 9.2 s on the Codex machine's dense-pages quest (96 finished jobs). A copy of its shape
 here (95 jobs, 131 commits) took 13.0 s and started 325 git processes, 294 of them `ls-tree` and

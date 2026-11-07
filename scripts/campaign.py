@@ -1361,7 +1361,11 @@ def journal_text(c: Campaign, name: str, branch: str, rel: str) -> str:
 
 
 def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
-    m = re.search(r"^State:\s*(.+)$", journal_text(c, name, branch, rel), re.M)
+    return state_of(journal_text(c, name, branch, rel))
+
+
+def state_of(journal: str) -> str:
+    m = re.search(r"^State:\s*(.+)$", journal, re.M)
     return m.group(1).strip() if m else "(no journal)"
 
 
@@ -1377,10 +1381,11 @@ def criteria(c: Campaign, pid: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"^\s*[-*]\s*\**(A\d+)\b", section(text, "Acceptance criteria"), re.M)))
 
 
-def criteria_met(journal: str, ids: list[str]) -> list[str]:
-    """The criteria a journal's Evidence table names with evidence beside them."""
+def criteria_met(journals: list[str], ids: list[str]) -> list[str]:
+    """The criteria the journals' Evidence tables (the quest's and its tasks') name with evidence
+    beside them."""
     met: set[str] = set()
-    for row in section(journal, "Evidence").splitlines():
+    for row in "\n".join(section(j, "Evidence") for j in journals).splitlines():
         cells = [x.strip() for x in row.strip().strip("|").split("|")]
         if len(cells) >= 2 and cells[1] and not cells[1].startswith("<") and not set(cells[1]) <= set("-: "):
             met.update(re.findall(r"\bA\d+\b", cells[0]))
@@ -1584,16 +1589,18 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
                 )
         work: dict[str, Json] = {}
         view["journal"] = work
+        texts: dict[str, str] = {}
         for name, branch, rel, _ in branches(c, pid):
             wt = (c.home / rel).resolve() if rel else None
             dirty = len(git(wt, "status", "--porcelain").splitlines()) if wt and wt.exists() else -1
-            work[name] = {"state": journal_state(c, name, branch, rel), "dirty": dirty, "worktree": rel}
-        journal = journal_text(c, pid, p["branch"], p.get("worktree", ""))
+            texts[name] = journal_text(c, name, branch, rel)
+            work[name] = {"state": state_of(texts[name]), "dirty": dirty, "worktree": rel}
+        journal = texts.get(pid) or journal_text(c, pid, p["branch"], p.get("worktree", ""))
         ids = criteria(c, pid)
         tasks = [w["state"] for name, w in work.items() if name != pid]
         view["progress"] = {
             "criteria": len(ids),
-            "met": criteria_met(journal, ids),
+            "met": criteria_met([journal, *(t for n, t in texts.items() if n != pid)], ids),
             "tasks": len(tasks),
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
@@ -1682,7 +1689,8 @@ def print_quest(v: Json, full: bool) -> None:
     if g and (g["criteria"] or g["tasks"]):
         tasks = f"{g['tasks_done']} of {plural(g['tasks'], 'task')} complete" if g["tasks"] else ""
         if g["criteria"]:
-            met = f"{len(g['met'])} of {plural(g['criteria'], 'criterion')} met".replace("criterions", "criteria")
+            n = g["criteria"]
+            met = f"{len(g['met'])} of {n} {'criterion' if n == 1 else 'criteria'} with evidence"
             print(f"  {bar(len(g['met']) / g['criteria'])} {met}" + (f" · {tasks}" if tasks else ""))
         else:
             print(f"  {tasks}")
@@ -1778,7 +1786,7 @@ def cmd_status(a: argparse.Namespace) -> int:
             for v in live
             if v["status"] == "landed" or (v.get("progress") or {}).get("criteria")
         )
-        print(f"  {bar(done / len(live))} of the campaign (quests not landed count by criteria met)")
+        print(f"  {bar(done / len(live))} of the campaign (landed quests, plus criteria with evidence)")
     m = o["milestone"]
     if m and m["name"]:
         print(f"  milestone {m['name']}: {m['landed']} of {plural(m['quests'], 'quest')} landed")
@@ -3146,7 +3154,8 @@ def parser() -> argparse.ArgumentParser:
         "status",
         parents=[common],
         help="what is ready, running, waiting and landable",
-        description="Each quest and what it still needs to land, with progress from its criteria and journal. "
+        description="Each quest and what it still needs to land. Progress counts the criteria in its quest "
+        "file that its journals' Evidence tables name with evidence (`| A1 | job ID |`). "
         "Colored on a terminal (NO_COLOR turns it off); CAMPAIGN_BAR sets the progress bar's two characters "
         "(default \u2588\u2591, e.g. \u25b0\u25b1).",
     )

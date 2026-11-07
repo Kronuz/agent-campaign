@@ -267,13 +267,16 @@ class Evidence(CampaignCase):
                 "|---|---|",
                 "| A1 | job 261106-1 |",
                 "| A2, A3 | <pending> |",
-                "| A2 | test_two |",
                 "",
             ]
         )
         self.commit(wt, {".campaign/demo/journal/fix.md": journal})
+        self.assertIn("33% 1 of 3 criteria with evidence", self.ok(self.home, "status").out)
+        self.ok(self.home, "start", "fix", "--task", "two", "--files", "app.py")
+        task = self.root / "app-wt/demo/fix--two"
+        self.commit(task, {".campaign/demo/journal/fix--two.md": "## Evidence\n\n| A2 | test_two |\n"})
         out = self.ok(self.home, "status").out
-        self.assertIn("67% 2 of 3 criteria met", out)
+        self.assertIn("67% 2 of 3 criteria with evidence", out)  # a task's evidence counts for its quest
         self.assertIn("67% of the campaign", out)
         self.assertIn("next: wire the reader", out)
         self.env["CAMPAIGN_BAR"] = "#."
