@@ -196,15 +196,17 @@ The pause test also passes against the bash `quiet`.
 
 Every tool is Python with an `argparse` interface: `campaign`, `quiet`, `pace`, `report` and
 `sync-agents` (`install.sh` stays shell, as the bootstrap). Help is colored on Python 3.14 and
-later, each command has `--help`, and usage errors exit 2. `campaign` and `quiet` import `report`
-instead of starting it, so a `quiet` run costs no extra process outside cmux. `sync-agents.py`
-writes the same bytes as the shell version for the four agent types plus edge cases (quotes, `%`,
-`$HOME`, a second `---`, no final newline, an unmapped model, a model override), apart from its
-mark. A campaign keeps its files in `.campaign/<name>/` at the root of its home repository, so one
-repository can hold several; branches are `quest/<campaign>/<id>` and worktrees
-`<repo>-wt/<campaign>/<id>`; jobs, wait records and sidebar pills are keyed by campaign. Older
-campaigns keep `docs/campaign/` until `campaign migrate`; their jobs keep the home as their tag, so
-jobs submitted before the upgrade still wake their game master.
+later, output is colored and marked with emoji on a terminal (`scripts/style.py`; `NO_COLOR` turns
+both off, `FORCE_COLOR` on) and plain words in pipes, which agents read, each command has `--help`,
+and usage errors exit 2. `campaign` and `quiet` import `report` instead of starting it, so a
+`quiet` run costs no extra process outside cmux. `sync-agents.py` writes the same bytes as the
+shell version for the four agent types plus edge cases (quotes, `%`, `$HOME`, a second `---`, no
+final newline, an unmapped model, a model override), apart from its mark. A campaign keeps its
+files in `.campaign/<name>/` at the root of its home repository, so one repository can hold
+several; branches are `quest/<campaign>/<id>` and worktrees `<repo>-wt/<campaign>/<id>`; jobs, wait
+records and sidebar pills are keyed by campaign. Older campaigns keep `docs/campaign/` until
+`campaign migrate`; their jobs keep the home as their tag, so jobs submitted before the upgrade
+still wake their game master.
 
 ## Parallel tests and quest progress
 

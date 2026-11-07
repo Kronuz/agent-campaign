@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -27,6 +28,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from style import mark, paint
 
 EPILOG = """\
 environment:
@@ -298,12 +301,30 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def shown(text: str) -> str:
+    """A report with the used share colored by what is left, and running out before the reset in red."""
+
+    def used(m: re.Match[str]) -> str:
+        n = float(m.group(1))
+        return paint(m.group(0), "green" if n < 50 else "yellow" if n < 80 else "red")
+
+    text = re.sub(r"(\d+(?:\.\d+)?)% used", used, text)
+    for alarm in ("quota exhausted", "(before reset)"):
+        text = text.replace(alarm, paint(alarm, "red"))
+    return text
+
+
 def main(argv: list[str] | None = None) -> int:
     harness = parser().parse_args(argv).harness
     if harness != "all":
-        print(report(harness)[1])
+        print(f"{mark('⛽')}{shown(report(harness)[1])}")
         return 0
-    lines = [f"{h}: {text}" for h in HARNESSES for installed, text in [report(h)] if installed]
+    lines = [
+        f"{mark('⛽')}{paint(h, 'bold')}: {shown(text)}"
+        for h in HARNESSES
+        for installed, text in [report(h)]
+        if installed
+    ]
     print("\n".join(lines) if lines else "no harness records on this machine")
     return 0
 

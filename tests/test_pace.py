@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "pace.py"
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPT = SCRIPTS / "pace.py"
+sys.path.insert(0, str(SCRIPTS))  # pace imports style
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SPEC = importlib.util.spec_from_file_location("pace", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

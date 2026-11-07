@@ -37,6 +37,7 @@ from pathlib import Path
 from types import FrameType
 
 import report
+from style import mark, paint
 
 EPILOG = """Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU machines
 can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light holds (SIGSTOP)
@@ -765,6 +766,9 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
 # Reporting
 
 
+LEVEL_MARKS = {"light": ("green", "🟢"), "strict": ("yellow", "🟡"), "exclusive": ("red", "🔴")}
+
+
 def show_holds(out: bool) -> int:
     """Prints the live holds: 1 for none, 2 for light only (or strict on its own cores), 0 for a
     hold that needs the whole machine."""
@@ -778,8 +782,9 @@ def show_holds(out: bool) -> int:
         if out:
             on = f" cpus {cpus}" if cpus else ""
             by = f", by {who}" if who else ""
+            color, emoji = LEVEL_MARKS.get(label.split(",")[0], ("dim", "⚪"))
             print(
-                f"{path.name} [{label}{on}]: {get(info, 'what')} (since {get(info, 'since')}, until {clock(get(info, 'until'))}{by})"
+                f"{mark(emoji)}{path.name} [{paint(label, color)}{on}]: {get(info, 'what')} (since {get(info, 'since')}, until {clock(get(info, 'until'))}{by})"
             )
         if level != "light" and not cpus:  # needs the whole machine
             state = 0
@@ -793,7 +798,9 @@ def show_waiting() -> None:
         info = read(path)
         pid = get(info, "pid")
         if pid.isdigit() and alive(int(pid)):
-            print(f"{path.name} [waiting, {get(info, 'level')}]: {get(info, 'what')} (since {get(info, 'since')})")
+            print(
+                f"{mark('⏳')}{path.name} [waiting, {get(info, 'level')}]: {get(info, 'what')} (since {get(info, 'since')})"
+            )
 
 
 def check() -> int:
@@ -806,14 +813,18 @@ def check() -> int:
         Path.home(),
     )
     if free < low:
-        print(f"disk: {free} GiB free on {home}'s volume, below {low}: free space first")
+        print(f"{mark('❌')}{paint('disk', 'red')}: {free} GiB free on {home}'s volume, below {low}: free space first")
         code = 1
     elif free < warn:
-        print(f"disk: {free} GiB free on {home}'s volume, below {warn}: delete build dirs you no longer need")
+        print(
+            f"{mark('❗')}{paint('disk', 'yellow')}: {free} GiB free on {home}'s volume, below {warn}: delete build dirs you no longer need"
+        )
         code = code or 2
     load, most = load1(), max_load()
     if load >= most:
-        print(f"load: {load} on {NCPU} CPUs, above {most}: start no new build or test until it drops")
+        print(
+            f"{mark('❗')}{paint('load', 'yellow')}: {load} on {NCPU} CPUs, above {most}: start no new build or test until it drops"
+        )
         code = code or 2
     return code
 

@@ -905,6 +905,27 @@ class SharedHome(CampaignCase):
         self.assertIn("quest/perf/fix moved", self.ok(self.home, "wait", "--commits", "--campaign", "perf").out)
 
 
+class Style(CampaignCase):
+    def test_color_and_marks_only_on_a_terminal(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        plain = self.ok(self.home, "status", "fix").out + self.ok(self.home, "job", "list").out
+        self.assertNotIn("\033[", plain)  # agents read through pipes: words only
+        self.assertFalse([c for c in plain if ord(c) >= 0x1F300], plain)
+        self.env["FORCE_COLOR"] = "1"
+        styled = self.ok(self.home, "status", "fix").out
+        self.assertIn("\033[", styled)
+        self.assertIn("🔨 \033[1mfix\033[0m  \033[36mactive\033[0m", styled)
+        self.assertIn("  🌿 branch quest/demo/fix", styled)
+        self.assertIn("  ✅ \033[32mready to land", styled)
+        self.assertIn("✅ ", self.ok(self.home, "job", "list").out)
+        self.env["NO_COLOR"] = "1"  # wins over FORCE_COLOR
+        out = self.ok(self.home, "status", "fix").out
+        self.assertNotIn("\033[", out)
+        self.assertNotIn("🌿", out)
+
+
 class Sidebar(CampaignCase):
     def test_the_sidebar_follows_the_state_and_sends_only_changes(self) -> None:
         calls = self.root / "cmux-calls"

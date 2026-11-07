@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import report
+from style import mark, paint, styled
 
 SKILL = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL / "templates"
@@ -1679,24 +1680,23 @@ def machine_status() -> int:
     return 0
 
 
-STYLES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "magenta": "35", "cyan": "36"}
-STAGES = {
-    "planned": "dim",
-    "active": "cyan",
-    "review": "magenta",
-    "blocked": "red",
-    "landed": "green",
-    "dropped": "dim",
+STAGES = {  # color and mark per quest status
+    "planned": ("dim", "📋"),
+    "active": ("cyan", "🔨"),
+    "review": ("magenta", "🔍"),
+    "blocked": ("red", "🚧"),
+    "landed": ("green", "🏁"),
+    "dropped": ("dim", "🚫"),
 }
-
-
-def paint(text: str, *styles: str) -> str:
-    """Colored for a terminal (NO_COLOR turns it off, FORCE_COLOR on); plain for pipes and agents."""
-    if os.environ.get("NO_COLOR") or not styles:
-        return text
-    if not os.environ.get("FORCE_COLOR") and (not sys.stdout.isatty() or os.environ.get("TERM") == "dumb"):
-        return text
-    return f"\033[{';'.join(STYLES[x] for x in styles)}m{text}\033[0m"
+JOB_MARKS = {
+    "done": ("green", "✅"),
+    "failed": ("yellow", "❌"),
+    "timeout": ("yellow", "⏰"),
+    "interrupted": ("yellow", "⚡"),
+    "cancelled": ("dim", "🚫"),
+    "queued": ("dim", "⏳"),
+    "running": ("cyan", "🔄"),
+}
 
 
 def bar(done: float, width: int = 20) -> str:
@@ -1720,20 +1720,35 @@ def print_criteria(pid: str, detail: list[Json]) -> None:
     def fit(text: str, indent: int) -> str:
         return text if indent + len(text) <= width else text[: max(width - indent - 3, 10)] + "..."
 
-    print("  criteria:")
+    print(f"  {mark('📜')}criteria:")
     pad = max(len(d["id"]) for d in detail)
+    lead = "   " if styled() else ""  # under a mark
     for d in detail:
         state = "met" if any(r["met"] for r in d["rows"]) else "pending" if d["rows"] else "no row"
-        style = {"met": "green", "pending": "yellow"}.get(state, "dim")
-        print(f"    {d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(d['text'], pad + 15)}")
+        style, emoji = {"met": ("green", "✅"), "pending": ("yellow", "⏳")}.get(state, ("dim", "⬜"))
+        indent = len(lead) + pad + 15
+        print(f"    {mark(emoji)}{d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(d['text'], indent)}")
         for r in d["rows"]:
             where = "journal" if r["journal"] == pid else r["journal"].split("--", 1)[-1]
             line = f"{where}: {r['evidence']}"
-            print(f"    {'':<{pad}}  {'':<7}  {fit(line, pad + 15)}")
+            print(f"    {lead}{'':<{pad}}  {'':<7}  {fit(line, indent)}")
+
+
+def task_mark(state: str) -> str:
+    first = state.split(maxsplit=1)[0].rstrip(";:,.").lower() if state.strip() else ""
+    marks = {
+        "complete": "✅",
+        "done": "✅",
+        "parked": "💤",
+        "waiting": "⏳",
+        "blocked": "🚧",
+    }
+    return marks.get(first, "🔨")
 
 
 def print_quest(v: Json, full: bool) -> None:
-    print(f"\n{paint(v['id'], 'bold')}  {paint(v['status'], STAGES.get(v['status'], ''))}  {v['risk']}  {v['title']}")
+    color, emoji = STAGES.get(v["status"], ("dim", "❔"))
+    print(f"\n{mark(emoji)}{paint(v['id'], 'bold')}  {paint(v['status'], color)}  {v['risk']}  {v['title']}")
     g = v.get("progress")
     if g and (g["criteria"] or g["tasks"]):
         tasks = f"{g['tasks_done']} of {plural(g['tasks'], 'task')} complete" if g["tasks"] else ""
@@ -1743,37 +1758,37 @@ def print_quest(v: Json, full: bool) -> None:
             met += f" ({id_ranges(g['met'])})" if g["met"] else ""
             print(f"  {bar(len(g['met']) / g['criteria'])} {met}" + (f" · {tasks}" if tasks else ""))
             if g["unlisted"]:
-                print(f"  in no journal's Evidence table yet: {id_ranges(g['unlisted'])}")
+                print(f"  {mark('📝')}in no journal's Evidence table yet: {id_ranges(g['unlisted'])}")
         else:
             print(f"  {tasks}")
         if g["next"]:
-            print(f"  next: {g['next']}")
+            print(f"  {mark('🧭')}next: {g['next']}")
         if full and g["criteria"]:
             print_criteria(v["id"], g["detail"])
     if "branch" in v:
-        print(f"  branch {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead of main")
+        print(f"  {mark('🌿')}branch {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead of main")
         if v["missing"]:
-            print("  " + paint("to land:", "yellow"))
+            print(f"  {mark('🛬')}" + paint("to land:", "yellow"))
             for gap in v["missing"]:
                 print(f"    - {gap}")
         else:
-            print("  " + paint(f"ready to land: `campaign land {v['id']}`", "green"))
+            print(f"  {mark('✅')}" + paint(f"ready to land: `campaign land {v['id']}`", "green"))
         checks = [f"{k} {s}" for k, s in v["checks"].items()]
         if v["later"]:
             checks.append("after landing: " + ", ".join(v["later"]))
         if checks:
-            print("  checks: " + "; ".join(checks))
+            print(f"  {mark('🧪')}checks: " + "; ".join(checks))
         tasks = {}
         for name, w in v["journal"].items():
             dirty = " [worktree missing]" if w["dirty"] < 0 else f" [{w['dirty']} uncommitted]" if w["dirty"] else ""
             if name == v["id"]:
-                print(f"  journal: {w['state']}{dirty}")
+                print(f"  {mark('📓')}journal: {w['state']}{dirty}")
             else:  # a task's id is QUEST--TASK
                 tasks[name.split("--", 1)[1]] = f"{w['state']}{dirty}"
         if tasks:
-            print("  tasks:")
+            print(f"  {mark('👥')}tasks:")
             for task, state in tasks.items():
-                print(f"    {task}: {state}")
+                print(f"    {mark(task_mark(state))}{task}: {state}")
     elif v["ready"]:
         print(f"  ready to start: `campaign start {v['id']}`")
     else:
@@ -1787,7 +1802,7 @@ def print_quest(v: Json, full: bool) -> None:
     counts += [paint(failed, "yellow") if unread else failed] if bad else []
     counts += [f"{n} {k}" for k, n in v["jobs"].items() if n]
     if counts:
-        line = f"  jobs at this code: {', '.join(counts)}"
+        line = f"  {mark('🔬')}jobs at this code: {', '.join(counts)}"
         if unread:
             some = "" if len(unread) == len(bad) else f"{len(unread)} "
             line += f"; {some}not in a journal yet (`campaign job log ID`):"
@@ -1796,11 +1811,11 @@ def print_quest(v: Json, full: bool) -> None:
         print(line)
     for f in unread:
         how = "" if f["state"] == "failed" else f"{f['state']}: "
-        print(f"    {f['job']}  {how}{f['what']}" + (" (a check)" if f["check"] else ""))
+        print(f"    {mark('👀')}{f['job']}  {how}{f['what']}" + (" (a check)" if f["check"] else ""))
     if full and v["landed"]:
-        print("  landed: " + ", ".join(v["landed"]))
+        print(f"  {mark('🏁')}landed: " + ", ".join(v["landed"]))
     if v.get("deferred"):
-        print("  deferred checks: " + ", ".join(f"{n} {s}" for s, n in v["deferred"].items()))
+        print(f"  {mark('⏳')}deferred checks: " + ", ".join(f"{n} {s}" for s, n in v["deferred"].items()))
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -1835,7 +1850,7 @@ def cmd_status(a: argparse.Namespace) -> int:
         )
         return 0
     n = o["counts"]
-    print(f"{paint('campaign ' + c.state['campaign'], 'bold')} ({c.home})")
+    print(f"{mark('🏰')}{paint('campaign ' + c.state['campaign'], 'bold')} ({c.home})")
     print(
         f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned"
         + (f"; ready to start: {', '.join(o['ready'])}" if o["ready"] else "")
@@ -1850,8 +1865,12 @@ def cmd_status(a: argparse.Namespace) -> int:
         print(f"  {bar(done / len(live))} of the campaign (landed quests, plus criteria with evidence)")
     m = o["milestone"]
     if m and m["name"]:
-        print(f"  milestone {m['name']}: {m['landed']} of {plural(m['quests'], 'quest')} landed")
-    print(f"  jobs: {queue['queued']} queued, {queue['running']} running; worker {'up' if worker_alive() else 'down'}")
+        print(f"  {mark('🎯')}milestone {m['name']}: {m['landed']} of {plural(m['quests'], 'quest')} landed")
+    up = worker_alive()
+    worker = f"worker {'up' if up else 'down'}"
+    print(
+        f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
+    )
     if a.id:
         print_quest(views[0], full=True)
     else:
@@ -1861,7 +1880,7 @@ def cmd_status(a: argparse.Namespace) -> int:
                     print_quest(v, full=False)
         landed = [v for v in views if v["status"] == "landed"]
         if landed:
-            print("\nlanded: " + ", ".join(v["id"] for v in landed))
+            print(f"\n{mark('🏁')}landed: " + ", ".join(v["id"] for v in landed))
             for v in landed:
                 red = {s: k for s, k in v.get("deferred", {}).items() if s != "done"}
                 if red:
@@ -1875,8 +1894,13 @@ def cmd_status(a: argparse.Namespace) -> int:
     if found:
         print()
     for severity, message in found:
-        print(f"{paint(severity, {'error': 'red', 'warning': 'yellow'}.get(severity, 'dim'))}: {message}")
+        print_problem(severity, message)
     return 0
+
+
+def print_problem(severity: str, message: str) -> None:
+    style, emoji = {"error": ("red", "❌"), "warning": ("yellow", "❗")}.get(severity, ("dim", "💬"))
+    print(f"{mark(emoji)}{paint(severity, style)}: {message}")
 
 
 # Usage: read from what the harnesses and jobs already record; agents write nothing for it.
@@ -2254,7 +2278,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
         for r in runs:
             groups.setdefault(key(r), []).append(r)
         width = max(len(title), *map(len, groups))
-        print(f"\n{title:<{width}} runs  tokens    cost  agent time")
+        print("\n" + paint(f"{title:<{width}} runs  tokens    cost  agent time", "bold"))
         for k, rs in sorted(
             groups.items(), key=lambda x: (-sum(r["cost"] for r in x[1]), -sum(r["tokens"] for r in x[1]))
         ):
@@ -2265,7 +2289,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
 
     when = time.strftime("%Y-%m-%d", time.localtime(u["since"]))
     print(
-        f"campaign {u['campaign']} since {when}: {len(runs)} agent runs, {amount(sum(r['tokens'] for r in runs))} tokens, "
+        f"{mark('📊')}{paint('campaign ' + u['campaign'], 'bold')} since {when}: {len(runs)} agent runs, {amount(sum(r['tokens'] for r in runs))} tokens, "
         f"cost {amount(sum(r['cost'] for r in runs))}; {len(jobs)} jobs ran {span(sum(j['ran'] for j in jobs))} "
         f"and waited {span(sum(j['waited'] for j in jobs))}"
     )
@@ -2290,7 +2314,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
         quests = sorted({j["quest"] for j in jobs})
         labels = {q: "(no quest)" if q == "-" else q for q in quests}
         width = max(len("jobs by quest"), *map(len, labels.values()))
-        print(f"\n{'jobs by quest':<{width}}  jobs     ran  waited")
+        print("\n" + paint(f"{'jobs by quest':<{width}}  jobs     ran  waited", "bold"))
         for q in quests:
             js = [j for j in jobs if j["quest"] == q]
             print(
@@ -2298,11 +2322,15 @@ def cmd_usage(a: argparse.Namespace) -> int:
             )
     for s in u["game_master"]:
         print(
-            f"\ngame master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens, cost {amount(s['cost'])} "
+            f"\n{mark('🧙')}game master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens, cost {amount(s['cost'])} "
             "(the whole session, which may include other work)"
         )
     print(
-        f"\nread: {', '.join(USAGE_READERS)}; tokens are cumulative (context rereads included), cost in each harness's own unit; Codex cost unavailable (reported as 0)"
+        "\n"
+        + paint(
+            f"read: {', '.join(USAGE_READERS)}; tokens are cumulative (context rereads included), cost in each harness's own unit; Codex cost unavailable (reported as 0)",
+            "dim",
+        )
     )
     return 0
 
@@ -2315,15 +2343,15 @@ def cmd_check(a: argparse.Namespace) -> int:
         die(f"{path} does not exist")
     errors = validate(data)
     for e in errors:
-        print(f"error: {e}")
+        print_problem("error", e)
     if errors:
         return 1
     reap()
     found = problems(Campaign(home))
     for severity, message in found:
-        print(f"{severity}: {message}")
+        print_problem(severity, message)
     if not found:
-        print("ok")
+        print(f"{mark('✅')}{paint('ok', 'green')}")
     return 1 if any(s == "error" for s, _ in found) else 0
 
 
@@ -2985,8 +3013,10 @@ def cmd_job_list(a: argparse.Namespace) -> int:
         if (a.quest and s.get("quest") != a.quest) or (a.state and st.get("state") != a.state):
             continue
         exit_code = "" if st.get("exit") is None else f" exit {st['exit']}"
+        state = st.get("state", "?")
+        color, emoji = JOB_MARKS.get(state, ("dim", "❔"))
         print(
-            f"{j['id']}  {st.get('state', '?'):11} {s.get('level', '?'):9} {s.get('quest') or '-':14} {s.get('what', '')}{exit_code}"
+            f"{mark(emoji)}{j['id']}  {paint(f'{state:11}', color)} {s.get('level', '?'):9} {s.get('quest') or '-':14} {s.get('what', '')}{exit_code}"
         )
     return 0
 
