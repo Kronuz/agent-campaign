@@ -251,6 +251,9 @@ class Evidence(CampaignCase):
         brief = self.home / ".campaign/demo/quests/fix.md"
         brief.write_text("# fix\n\n## Acceptance criteria\n\n- A1 one: a test\n- A2 two: a test\n- A3 three: a test\n")
         self.git(self.home, "commit", "-qam", "criteria")
+        out = self.ok(self.home, "status").out  # the template's placeholder row lists nothing
+        self.assertIn("0% 0 of 3 criteria with evidence\n", out)
+        self.assertIn("in no journal's Evidence table yet: A1-A3", out)
         journal = "\n".join(
             [
                 "# fix: journal",
@@ -266,17 +269,33 @@ class Evidence(CampaignCase):
                 "| Criterion | Evidence |",
                 "|---|---|",
                 "| A1 | job 261106-1 |",
-                "| A2, A3 | <pending> |",
+                "| A2 | <pending> |",
+                "| A3 | job 261106-2 | Pending |",
                 "",
             ]
         )
         self.commit(wt, {".campaign/demo/journal/fix.md": journal})
-        self.assertIn("33% 1 of 3 criteria with evidence", self.ok(self.home, "status").out)
+        out = self.ok(self.home, "status").out
+        self.assertIn("33% 1 of 3 criteria with evidence (A1)", out)
+        self.assertNotIn("in no journal's Evidence table", out)
         self.ok(self.home, "start", "fix", "--task", "two", "--files", "app.py")
         task = self.root / "app-wt/demo/fix--two"
         self.commit(task, {".campaign/demo/journal/fix--two.md": "## Evidence\n\n| A2 | test_two |\n"})
         out = self.ok(self.home, "status").out
-        self.assertIn("67% 2 of 3 criteria with evidence", out)  # a task's evidence counts for its quest
+        self.assertIn("67% 2 of 3 criteria with evidence (A1-A2)", out)  # a task's evidence counts for its quest
+        self.assertNotIn("criteria:", out)  # the list is for one quest's view
+        one = self.ok(self.home, "status", "fix").out
+        for line in (
+            "A1  met      one: a test",
+            "             journal: job 261106-1",
+            "A2  met      two: a test",
+            "             journal: <pending>",
+            "             two: test_two",
+            "A3  pending  three: a test",
+            "             journal: job 261106-2 | Pending",
+        ):
+            self.assertIn(f"    {line}\n", one)
+        self.assertIn("two: (no State line)", one)
         self.assertIn("67% of the campaign", out)
         self.assertIn("next: wire the reader", out)
         self.env["CAMPAIGN_BAR"] = "#."

@@ -1366,7 +1366,7 @@ def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
 
 def state_of(journal: str) -> str:
     m = re.search(r"^State:\s*(.+)$", journal, re.M)
-    return m.group(1).strip() if m else "(no journal)"
+    return m.group(1).strip() if m else "(no State line)" if journal.strip() else "(no journal)"
 
 
 def section(text: str, title: str) -> str:
@@ -1374,22 +1374,47 @@ def section(text: str, title: str) -> str:
     return m.group(1) if m else ""
 
 
-def criteria(c: Campaign, pid: str) -> list[str]:
-    """The ids of a quest's acceptance criteria (A1, A2, ...), from its quest file."""
+def criteria(c: Campaign, pid: str) -> dict[str, str]:
+    """A quest's acceptance criteria (A1, A2, ...) and the first line of each, from its quest file."""
     brief = c.home / c.meta / "quests" / f"{pid}.md"
-    text = brief.read_text() if brief.exists() else ""
-    return list(dict.fromkeys(re.findall(r"^\s*[-*]\s*\**(A\d+)\b", section(text, "Acceptance criteria"), re.M)))
+    text = section(brief.read_text() if brief.exists() else "", "Acceptance criteria")
+    found: dict[str, str] = {}
+    for cid, line in re.findall(r"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(.*)$", text, re.M):
+        found.setdefault(cid, line.strip())
+    return found
 
 
-def criteria_met(journals: list[str], ids: list[str]) -> list[str]:
-    """The criteria the journals' Evidence tables (the quest's and its tasks') name with evidence
-    beside them."""
-    met: set[str] = set()
-    for row in "\n".join(section(j, "Evidence") for j in journals).splitlines():
-        cells = [x.strip() for x in row.strip().strip("|").split("|")]
-        if len(cells) >= 2 and cells[1] and not cells[1].startswith("<") and not set(cells[1]) <= set("-: "):
-            met.update(re.findall(r"\bA\d+\b", cells[0]))
-    return [x for x in ids if x in met]
+UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b", re.I)
+
+
+def evidence(journals: dict[str, str], ids: list[str]) -> dict[str, list[Json]]:
+    """Each criterion's rows in the journals' Evidence tables (the quest's and its tasks'): which
+    journal, what it cites, and whether that is evidence, a row whose other cells are not empty, a
+    <placeholder>, pending or failed."""
+    rows: dict[str, list[Json]] = {x: [] for x in ids}
+    for name, text in journals.items():
+        for row in section(text, "Evidence").splitlines():
+            cells = [x.strip() for x in row.strip().strip("|").split("|")]
+            if len(cells) < 2 or cells[0].startswith("<"):
+                continue
+            rest = [x for x in cells[1:] if x]
+            met = bool(rest) and not any(UNMET.match(x) or set(x) <= set("-: ") for x in rest)
+            for cid in re.findall(r"\bA\d+\b", cells[0]):
+                if cid in rows:
+                    rows[cid].append({"journal": name, "evidence": " | ".join(rest), "met": met})
+    return rows
+
+
+def id_ranges(ids: list[str]) -> str:
+    """A1, A2, A3, A5 as "A1-A3, A5"."""
+    nums = sorted(int(x[1:]) for x in ids)
+    runs: list[list[int]] = []
+    for n in nums:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    return ", ".join(f"A{a}" if a == b else f"A{a}-A{b}" for a, b in runs)
 
 
 def next_step(journal: str) -> str:
@@ -1596,11 +1621,14 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json]) -> Json:
             texts[name] = journal_text(c, name, branch, rel)
             work[name] = {"state": state_of(texts[name]), "dirty": dirty, "worktree": rel}
         journal = texts.get(pid) or journal_text(c, pid, p["branch"], p.get("worktree", ""))
-        ids = criteria(c, pid)
+        wanted = criteria(c, pid)
         tasks = [w["state"] for name, w in work.items() if name != pid]
+        rows = evidence({pid: journal, **{n: t for n, t in texts.items() if n != pid}}, list(wanted))
         view["progress"] = {
-            "criteria": len(ids),
-            "met": criteria_met([journal, *(t for n, t in texts.items() if n != pid)], ids),
+            "criteria": len(wanted),
+            "met": [x for x, r in rows.items() if any(e["met"] for e in r)],
+            "unlisted": [x for x, r in rows.items() if not r],
+            "detail": [{"id": x, "text": wanted[x], "rows": r} for x, r in rows.items()],
             "tasks": len(tasks),
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
@@ -1683,6 +1711,25 @@ def bar(done: float, width: int = 20) -> str:
     return paint(full * n, "green") + paint(empty * (width - n), "dim") + f" {round(done * 100)}%"
 
 
+def print_criteria(pid: str, detail: list[Json]) -> None:
+    """Each criterion: met, pending (listed without evidence) or unrecorded, with the rows behind it."""
+    width = shutil.get_terminal_size((100, 24)).columns
+
+    def fit(text: str, indent: int) -> str:
+        return text if indent + len(text) <= width else text[: max(width - indent - 3, 10)] + "..."
+
+    print("  criteria:")
+    pad = max(len(d["id"]) for d in detail)
+    for d in detail:
+        state = "met" if any(r["met"] for r in d["rows"]) else "pending" if d["rows"] else "no row"
+        style = {"met": "green", "pending": "yellow"}.get(state, "dim")
+        print(f"    {d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(d['text'], pad + 15)}")
+        for r in d["rows"]:
+            where = "journal" if r["journal"] == pid else r["journal"].split("--", 1)[-1]
+            line = f"{where}: {r['evidence']}"
+            print(f"    {'':<{pad}}  {'':<7}  {fit(line, pad + 15)}")
+
+
 def print_quest(v: Json, full: bool) -> None:
     print(f"\n{paint(v['id'], 'bold')}  {paint(v['status'], STAGES.get(v['status'], ''))}  {v['risk']}  {v['title']}")
     g = v.get("progress")
@@ -1691,11 +1738,16 @@ def print_quest(v: Json, full: bool) -> None:
         if g["criteria"]:
             n = g["criteria"]
             met = f"{len(g['met'])} of {n} {'criterion' if n == 1 else 'criteria'} with evidence"
+            met += f" ({id_ranges(g['met'])})" if g["met"] else ""
             print(f"  {bar(len(g['met']) / g['criteria'])} {met}" + (f" · {tasks}" if tasks else ""))
+            if g["unlisted"]:
+                print(f"  in no journal's Evidence table yet: {id_ranges(g['unlisted'])}")
         else:
             print(f"  {tasks}")
         if g["next"]:
             print(f"  next: {g['next']}")
+        if full and g["criteria"]:
+            print_criteria(v["id"], g["detail"])
     if "branch" in v:
         print(f"  branch {v['branch']} at {v['head']}, {plural(v['ahead'], 'commit')} ahead of main")
         if v["missing"]:
@@ -3155,7 +3207,8 @@ def parser() -> argparse.ArgumentParser:
         parents=[common],
         help="what is ready, running, waiting and landable",
         description="Each quest and what it still needs to land. Progress counts the criteria in its quest "
-        "file that its journals' Evidence tables name with evidence (`| A1 | job ID |`). "
+        "file that its journals' Evidence tables name with evidence (`| A1 | job ID |`); `status ID` lists "
+        "each criterion with the rows behind it. "
         "Colored on a terminal (NO_COLOR turns it off); CAMPAIGN_BAR sets the progress bar's two characters "
         "(default \u2588\u2591, e.g. \u25b0\u25b1).",
     )
