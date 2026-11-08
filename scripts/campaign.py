@@ -36,8 +36,7 @@ from style import add_help, mark, paint, show_help, styled
 SKILL = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL / "templates"
 META = ".campaign"  # .campaign/NAME/ holds a campaign's files in its home repository
-LEGACY_META = "docs/campaign"  # where an older campaign keeps them until `campaign migrate`
-EXCLUDE_META = (f":(exclude){META}", f":(exclude){LEGACY_META}")
+EXCLUDE_META = (f":(exclude){META}",)
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 LEAD_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")  # the lead writes these, never a quest branch
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
@@ -260,11 +259,7 @@ def changed(repo: Path, a: str, b: str) -> list[str]:
 
 def meta_rel(path: str) -> str | None:
     """A campaign file's path inside its campaign's directory; None for code."""
-    if path.startswith(META + "/"):
-        return "/".join(path.split("/")[2:])
-    if path.startswith(LEGACY_META + "/"):
-        return path[len(LEGACY_META) + 1 :]
-    return None
+    return "/".join(path.split("/")[2:]) if path.startswith(META + "/") else None
 
 
 def is_meta(path: str) -> bool:
@@ -318,29 +313,18 @@ def tree_id(entries: list[bytes], width: int) -> bytes:
 
 
 def code_tree(repo: Path, commit: str) -> str:
-    """The commit's tree without the campaign's files (.campaign, and docs/campaign of older
-    campaigns): what builds and tests see, so evidence survives commits that touch only campaign
-    files (a journal, a review, the move by `campaign migrate`). Computed from the raw trees,
-    since status asks for every job's."""
+    """The commit's tree without .campaign/: what builds and tests see, so evidence survives commits
+    that touch only campaign files (a journal, a review). Computed from the raw tree, since status
+    asks for every job's."""
     key = (str(repo), commit)
     if key in _trees:
         return _trees[key]
     oid, root = cat_object(repo, f"{commit}^{{tree}}")
     width = len(oid) // 2
-    kept: list[bytes] = []
-    changed = False
-    for name, entry in tree_entries(root, width):
-        docs = name == b"docs" and entry.startswith(b"40000 ")
-        inner = tree_entries(cat_object(repo, entry[-width:].hex())[1], width) if docs else []
-        rest = [e for n, e in inner if n != b"campaign"]
-        if name == META.encode() or len(rest) != len(inner):
-            changed = True
-            if rest:
-                kept.append(b"40000 docs\0" + tree_id(rest, width))
-        else:
-            kept.append(entry)
-    tree = tree_id(kept, width).hex() if changed else oid
-    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):  # a ref may move; a commit's tree never does
+    entries = tree_entries(root, width)
+    kept = [entry for name, entry in entries if name != META.encode()]
+    tree = tree_id(kept, width).hex() if len(kept) != len(entries) else oid
+    if SHA.fullmatch(commit):  # a ref may move; a commit's tree never does
         _trees[key] = tree
     return tree
 
@@ -384,13 +368,7 @@ def locate(cwd: Path) -> tuple[Path, str, bool]:
 
 def campaigns_in(home: Path) -> dict[str, str]:
     """The campaigns a home holds: name -> their directory, relative to the home."""
-    found = {f.parent.name: f"{META}/{f.parent.name}" for f in sorted((home / META).glob("*/state.json"))}
-    legacy: Json | None = None
-    with contextlib.suppress(CampaignError):
-        legacy = read_json(home / LEGACY_META / "state.json")
-    if legacy and legacy.get("campaign") and legacy["campaign"] not in found:
-        found[str(legacy["campaign"])] = LEGACY_META
-    return found
+    return {f.parent.name: f"{META}/{f.parent.name}" for f in sorted((home / META).glob("*/state.json"))}
 
 
 def select(home: Path, name: str) -> tuple[str, str]:
@@ -430,7 +408,6 @@ QUEST_FIELDS: dict[str, type] = {
     "tasks": dict,
     "accepted": dict,
     "landed": list,
-    "notes": list,  # messages filed before they were called messages
     "messages": list,
     "history": list,  # changes to risk, lenses and checks
     "reason": str,
@@ -572,8 +549,8 @@ class Campaign:
 
     @property
     def ident(self) -> str:
-        """How jobs and wait records name this campaign: its directory (its home, for an older one)."""
-        return str(self.home) if self.meta == LEGACY_META else str(self.home / self.meta)
+        """How jobs and wait records name this campaign: its directory."""
+        return str(self.home / self.meta)
 
     @property
     def quests(self) -> dict[str, Json]:
@@ -683,9 +660,7 @@ def sidebar(c: Campaign) -> None:
     view = f"{workspace} {c.ident}"
     seen: dict[str, str] = {}
     with contextlib.suppress(FileNotFoundError, json.JSONDecodeError, AttributeError):
-        views = json.loads(cache.read_text())
-        # a view from before a home could hold several campaigns is keyed by the workspace alone
-        seen = views[view] if view in views else views.get(workspace, {})
+        seen = json.loads(cache.read_text()).get(view, {})
     for key in seen.keys() - want.keys():
         if key == "bar":
             report.clear()
@@ -866,13 +841,7 @@ def mailbox(c: Campaign, pid: str) -> Path:
     """Where messages for a quest ("" for the campaign's lead) wait, in the home's .git: any
     agent on the machine can leave one there without being the campaign's one writer."""
     common = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    folder = common / "campaign-mail" / c.state["campaign"]
-    older = common / "campaign-notes" / c.state["campaign"]  # their name until 2026-11-07
-    if older.is_dir() and not folder.exists():
-        folder.parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(OSError):
-            older.rename(folder)
-    return folder / (pid or "@")
+    return common / "campaign-mail" / c.state["campaign"] / (pid or "@")
 
 
 def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -> str:
@@ -880,7 +849,7 @@ def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -
     folder = mailbox(c, pid)
     folder.mkdir(parents=True, exist_ok=True)
     record = c.quests[pid] if pid else c.state
-    taken = [m["id"] for m in [*inbox(c, pid), *record.get("messages", []), *record.get("notes", [])]]
+    taken = [m["id"] for m in [*inbox(c, pid), *record.get("messages", [])]]
     n = 1 + max([int(str(x).partition("-")[2] or 0) for x in taken] or [0])
     tmp = folder / f".message.{os.getpid()}.tmp"
     while True:  # a fresh id even when two agents write at once
@@ -979,50 +948,6 @@ def cmd_init(a: argparse.Namespace) -> int:
         git(top, "add", "--", folder)
         git(top, "commit", "-q", "-m", f"campaign: init {name}", "--", folder)
     print(f"campaign {name} in {top}; write the goals in {folder}/PLAN.md")
-    return 0
-
-
-def migration_blockers(c: Campaign) -> tuple[list[str], list[str]]:
-    """(quests in flight, jobs queued or running): what keeps an older campaign from moving."""
-    busy = sorted(pid for pid, p in c.quests.items() if p["status"] in FLIGHT)
-    pending = sorted(
-        j["id"] for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
-    )
-    return busy, pending
-
-
-def migration_wait(c: Campaign) -> str:
-    """When `campaign migrate` can run: now (""), or after what."""
-    busy, pending = migration_blockers(c)
-    if busy:
-        return f" once no quest is in flight (now: {', '.join(busy)})"
-    return " once its jobs finish" if pending else ""
-
-
-def cmd_migrate(_a: argparse.Namespace) -> int:
-    """Moves an older campaign's files to .campaign/NAME in one commit. Quests in flight carry
-    journals at the old path on their branches, and the campaign's pending jobs carry its old tag,
-    so it waits until there are none."""
-    with writing() as c:
-        folder = f"{META}/{c.name}"
-        if c.meta != LEGACY_META:
-            print(f"campaign {c.name} already keeps its files in {c.meta}")
-            return 0
-        busy, pending = migration_blockers(c)
-        if busy:
-            die(
-                f"quests in flight keep journals in {LEGACY_META} on their branches: land or drop {', '.join(busy)} first"
-            )
-        if pending:
-            die(f"jobs {', '.join(pending)} are queued or running under the old layout: `campaign wait` for them first")
-        if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
-            die("migrate commits the move; unset CAMPAIGN_NO_COMMIT")
-        (c.home / META).mkdir(exist_ok=True)
-        git(c.home, "mv", LEGACY_META, folder)
-        git(c.home, "commit", "-q", "-m", f"campaign: move {LEGACY_META} to {folder}", "--", LEGACY_META, folder)
-        with contextlib.suppress(OSError):
-            (c.home / "docs").rmdir()  # only when the campaign was all it held
-    print(f"campaign {c.name} keeps its files in {folder}")
     return 0
 
 
@@ -1646,7 +1571,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
         elif acc.get("brief") != brief_hash(c, pid):
             gaps.append(f"the quest file changed after {lens} was accepted: re-accept against the current criteria")
         elif "review" not in acc:
-            gaps.append(f"{lens} was accepted by an older campaign that did not record the review: re-accept it")
+            gaps.append(f"the {lens} acceptance names no review content: `campaign accept {pid} {lens}` again")
         elif acc["review"] != review_identity(c, pid, lens):
             gaps.append(
                 f"the {lens} review changed after it was accepted (verdict now {verdict(c, pid, lens)}): "
@@ -2015,13 +1940,6 @@ def next_step(journal: str) -> str:
 def problems(c: Campaign) -> list[tuple[str, str]]:
     """(severity, message) for everything git, the worktrees and the queue contradict."""
     out: list[tuple[str, str]] = []
-    if c.meta == LEGACY_META:
-        out.append(
-            (
-                "warning",
-                f"this campaign keeps its files in {LEGACY_META}: run `campaign migrate`" + migration_wait(c),
-            )
-        )
     if c.state.get("landing"):
         out.append(
             (
@@ -4130,8 +4048,6 @@ def wait_events(c: Campaign, timeout: float) -> int:
     between two waits is missed; then lists what is still in flight, to wait for next."""
     seen_file = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-seen.json"
     records: Json = (read_json(seen_file) if seen_file.exists() else None) or {}
-    if "heads" in records:  # written before a home could hold several campaigns
-        records = {str(c.home): records}
     recorded: Json | None = records.get(c.ident)
 
     def remember(heads: dict[str, str], ended: dict[str, Json]) -> None:
@@ -4525,14 +4441,6 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--force", action="store_true", help="remove them anyway")
     p.set_defaults(fn=cmd_clean)
-
-    p = command(
-        "migrate",
-        f"move the campaign's files from {LEGACY_META} to {META}",
-        f"Moves an older campaign's files from {LEGACY_META}/ to {META}/NAME/ in one commit, once no quest is in "
-        "flight and no job is pending. Evidence recorded before the move still counts.",
-    )
-    p.set_defaults(fn=cmd_migrate)
 
     p = command(
         "wait",

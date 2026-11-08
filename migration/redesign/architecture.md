@@ -1,14 +1,14 @@
 # Campaign 2.0 architecture
 
 > Status: CURRENT (2026-11-05), revised after the independent challenge (`challenge.md`) and the
-> preflight review (`preflight.md`, 2026-11-08). Decisions and their reasons. The skill itself
+> preflight review (`../preflight.md`, 2026-11-08). Decisions and their reasons. The skill itself
 > (`home/.agents/skills/campaign/SKILL.md`) is what agents read; this file is for whoever has to
 > change it. Evidence for the problems it solves: `audit.md`; outside ideas: `research.md`.
 
 ## Vocabulary
 
 This record uses the brief's engineering terms. The skill, the tool and the agent types use the
-same ones (since 2026-11-08; before that they used themed names, `docs/preflight.md`), except two:
+same ones (since 2026-11-08; before that they used themed names, `../preflight.md`), except two:
 
 | This record | The skill and the tool |
 |---|---|

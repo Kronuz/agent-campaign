@@ -94,7 +94,6 @@ The lead drives the tool; these are the commands it reaches for most.
 | Command | What it does |
 |---|---|
 | `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
-| `campaign migrate` | moves an older campaign's `docs/campaign/` to `.campaign/<name>/`, once no quest is in flight |
 | `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
 | `campaign get ID`, `set ID KEY=VALUE` | reads and changes a quest's fields (`--weaken REASON` to lower what it must pass); `campaign config` does the same for the campaign's settings |
 | `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
@@ -117,13 +116,12 @@ review and measurement rules, the host tools and the per-harness notes.
 State lives in `.campaign/<name>/` of the home repository and only the tool writes it, from the main
 checkout, under a lock. Every change is a commit that says what happened (`campaign: start`, `accept`,
 `land ... at <commit>`), so `git log -- .campaign/<name>` is the campaign's ledger; each quest's
-journal is its contributor's, and `PLAN.md`'s Decisions table is the lead's. Agents submit work as jobs and end their turn; one worker per machine runs
-the queue in priority order under `quiet`, and the lead waits on results with one background
-command. A check result is keyed by the machine, the toolchain (on the submitter's PATH), the
-command and the commit's code without the campaign's own files, which is what lets `land` prove
-that the code on `main` is the code that was tested. [`docs/`](docs) holds the design record of
-version 2.0 (the audit of 1.x, the research, the architecture, the validation) and the preflight
-review before its first week-long trial.
+journal is its contributor's, and `PLAN.md`'s Decisions table is the lead's. Agents submit work
+as jobs and end their turn; one worker per machine runs the queue in priority order under `quiet`,
+and the lead waits on results with one background command. A check result is keyed by the
+machine, the toolchain (on the submitter's PATH), the command and the commit's code without the
+campaign's own files, which is what lets `land` prove that the code on `main` is the code that was
+tested. [`references/lessons.md`](references/lessons.md) lists the incidents behind the rules.
 
 ## Limitations
 
@@ -155,6 +153,6 @@ warns, never fails, when a load grows more than 10% past `tests/context-baseline
 
 MIT, see [LICENSE](LICENSE). Ideas from [Superpowers](https://github.com/obra/superpowers),
 [Beads](https://github.com/gastownhall/beads), [Gas Town](https://github.com/gastownhall/gastown)
-and [Overstory](https://github.com/jayminwest/overstory) are credited in
-[`docs/research.md`](docs/research.md). The story behind the design:
+and [Overstory](https://github.com/jayminwest/overstory) shaped parts of the design. The story
+behind it:
 [A Smaller Party](https://kronuz.github.io/blog/agent-campaign-redesign/).

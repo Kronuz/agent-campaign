@@ -1,4 +1,4 @@
-# Campaign 2.0 design record
+# The redesign record
 
 The redesign of the `campaign` skill, November 2026. The skill is usable without these files;
 they explain why it is the way it is.
@@ -14,13 +14,13 @@ history.
 | B. External research: what was adopted, adapted, rejected | [research.md](research.md) |
 | C. Architecture, with the vocabulary map (package = quest, lead = game master, ...) | [architecture.md](architecture.md) |
 | The one independent architecture challenge and its dispositions | [challenge.md](challenge.md) |
-| D. Implementation | [the repository root](..) and [agents/](../agents) |
-| E. Migration guide | [references/migration.md](../references/migration.md) |
+| D. Implementation | [the repository root](../..) |
+| E. Migration guide | [../checklist.md](../checklist.md) |
 | F. Validation results | [validation.md](validation.md) |
 | G. Final assessment | [assessment.md](assessment.md) |
 | The first real campaign on 2.0, run in Codex | [codex-trial.md](codex-trial.md) |
-| Preflight review before the week-long trial: findings, efficiency, naming, migration rehearsal, readiness | [preflight.md](preflight.md) |
-| The operator's runbook for the trial | [trial-runbook.md](trial-runbook.md) |
 
-Records dated before 2026-11-08 use the earlier themed names: patron (owner), game master (lead),
-adventurer (contributor), paladin (reviewer), class (assignment), lore (lessons).
+These records call the skill "2.0" and its predecessor "1.x", and those dated before 2026-11-08 use
+the earlier themed names: patron (owner), game master (lead), adventurer (contributor), paladin
+(reviewer), class (assignment), lore (lessons). The preflight review that renamed them is
+[../preflight.md](../preflight.md).

@@ -55,9 +55,9 @@ at every launch: the agent files default to the strong tier at high effort.
 
 ## Codex mapping and runtime checks
 
-Measured 2026-11-05: the resumed interval consumed 10.34M cumulative tokens, 51.5% in the
-lead; three Astra/high developers consumed 5.01M. Quota weights are unknown. These are operating
-hypotheses pending comparable completed work, not model rankings (`docs/codex-trial.md`).
+Measured 2026-11-05 on a real campaign: of 10.34M cumulative tokens in ten minutes, 51.5% were the
+lead's; three Astra/high contributors used 5.01M. Quota weights are unknown. These are operating
+hypotheses pending comparable completed work, not model rankings.
 
 | Assignment or role | Codex starting point |
 |---|---|

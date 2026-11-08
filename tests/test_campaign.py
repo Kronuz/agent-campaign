@@ -213,32 +213,6 @@ class Ownership(CampaignCase):
 
 
 class Evidence(CampaignCase):
-    def reference_code_tree(self, repo: Path, commit: str) -> str:
-        """The code tree as `git ls-tree` and `git mktree` build it, which job keys have always used."""
-
-        def ls(tree: str) -> list[str]:
-            return [e for e in self.git(repo, "ls-tree", "-z", tree).split("\0") if e]
-
-        def mktree(entries: list[str]) -> str:
-            p = subprocess.run(
-                ["git", "-C", str(repo), "mktree", "-z"],
-                input="".join(e + "\0" for e in entries),
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            return p.stdout.strip()
-
-        kept = []
-        for e in ls(commit):
-            name = e.split("\t", 1)[1]
-            inner = [x for x in ls(e.split()[2]) if x.split("\t", 1)[1] != "campaign"] if " tree " in e else []
-            if name == "docs" and inner:
-                kept.append(f"040000 tree {mktree(inner)}\tdocs")
-            elif name not in (".campaign", "docs") or " tree " not in e:
-                kept.append(e)
-        return mktree(kept)
-
     def test_status_starts_no_git_process_per_job(self) -> None:
         wt = self.started("fix", files="app.py")
 
@@ -258,54 +232,18 @@ class Evidence(CampaignCase):
             self.submit(wt, "--quest", "fix", "--sync", "--", "true", str(n))
         self.assertEqual(git_processes(), before)
 
-    def test_code_trees_match_what_git_mktree_builds(self) -> None:
+    def test_code_trees_leave_out_only_the_campaigns_files(self) -> None:
         campaign = campaign_module()
-        repo = self.repo("shapes", {"a.py": "1\n", "docs.md": "x\n", "docs-x/f": "y\n", "z/f": "z\n"})
+        repo = self.repo("shapes", {"a.py": "1\n", ".campaignx/f": "y\n"})
         commits = [self.git(repo, "rev-parse", "HEAD")]
-        for files in (
-            {".campaign/demo/state.json": "{}\n"},
-            {"docs/guide.md": "g\n"},
-            {"docs/campaign/state.json": "{}\n"},
-            {".campaign/demo/PLAN.md": "p\n"},
-        ):
+        for files in ({".campaign/demo/state.json": "{}\n"}, {"docs/guide.md": "g\n"}, {".campaign/x/PLAN.md": "p\n"}):
             commits.append(self.commit(repo, files))
-        self.git(repo, "rm", "-q", "docs/guide.md")  # docs/ now holds only the campaign
+        self.git(repo, "rm", "-q", "-r", "docs")
         commits.append(self.commit(repo, {"a.py": "1\n"}))
-        commits.append(self.commit(self.repo("flat", {"docs": "a file\n", "b.py": "2\n"}), {"b.py": "3\n"}))
-        for commit in commits:
-            where = repo if commit != commits[-1] else self.root / "flat"
-            self.assertEqual(campaign.code_tree(where, commit), self.reference_code_tree(where, commit))
-        trees = [campaign.code_tree(repo, c) for c in commits[:-1]]
-        self.assertEqual(len(set(trees)), 2)  # campaign files never change it; docs/guide.md does
-        self.assertEqual(trees[0], trees[-1])
-
-    def test_land_needs_every_criterion_proven_and_every_task_merged_or_dropped(self) -> None:
-        wt = self.started("fix", files="app.py,lib/**,README.md")
-        brief = self.home / ".campaign/demo/quests/fix.md"
-        brief.write_text(
-            brief.read_text().replace(
-                "None in this test.", "- A1 [manual] prints two: unit\n- A2 [manual] helper: unit"
-            )
-        )
-        self.git(self.home, "commit", "-qam", "criteria")
-        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
-        self.ok(self.home, "start", "fix", "--task", "docs", "--files", "README.md")
-        self.commit(self.wt("fix--lib"), {"lib/util.py": "X = 2\n"})  # work that never reaches the quest branch
-        self.commit(self.wt("fix--docs"), {"README.md": "app, documented\n"})
-        self.git(wt, "merge", "-q", "--no-edit", "quest/demo/fix--docs")
-        journal = "## Evidence\n\n| Criterion | Evidence |\n|---|---|\n| A1 | job 1 |\n| A2 | pending |\n"
-        self.commit(wt, {"app.py": "print(2)\n", ".campaign/demo/journal/fix.md": journal})
-        self.verified("fix")
-        r = self.fails(self.home, "land", "fix")
-        self.assertIn("task lib is not merged into", r.text)
-        self.assertNotIn("task docs", r.text)  # merged
-        self.assertIn("criteria without evidence in a journal's Evidence table at", r.text)
-        self.assertIn(": A2 (`campaign status fix` lists them)", r.text)
-        self.fails(self.home, "set", "fix", "--task", "lib", "status=dropped", match="needs reason=R")
-        self.ok(self.home, "set", "fix", "--task", "lib", "status=dropped", "reason=superseded by the docs task")
-        self.assertIn("lib: dropped: superseded by the docs task", self.ok(self.home, "status").out)
-        self.commit(wt, {".campaign/demo/journal/fix.md": journal.replace("| A2 | pending |", "| A2 | job 2 |")})
-        self.ok(self.home, "land", "fix")  # the journal commit keeps the checks' evidence
+        trees = [campaign.code_tree(repo, c) for c in commits]
+        self.assertEqual(trees[0], self.git(repo, "rev-parse", f"{commits[0]}^{{tree}}"))  # nothing to leave out
+        self.assertEqual((trees[1], trees[3], trees[4]), (trees[0], trees[2], trees[0]))  # campaign files never count
+        self.assertNotEqual(trees[0], trees[2])  # docs/guide.md does, and .campaignx is code
 
     def test_each_criterion_needs_the_kind_of_evidence_it_names(self) -> None:
         wt = self.started("fix", files="app.py,docs/**")
@@ -667,7 +605,7 @@ class ReviewBinding(CampaignCase):
         self.review("feat", "correctness", "CHANGES", findings=(("C1", "no", "nit"),))
         self.fails(self.home, "accept", "feat", "correctness", match="CHANGES but lists no blocking finding")
         for conditional in ("APPROVE WITH CONDITIONS", "**APPROVE WITH REQUIRED CHANGES.**"):
-            self.review("feat", "correctness", conditional)  # as 1.x reviews wrote it
+            self.review("feat", "correctness", conditional)
             self.fails(self.home, "accept", "feat", "correctness", match="a conditional approval is CHANGES")
         self.review("feat", "correctness", "**APPROVE.**")
         self.ok(self.home, "accept", "feat", "correctness")
@@ -1266,37 +1204,6 @@ class Integration(CampaignCase):
         self.assertEqual(
             self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
         )
-
-
-class Migration(CampaignCase):
-    def test_an_older_campaign_runs_in_place_and_moves_once_nothing_is_in_flight(self) -> None:
-        (self.home / "docs").mkdir()
-        self.git(self.home, "mv", ".campaign/demo", "docs/campaign")  # a campaign started before .campaign
-        self.git(self.home, "commit", "-q", "-m", "an older campaign")
-        wt = self.started("fix", files="app.py", check="unit=true")
-        self.assertTrue((wt / "docs/campaign/journal/fix.md").exists())
-        self.assertIn("run `campaign migrate` once no quest is in flight (now: fix)", self.ok(self.home, "status").out)
-        self.fails(self.home, "migrate", match="land or drop fix")
-        self.commit(wt, {"app.py": "print(2)\n"})
-        self.verified("fix")
-        self.ok(self.home, "message", "fix", "the older layout takes messages too", "--from", "explorer")
-        self.fails(self.home, "land", "fix", match="unanswered messages: msg-1")
-        self.commit(wt, {"docs/campaign/journal/fix.md": "msg-1: noted, nothing to change\n"})
-        self.ok(self.home, "land", "fix")
-        jid = self.submit(self.home, "--", "sleep 300")  # a job of this campaign, tagged the old way
-        self.fails(self.home, "migrate", match=f"jobs {jid} are queued or running")
-        self.assertIn("run `campaign migrate` once its jobs finish", self.ok(self.home, "status").out)
-        self.ok(self.home, "job", "cancel", jid)
-        self.run_cli(self.home, "wait", jid, "--timeout", "30")
-        self.assertIn("docs/campaign: run `campaign migrate`\n", self.ok(self.home, "status").out)
-        self.ok(self.home, "migrate")
-        self.assertEqual(self.git(self.home, "status", "--porcelain"), "")
-        self.assertTrue((self.home / ".campaign/demo/quests/fix.md").exists())
-        self.assertFalse((self.home / "docs").exists())
-        self.assertNotIn("campaign migrate", self.ok(self.home, "status").out)
-        self.started("next", files="app.py", check="unit=true")
-        # the move changed no code, so the evidence from before it still applies
-        self.assertIn("reused", self.ok(self.home, "verify", "next").out)
 
 
 class SharedHome(CampaignCase):

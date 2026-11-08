@@ -1,4 +1,4 @@
-"""Scenarios A-I from the Campaign 2.0 brief, driven end to end with scripted agent actions.
+"""Scenarios A-I, driven end to end with scripted agent actions.
 
 Each scenario asserts the orchestration footprint (reviews required, handoffs, waits) as well as
 the outcome. Scenario G (shared-host contention) is test_jobs.Contention.
@@ -276,9 +276,9 @@ class Scenarios(CampaignCase):
         offenders = [
             str(f.relative_to(SKILL))
             for f in SKILL.rglob("*")
-            # the tests and the design record (docs/) name what 1.x had; the skill and tool must not
+            # the tests and the migration notes name the cloud tool the skill once had; the skill must not
             if f.is_file()
-            and not {"tests", "docs", ".git", ".scratch"} & set(f.relative_to(SKILL).parts)
+            and not {"tests", "migration", ".git", ".scratch"} & set(f.relative_to(SKILL).parts)
             and pattern.search(f.read_text(errors="ignore"))
         ]
         self.assertEqual(offenders, [])

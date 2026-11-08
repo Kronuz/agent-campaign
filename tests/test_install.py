@@ -33,7 +33,7 @@ class Install(unittest.TestCase):
         theirs = claude / sorted((SKILL / "agents").glob("*.md"))[0].name  # a user's agent of the same name
         theirs.write_text("---\nname: mine\n---\nmine\n")
         (copilot / "mine.agent.md").write_text("my own agent\n")
-        older = self.home / "old-campaign"  # another checkout of the skill, as 1.x left it
+        older = self.home / "old-campaign"  # another checkout of the skill
         (older / "scripts").mkdir(parents=True)
         (older / "SKILL.md").write_text("---\nname: campaign\n---\n")
         (older / "scripts/quiet.py").write_text("")

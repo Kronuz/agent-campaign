@@ -2,7 +2,7 @@
 
 The incidents behind campaign's rules, kept so a rule can be changed knowingly. Each names what
 prevents a recurrence now; prefer a mechanism to a sentence. Sources: the strata, Detent, Xapiand
-and cpp-libraries records (October-November 2026) and campaign 1.x's history.
+and cpp-libraries records (October-November 2026).
 
 ## Incidents
 
@@ -19,14 +19,14 @@ and cpp-libraries records (October-November 2026) and campaign 1.x's history.
 | A critical-path step sat unlaunched for a week while its question was already answered | Ready work is visible | `campaign status` lists ready quests |
 | One message resumed a finished 556k-token agent; a repin cost 74k fresh against ~500k resumed | Resume only small contexts | Resume by message under ~150k tokens; otherwise a fresh agent from the journal |
 | Code rechecks cost ~134k each and confirmed closures every time | Confirm fixes cheaply | The lead reruns the reviewer's probes as jobs, named per finding (`accept --confirm`) |
-| Swarms of Sonnet explorers on fresh targets in 1.x: 20 of 33 runs landed at a median of 93k tokens; a day of hunting found three bugs from 2019 | Spend on cheap, targeted finding | Exploration batches |
-| 1.x explorers measuring under light holds at once pushed the load to 16; a scout spent its run rediscovering a fix already on `main` | Timing is isolated; targets are fresh | An exploration batch times only through strict and exclusive jobs; each contributor first confirms its target on `main` |
+| Swarms of Sonnet explorers on fresh targets: 20 of 33 runs landed at a median of 93k tokens; a day of hunting found three bugs from 2019 | Spend on cheap, targeted finding | Exploration batches |
+| Explorers measuring under light holds at once pushed the load to 16; a scout spent its run rediscovering a fix already on `main` | Timing is isolated; targets are fresh | An exploration batch times only through strict and exclusive jobs; each contributor first confirms its target on `main` |
 | Design re-reviews ran 6-7 rounds on prose (findings to DM-R49) | Settle designs with evidence | One design review; disputes go to an executable model |
 | A system review read a stale `origin` | Reviews name exact commits | Prompts name the commit; tools read local refs |
-| A CHANGES review could be accepted with any passing job, even one from another repository running `true` (preflight, 2026-11-08) | A fix is confirmed by evidence of that fix | `accept --confirm FINDING=JOB`: per blocking finding, a job that passed at the fixed code in the quest's repository |
-| A lead appended its own disposition to a reviewer's file; an APPROVE was accepted at a head with commits the reviewer never saw (live trial; preflight) | An acceptance covers what was reviewed | The acceptance records the review's content and its `Commit:`; changing either voids it |
-| A failing check could be replaced by `true`, or a high-risk quest set to low, with no trace (preflight) | Nothing weakens silently | `set --weaken REASON`, kept in the quest's history; acceptances voided |
-| A narrative journal row ("tested it, all green") satisfied a criterion (preflight) | Evidence, not narrative | Criteria name their evidence kind; an untagged one needs a job |
+| A CHANGES review could be accepted with any passing job, even one from another repository running `true` (2026-11-08) | A fix is confirmed by evidence of that fix | `accept --confirm FINDING=JOB`: per blocking finding, a job that passed at the fixed code in the quest's repository |
+| A lead appended its own disposition to a reviewer's file; an APPROVE was accepted at a head with commits the reviewer never saw (2026-11-05, 2026-11-08) | An acceptance covers what was reviewed | The acceptance records the review's content and its `Commit:`; changing either voids it |
+| A failing check could be replaced by `true`, or a high-risk quest set to low, with no trace (2026-11-08) | Nothing weakens silently | `set --weaken REASON`, kept in the quest's history; acceptances voided |
+| A narrative journal row ("tested it, all green") satisfied a criterion (2026-11-08) | Evidence, not narrative | Criteria name their evidence kind; an untagged one needs a job |
 | Local macOS TSan passed a race that Linux CI TSan caught; `std::jthread` broke libc++ builds | Evidence names its platform | CI on every platform before landing |
 | A duplicate thread pool beside the shared one | One mechanism, one implementation | The correctness lens asks for it |
 | A recommended limit was below the reference systems' | Limits are load-bearing and at least the references' | The correctness lens asks for it |
