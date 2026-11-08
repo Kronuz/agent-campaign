@@ -632,9 +632,10 @@ class ReviewBinding(CampaignCase):
         self.review("feat", "correctness", "APPROVE")
         review = self.home / ".campaign/demo/reviews/feat-correctness.md"
         review.write_text(review.read_text() + "\nThe lead's disposition: fine.\n")
-        self.fails(self.home, "accept", "feat", "correctness", match="commit it")
-        self.git(self.home, "checkout", "--", str(review))
-        self.ok(self.home, "accept", "feat", "correctness")
+        self.ok(self.home, "accept", "feat", "correctness")  # commits the review with its acceptance
+        self.assertEqual(self.git(self.home, "status", "--porcelain", "--", str(review)), "")
+        accepted = self.quest("feat")["accepted"]["correctness"]["review"]
+        self.assertEqual(accepted, self.git(self.home, "rev-parse", f"HEAD:{review.relative_to(self.home)}"))
         review.write_text(
             review.read_text().replace("Verdict: APPROVE", "Verdict: CHANGES")
             + "| C1 | yes | defect | leak | p | f |\n"

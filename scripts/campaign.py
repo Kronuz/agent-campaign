@@ -1348,10 +1348,6 @@ def cmd_accept(a: argparse.Namespace) -> int:
         else:
             if not path.exists():
                 die(f"no review at {rel} (or --waive REASON)")
-            if git(c.home, "status", "--porcelain", "--", str(path)):
-                die(
-                    f"{rel} is not committed: commit it, then accept (an acceptance names the review's committed content)"
-                )
             r = read_review(path.read_text())
             blocking = [f["id"] for f in r["findings"] if f["blocking"]]
             if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
@@ -1412,7 +1408,11 @@ def cmd_accept(a: argparse.Namespace) -> int:
         if a.lens not in p["lenses"] and not a.waive:
             p["lenses"].append(a.lens)
         p["updated"] = stamp()
-        c.save(f"campaign: accept {a.id} {a.lens} at {commit[:12]}" + (" (waived)" if a.waive else ""))
+        # the review is committed with its acceptance, so git holds exactly what was accepted
+        c.save(
+            f"campaign: accept {a.id} {a.lens} at {commit[:12]}" + (" (waived)" if a.waive else ""),
+            () if a.waive else (str(rel),),
+        )
     for fid, f in findings.items():
         if f["kind"] == "defect" and not f["reproduced"]:
             print(f"note: {fid} is a defect and no job shows its probe failing at the reviewed {reviewed[:12]}")
@@ -4433,7 +4433,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "accept",
         "record a review lens as passed for the code it reviewed",
-        "Records a review lens as accepted: the committed review file, the quest file, and the quest's changed "
+        "Records a review lens as accepted and commits the review file with it: the review's content, the quest "
+        "file, and the quest's changed "
         "files at the accepted commit. An APPROVE covers the code at the review's Commit: line (metadata-only "
         "commits after it keep it). After CHANGES, --confirm names, for each blocking finding, jobs that passed "
         "at the fixed code; a fix that changes files the review never saw needs the reviewer or --fix-scope. "
