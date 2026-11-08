@@ -11,7 +11,7 @@ exercised on this machine.
 | A paladin from another model family | not built in; the patron may run one in another harness | `task` with a GPT-class `model` (`gpt-6.1-sol`) | Codex supplies a different family for Claude-built work; available overrides here are GPT models (verified 2026-11-05) |
 | Run in the background | Agent tool background mode; completion notifies the game master | `mode: background`; completion notifies the game master | `spawn_agent` returns immediately; final result arrives in the parent's mailbox (verified 2026-11-05) |
 | Resume an agent | SendMessage | `write_agent`, then `read_agent` once after the notice; only background agents take messages, so without background mode launch a fresh adventurer with the Resume prompt | `collaboration.followup_task` restarts an idle agent with retained context; reply received without rereading files (verified 2026-11-05) |
-| Game master waits without tokens | `campaign wait --commits` as a background Bash command; it is re-invoked when that exits or an agent finishes | the same in an async shell; both notify it | A finishing agent does not wake it (2026-11-06). Agents out: `wait_agent`, which returns on any mailbox update (every agent's end); only jobs: `campaign wait --commits` in `exec_command` |
+| Game master waits without tokens | `campaign wait --commits` as a background Bash command; it is re-invoked when that exits or an agent finishes | the same in an async shell; both notify it | A finishing agent does not wake it (2026-11-06). Agents out: `wait_agent`, which returns on any mailbox update (every agent's end); only jobs: `campaign wait --commits` in `exec_command`, then keep awaiting that session with `write_stdin` (empty input, a long yield) until it exits; the model samples only between those calls (2026-11-05). Never start a second wait |
 | Subagent waits for a job | one `campaign wait --timeout 600`, then ends its turn (a subagent that ends its turn is finished; nothing wakes it) | the same (a background command's notice does not wake a subagent) | the same |
 | Periodic report | a scheduled job, recreated each session | `manage_schedule` with a cron, recreated each session | This session exposes no scheduler; use campaign state/sidebar and report at turn boundaries (verified 2026-11-05) |
 | Usage (`campaign usage`) | not read yet | `~/.copilot/session-state/*/events.jsonl`: per agent, the `task` prompt, model, effort, cost, tokens, time (verified 2026-11-05) | Rollout logs: model/effort, tokens/time and lead totals; runs attributed by task name, cost unavailable (2026-11-06) |
@@ -22,8 +22,10 @@ exercised on this machine.
 
 `agents/adventurer.md` and `paladin.md` are the source, linked into `~/.claude/agents`. `scripts/sync-agents.py`
 generates the Copilot and Codex files from them; `--check` reports drift. A new or edited type loads
-when a session starts; until then, launch a general-purpose agent with the type's body prepended
-and its model and effort set.
+when a session starts; until then, use the **body fallback**: launch a general-purpose agent whose
+prompt starts with the type's body (`agents/adventurer.md` or `paladin.md` without its front
+matter), with the model and effort as launch arguments. A class is not a type: a Scout is the
+adventurer type with `Class: Scout` in its prompt.
 
 ## Limitations
 
@@ -52,9 +54,12 @@ hypotheses pending comparable completed work, not model rankings (`docs/codex-tr
 | Wizard, design freeze | Astra high; max only for a bounded question that warrants it |
 | Game master | Sol medium, small context; measured separately from developers |
 
-Generated types inherit the model; file effort overrides launch settings. Use the body fallback
-for a different class effort. Sol/medium and Astra/high launches work; named loading remains
-unexercised. Preserve max when requested. Cost zero means unavailable, never free.
+A generated Codex type has no `model`, so it runs on the session's; its `model_reasoning_effort`
+overrides the effort given at launch. A class that needs another effort than its type's file (a
+Scout at medium on the adventurer file, which says high) therefore uses the body fallback.
+Sol/medium and Astra/high launches work; named loading remains unexercised. `sync-agents` keeps
+`max` in the generated files (`tests/test_agents.py`); never lower a requested `max`. Cost zero
+means unavailable, never free.
 
 Verified 2026-11-05: global guidance is `$CODEX_HOME/AGENTS.override.md`, otherwise `AGENTS.md`
 (default `~/.codex`). The terminal exposes

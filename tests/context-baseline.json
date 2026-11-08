@@ -1,15 +1,15 @@
 {
   "group: core": {
-    "words": 2943,
-    "tokens": 4654
+    "words": 3161,
+    "tokens": 4986
   },
   "group: references": {
-    "words": 7134,
-    "tokens": 11315
+    "words": 7639,
+    "tokens": 12066
   },
   "group: agents": {
-    "words": 609,
-    "tokens": 936
+    "words": 637,
+    "tokens": 977
   },
   "group: templates": {
     "words": 1019,
@@ -20,28 +20,28 @@
     "tokens": 403
   },
   "game master": {
-    "words": 2943,
-    "tokens": 4654
+    "words": 3161,
+    "tokens": 4986
   },
   "game master, launching": {
-    "words": 950,
-    "tokens": 1527
+    "words": 987,
+    "tokens": 1584
   },
   "adventurer": {
-    "words": 977,
-    "tokens": 1496
+    "words": 1005,
+    "tokens": 1537
   },
   "adventurer, as a Sage": {
-    "words": 1223,
-    "tokens": 1879
+    "words": 1251,
+    "tokens": 1920
   },
   "adventurer, resumed": {
-    "words": 833,
-    "tokens": 1309
+    "words": 898,
+    "tokens": 1407
   },
   "scout": {
-    "words": 1157,
-    "tokens": 1730
+    "words": 1185,
+    "tokens": 1771
   },
   "paladin": {
     "words": 1440,

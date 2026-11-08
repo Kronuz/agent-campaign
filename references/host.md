@@ -45,14 +45,19 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
   checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.
-- **Supervision.** The command runs under `quiet` at the job's level, which stops it at its
-  deadline; its runner keeps a 15-second heartbeat and kills whatever the command leaves behind.
+- **Supervision.** Each attempt has a runner: the leader of its own process session, writing a
+  heartbeat every 15 s. The command runs under `quiet` at the job's level, which stops it at its
+  deadline; when the command ends, the runner kills every process left in its session, so helpers
+  never outlive their job.
 
 | Event | What happens |
 |---|---|
 | Timeout (`--minutes` after the hold is granted) | TERM, then KILL after 10 s; state `timeout`, exit 124; never valid evidence |
 | Runner or worker killed, host suspended past 2 min | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt, and requeues it if `--retries` allows, else marks it `interrupted` |
 | Host rebooted | The same, without killing anything (the boot id changed, so old pids mean nothing) |
+| Command finished but the runner died before recording | The exit code was written first; the reaper records it |
+| An old runner wakes after its attempt was replaced | It no longer owns the attempt and writes nothing |
+| Job submitted twice | An identical job that is queued, running or done is returned; an interrupted or failed one runs anew |
 | Dependency (`--after`) failed | `skipped` |
 | Disk below 5 GiB | `quiet` admits nothing until space is freed |
 | No worker can run | `--sync` runs the job in the foreground through the same runner and records the same result |
@@ -76,7 +81,9 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   request at that level or lower at once and refuses a stronger one, which would wait for its own
   parent.
 - Strict and exclusive holds last at most 30 minutes (`QUIET_MAX_MIN`) and their command is
-  stopped at the deadline: a measurement never runs unheld. A light command keeps running
+  stopped at the deadline: a measurement never runs unheld. The hold outlives the stop by 15 s
+  (TERM, then KILL 10 s later), so the next measurement starts only after the last one is gone; a
+  hold still listed just past its deadline is that grace, not a hang. A light command keeps running
   past its deadline unless `QUIET_KILL=1` (the job runner sets it).
 - Strict requests are served in arrival order and block new light holds; a light request waiting
   10 minutes (`QUIET_STARVE_MIN`) goes before new strict holds, so builds are never starved.
@@ -105,6 +112,21 @@ than the home also takes that repository's lock; a busy lock fails after `CAMPAI
 seconds (120) and the landing is retried. `campaign check` only reads other campaigns' state. From
 outside a home, name it: `campaign -C HOME ...`, `--campaign NAME`, or `$CAMPAIGN_HOME`.
 
+## Messages
+
+Messages wait in the home's `.git` (`campaign-mail/<campaign>/`), so any agent can leave one
+without being the campaign's one writer. A new one notifies the patron and wakes the game master's
+`campaign wait`; `campaign brief` lists it for the quest's adventurer and the game master. Landing
+moves a quest's answered and closed messages into its state.
+
+A campaign on another machine is reached as a peer: `campaign config peers=NAME=URL,...`, where
+URL is a repository both machines can push to and fetch from. A message to `NAME:ID` or `NAME:`
+for a peer goes into this campaign's outbox, a ref only it writes (`refs/campaign/outbox/<name>`),
+pushed to `outbox=REMOTE` (default `origin`). Each campaign's `campaign wait` fetches its peers'
+outboxes every minute and imports each message once; one for a quest the peer has landed or does
+not know goes to its game master. No receipt comes back: the sender learns the answer from the
+landed journal, or from the patron.
+
 ## Other tools
 
 - **ccache:** every CMake build goes through it (`~/.profile` sets the compiler launchers;
@@ -113,6 +135,11 @@ outside a home, name it: `campaign -C HOME ...`, `--campaign NAME`, or `$CAMPAIG
 - **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
   it runs out before its reset, read from each harness's own records (`references/harness.md`).
   It is information for decisions (will this batch exhaust the week before the milestone?), never
-  a reason to launch work. It does not see Claude Code's purchased credits.
+  a reason to launch work. It does not see credits bought for Claude Code, so it can report a
+  window as spent while those credits still cover it: ask the patron before stopping work for it.
 - **`report`** draws the patron's sidebar progress and notifications (cmux; elsewhere the terminal
-  or desktop); `campaign` and `quiet` keep it current by themselves.
+  or desktop). `campaign` and `quiet` keep it current by themselves: every state change and
+  `campaign status` update the bar (the current milestone's quests), a `campaign-<name>` pill (the
+  whole campaign) and a pill per quest in flight, sending only what changed; landings, blocked
+  quests and new messages notify. `quiet` adds a pill per hold, in the workspace that submitted
+  the job, and notifies when a hold ran 5 minutes or more.

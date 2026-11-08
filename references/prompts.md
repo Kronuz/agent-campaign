@@ -66,7 +66,9 @@ You resume quest <ID> of campaign <name> (<home repo path>) after the previous a
 branch <branch>. Run `campaign brief` and `campaign check`, then read the journal, the quest file,
 `git log --oneline main..HEAD` and `git status`. Uncommitted changes are the previous adventurer's work:
 keep what is right, never discard them blindly. Jobs it submitted are in `campaign job list
---quest <ID>`; their results stand, do not rerun them. Continue from the journal's "Doing".
+--quest <ID>`; their results stand: do not rerun a finished or pending one (submitting an identical
+one returns it). An interrupted one may have run partway: resubmit it when its command is safe to
+repeat (builds, tests and measurements are), otherwise check what it changed first. Continue from the journal's "Doing".
 <The Adventurer prompt's rules apply.>
 ```
 

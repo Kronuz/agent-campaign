@@ -209,6 +209,10 @@ class Crashes(CampaignCase):
         self.assertEqual(self.run_cli(self.home, "wait", jid, "--timeout", "60").code, 1)
         self.assertEqual(self.job(jid)["state"], "interrupted")
         self.assertIn("interrupted", self.ok(self.home, "check").out)
+        again = self.submit(self.home, "--", "sleep 30")  # resubmitting runs it anew
+        self.assertNotEqual(again, jid)
+        self.assertEqual(self.submit(self.home, "--", "sleep 30"), again)  # and only once
+        self.ok(self.home, "job", "cancel", again)
 
     def test_a_result_written_before_the_runner_died_is_kept(self) -> None:
         jid = self.submit(self.home, "--", "sleep 2")

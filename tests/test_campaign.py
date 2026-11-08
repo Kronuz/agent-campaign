@@ -1109,6 +1109,10 @@ class Messages(CampaignCase):
         self.assertIn("msg-1 for the game master, from patron: the CI runner moved", self.ok(self.home, "status").out)
         self.assertIn("- msg-1 for the game master, from patron: the CI runner moved", self.ok(self.home, "brief").out)
         self.assertNotIn("CI runner", self.ok(wt, "brief").out)  # an adventurer's brief is its quest's
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.ok(self.home, "land", "fix")  # a game master's message blocks no quest
+        self.assertIn("msg-1 for the game master", self.ok(self.home, "brief").out)
         self.fails(self.home, "message", ":", "--close", "msg-1", match="needs --reason")
         self.ok(self.home, "message", ":", "--close", "msg-1", "--reason", "updated the runbook")
         self.assertNotIn("CI runner", self.ok(self.home, "status").out)

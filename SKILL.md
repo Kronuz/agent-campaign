@@ -96,9 +96,15 @@ launch costs more. Harness specifics (launching, background runs, resuming, wait
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work.
-- **Messages:** `campaign message NAME:ID "text" --from WHO` passes a finding to a quest (`NAME:`
-  to that campaign's game master); it blocks landing until a journal names its id or the game
-  master closes it with a reason.
+- **Messages:** an agent with a finding for a quest it is not working on, in any campaign on the
+  machine, sends `campaign message NAME:ID "text" --from WHO` (`ID` alone from the quest's own
+  home or worktree). The quest cannot land until one of its journals answers the message by its id
+  (`msg-N`) or the game master closes it (`campaign message ID --close msg-N --reason R`).
+  `NAME:` (`:` for your own campaign) writes to a campaign's game master instead: such a message
+  never blocks a landing and stays in `campaign brief` until closed (`campaign message : --close
+  msg-N --reason R`). The tool sends one itself when another
+  campaign starts a quest on your files or contracts: settle the order (`--after NAME:ID`) or
+  confirm the two are independent, then close it. Other machines: `references/host.md`, Messages.
 - **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
   can land alone), then to the adventurer; superseded work is `campaign set ID status=dropped
   reason=...`.
@@ -211,8 +217,10 @@ the foreground and records the same result. Mechanics: `references/host.md`.
 `campaign land` checks, in order: dependencies landed; the target is on the branch and `main`
 changed nothing but `.campaign/` since it branched (otherwise rebase, `campaign verify`, retry); no
 edits to the game master's files or outside the file set; every task merged or dropped with a
-reason; every criterion with evidence in a journal's Evidence table; every check passed on the
-target's code; every required lens accepted for the current content (and, for high risk, no
+reason (`campaign set ID --task T status=dropped reason=R`); every criterion with a row in the
+Evidence table of one of the quest's journals at the target, and every job those rows cite passed
+at the target's code (`campaign job rerun JOBS` reruns the ones that ran older code); every message
+to the quest answered or closed; every check passed on the target's code; every required lens accepted for the current content (and, for high risk, no
 upstream code change since); CI green when configured. It fast-forwards `main`, or merges when only
 campaign metadata differs, verifies the landed code equals the tested code, records the landing,
 and pushes only with `--push`. Each milestone in `PLAN.md` runs its full validation as a job on
@@ -221,7 +229,8 @@ code); a red result is fixed or reverted before the next landing.
 
 Other campaigns on the machine share the job queue, `quiet` and the quota. `campaign check` reports
 their quests that overlap yours in a shared repository or change a contract you consume; order them
-with `--after NAME:ID`, which landing enforces, and tell their game master (`campaign status --all`).
+with `--after NAME:ID`, which landing enforces, and tell their game master (`campaign message NAME:
+"..."`); `campaign status --all` shows every campaign on the machine.
 
 ## Recovery
 
@@ -229,7 +238,11 @@ Every session, game master or adventurer, starts with `campaign brief` (in a wor
 and `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees
 and job records over any document. A dirty worktree is kept, never discarded. An interrupted
 landing is completed or cleared by the next state-writing command; a merged but unrecorded branch
-is recorded with `campaign land ID --record COMMIT`. Never invent a missing decision: write it
+is recorded with `campaign land ID --record COMMIT`. A job whose runner died is requeued when it
+allows retries, else marked `interrupted` and never run again by itself. Submitting a job again
+never duplicates one: an identical job that is queued, running or done is returned instead. An
+interrupted job may have run partway: resubmit it when its command is safe to repeat (builds,
+tests and measurements are); otherwise check what it changed first. Never invent a missing decision: write it
 under "Blocked on" and ask.
 
 ## Cost
