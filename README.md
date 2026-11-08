@@ -137,7 +137,7 @@ tested. [`references/lessons.md`](references/lessons.md) lists the incidents beh
 ## Building and testing
 
 ```sh
-cd tests && python3 run.py          # about three minutes, four tests at a time
+cd tests && python3 run.py          # about five minutes, four tests at a time
 ruff check scripts tests && pyrefly check
 ```
 
