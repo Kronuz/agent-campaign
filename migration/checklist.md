@@ -29,12 +29,22 @@ rolling back is a matter of links.
      decision: an open question in the quest file naming who decides;
    - evidence in logs: rerun as jobs, or `[artifact]` for a committed result file;
    - another repository: its own quest (`--repo`), ordered with `--after`;
-   - a pre-release campaign (`docs/campaign/`, branches `quest/<id>`): copy its state's fields into
-     `campaign new` (risk, lenses, files, checks), its quest file and PLAN.md into `.campaign/<name>/`,
-     adopt `quest/<id>` as `quest/<name>/<id>`, then on that branch move `docs/campaign/journal/*`
-     to `.campaign/<name>/journal/` (replacing the template `start` wrote) and `git rm -r
-     docs/campaign`, in one commit. That commit leaves the code as the old tool keyed it, so jobs
-     the old tool ran on that machine are reused by `campaign verify` and `campaign job rerun`.
+   - a pre-release campaign in `docs/campaign/` with quests in flight: move it in place, no
+     `campaign init` and no second campaign (rehearsed end to end on a copy shaped like Detent's):
+     1. On `main`: `git mv docs/campaign .campaign/<name>`, set `"campaign": "<name>"` in its
+        `state.json` (a plain name: letters, digits, `.`, `_`, `-`), commit. Recorded branch and
+        worktree names stay as they are.
+     2. On each quest branch: `git merge main`, then in one commit move every
+        `docs/campaign/journal/*.md` to `.campaign/<name>/journal/` and `git rm -r docs/campaign`.
+     3. On each task branch not yet merged into its quest:
+        `git -c merge.directoryRenames=true merge <quest branch>` (git carries the task's journal to
+        the new place), then the same move for anything left under `docs/campaign`.
+     4. Retag the old jobs so status, usage and prune count them: in every
+        `~/.scratch/campaign/jobs/*/spec.json` whose `"campaign"` is the home's path, set it to
+        `<home>/.campaign/<name>`. Their identity is untouched, so they are still reused.
+     5. `campaign check` must be clean. Rows citing jobs at the old code need `campaign job rerun`
+        (merging `main` changed the code); an acceptance from the earlier tool is void: rerun each
+        finding's confirming job at the head and `campaign accept ID LENS --confirm FINDING=JOB`.
 4. **Reviews.** An old review counts only for the exact code it examined: write it in
    `templates/review.md`'s shape with its `Commit:` and `campaign accept` it; the tool refuses when
    the quest's code differs. A review of part of the work, of an earlier commit, or with conditions

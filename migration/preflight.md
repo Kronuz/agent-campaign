@@ -148,16 +148,31 @@ commits). Moved by the checklist into a fresh clone: state fields into `campaign
 plan copied, branch adopted, journals moved to `.campaign/` and `docs/campaign` removed in one
 commit. The code tree is `7fcfd691b209` before (old tool) and after (new tool), so its jobs are reused
 once the job records are there. `campaign check` clean; status shows 15 criteria without rows (the
-trial's journal kept evidence as prose), the gate check to run, and three reviews to do. The
-`deltas` task branch was never merged or pushed: its work is only on the Codex host.
+trial's journal kept evidence as prose), the gate check to run, and three reviews to do.
+
+**In place, as on the laptop** (`inplace/` fixture). The laptop keeps the campaign in
+`docs/campaign` on `main`, named "Detent Dense pages", with four task branches merged into the quest
+and two not, and a security acceptance made with `--jobs`. A fixture of that shape, built with the
+laptop's tool (`agent-campaign:47cf63e`), was moved with the new tool: `docs/campaign` renamed on
+`main`, the quest branch merged with `main` and its journals moved, the unmerged task merged with
+`merge.directoryRenames=true`, old jobs retagged (5, still reused). `campaign check` clean; the old
+acceptance reported void; cited jobs rerun; security re-confirmed per finding (refused until
+`--fix-scope` named the task's file); landed. Found: merging `main` does not carry the journals, and
+a plain task merge stops on a file-location conflict; both steps are in the checklist.
+
+**On the laptop.** Everything of the trial was there: all seven task branches existed only on the
+laptop, `performance` (4 commits) and `real-deltas` (7) not merged; `dense-pages-first-read` (3
+commits) unpushed; `Detent-wt/dense-s2` mid-merge of `namespace/s1-s2` with 22 changes and a
+conflict, snapshotted to `wip/dense-s2-parked` without touching the worktree; 12 GB of job records;
+reviews naming `Commit: Detent:<sha>`, which `accept` could not read (fixed, `c1f3ef7`).
 
 ## Readiness
 
 **Go, for a controlled week on Detent**, under these conditions:
 
 1. Land this branch and run the full suite on the host that will run the campaign.
-2. Push every task branch from the Codex host (`quest/dense-pages--deltas` at least) and keep its job
-   directory before moving; otherwise the deltas work and the reusable jobs stay behind.
+2. Run the move on the laptop, where the work and the job records are; push its branches first, so
+   none exists only there.
 3. One contributor at a time at first; the runbook's daily records and stop conditions apply.
 
 Open, none blocking: no end-to-end token comparison yet; Linux, Claude Code and real GitHub CI were

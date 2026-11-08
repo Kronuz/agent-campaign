@@ -8,12 +8,10 @@ itself is [checklist.md](checklist.md); the readiness verdict and its conditions
 
 1. Land this branch on `main` of agent-campaign, then on the machine that will run the project:
    `cd tests && python3 run.py` (about five minutes) and `install.sh --dry-run`.
-2. On the machine where the earlier campaign ran (for Detent, the Codex host): push every branch it
-   worked on, task branches included (`quest/dense-pages--deltas`, `--integration`,
-   `--performance` were not pushed with `quest/dense-pages`), and keep its job directory
-   (`~/.scratch/campaign/jobs`): moving there lets the new tool reuse those jobs.
-3. Park, install and map the work by the checklist. For Detent: one `dense-pages` quest from the
-   pre-release branch (checklist, step 3, last case; rehearsed on a copy, `preflight.md`), and the
+2. Move the campaign on the machine where it ran (for Detent, the laptop), so its 12 GB of job
+   records are reused; push every branch it worked on first, task and WIP branches included.
+3. Park, install and map the work by the checklist. For Detent: the `dense-pages` campaign moved in
+   place (checklist, step 3, last case; rehearsed, `preflight.md`), and the
    parked 1.x work (`reader/s6`, `namespace/s3b`, `namespace/s1-s2`, the library adoptions) as
    planned quests marked blocked, so nothing starts beside Dense pages by accident.
 4. Validate before resuming (checklist, step 5), then resume one contributor and read `campaign
