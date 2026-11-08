@@ -828,10 +828,17 @@ def stem(glob: str) -> str:
 
 
 def overlap(a: list[str], b: list[str]) -> bool:
-    """Whether two file sets may share a file (no globs means the whole repository)."""
+    """Whether two file sets may share a file (no globs means the whole repository): exact when one
+    side names a file, by the globs' fixed prefixes when both are patterns."""
+
+    def pair(x: str, y: str) -> bool:
+        if stem(x) == x or stem(y) == y:  # a file: does the other side match it
+            return fnmatch.fnmatch(x, y) or fnmatch.fnmatch(y, x)
+        return stem(x).startswith(stem(y)) or stem(y).startswith(stem(x))
+
     if not a or not b:
         return True
-    return any(stem(x).startswith(stem(y)) or stem(y).startswith(stem(x)) for x in a for y in b)
+    return any(pair(x, y) for x in a for y in b)
 
 
 def outside(paths: list[str], globs: list[str]) -> list[str]:
@@ -1354,7 +1361,10 @@ def cmd_accept(a: argparse.Namespace) -> int:
             r = read_review(path.read_text())
             blocking = [f["id"] for f in r["findings"] if f["blocking"]]
             if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
-                die(f"{rel}: no 'Verdict: APPROVE|CHANGES|REJECT' line")
+                die(
+                    f"{rel}: the verdict is {r['verdict'] or 'missing'!r}, not one of APPROVE, CHANGES, REJECT; a "
+                    "conditional approval is CHANGES, its conditions blocking findings"
+                )
             if r["verdict"] == "REJECT":
                 die(f"{a.lens} review rejected {a.id}: re-plan the quest")
             if r["verdict"] == "APPROVE" and blocking:
@@ -1527,7 +1537,8 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-VERDICT = re.compile(r"^Verdict:\s*\**\s*(\w+)", re.M)
+# the whole verdict is one word: "APPROVE WITH CONDITIONS" is no APPROVE
+VERDICT = re.compile(r"^Verdict:\s*\**\s*(\S[^\n]*?)[\s*.]*$", re.M)
 REVIEWED = re.compile(r"^Commit:\s*\**\s*`?([0-9a-f]{7,64})\b", re.M)
 
 

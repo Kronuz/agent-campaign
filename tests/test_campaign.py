@@ -179,6 +179,10 @@ class Ownership(CampaignCase):
         self.fails(self.home, "start", "two", match="overlap one")
         self.ok(self.home, "new", "three", "--title", "three", "--risk", "low", "--files", "app.py")
         self.ok(self.home, "start", "three")
+        self.started("dense", files="tests/*dense*")  # a pattern and a file it does not match
+        self.started("fix", files="tests/test_collection.py")
+        self.ok(self.home, "new", "more", "--title", "more", "--risk", "low", "--files", "tests/test_dense_codec.py")
+        self.fails(self.home, "start", "more", match="overlap dense")
 
     def test_landing_refuses_changes_outside_the_file_set(self) -> None:
         wt = self.started("fix", files="app.py", check="unit=true")
@@ -656,6 +660,11 @@ class ReviewBinding(CampaignCase):
         self.fails(self.home, "accept", "feat", "correctness", match="APPROVE but lists blocking findings C1")
         self.review("feat", "correctness", "CHANGES", findings=(("C1", "no", "nit"),))
         self.fails(self.home, "accept", "feat", "correctness", match="CHANGES but lists no blocking finding")
+        for conditional in ("APPROVE WITH CONDITIONS", "**APPROVE WITH REQUIRED CHANGES.**"):
+            self.review("feat", "correctness", conditional)  # as 1.x reviews wrote it
+            self.fails(self.home, "accept", "feat", "correctness", match="a conditional approval is CHANGES")
+        self.review("feat", "correctness", "**APPROVE.**")
+        self.ok(self.home, "accept", "feat", "correctness")
 
     def test_only_jobs_that_passed_at_the_fixed_code_confirm_each_finding(self) -> None:
         wt, reviewed = self.feature()
