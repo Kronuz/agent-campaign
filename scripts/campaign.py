@@ -2065,8 +2065,9 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
             if owned:
                 out.append(("warning", f"{name}: edits the lead's files {', '.join(owned[:5])}"))
             code = [x for x in paths if not is_meta(x)]
-            if p["files"]:
-                outside = [x for x in code if not any(fnmatch.fnmatch(x, g) for g in p["files"])]
+            scope = p["files"] if name == pid else p.get("tasks", {}).get(name.partition("--")[2], {}).get("files", [])
+            if scope:
+                outside = [x for x in code if not any(fnmatch.fnmatch(x, g) for g in scope)]
                 if outside:
                     out.append(("warning", f"{name}: changes files outside its scope: {', '.join(outside[:5])}"))
             for x in code:

@@ -197,6 +197,12 @@ class Ownership(CampaignCase):
         self.fails(self.home, "land", "fix", match="lead's files")
         self.assertIn("lead's files", self.ok(self.home, "check").out)
 
+    def test_check_reports_a_task_writing_outside_its_files(self) -> None:
+        self.started("fix", files="app.py,lib/**")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        self.commit(self.wt("fix--lib"), {"app.py": "print('not this task's')\n"})
+        self.assertIn("fix--lib: changes files outside its scope: app.py", self.ok(self.home, "check").out)
+
     def test_check_reports_two_branches_changing_one_file(self) -> None:
         a = self.started("a", files="app.py")
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "app.py")
