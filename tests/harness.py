@@ -230,12 +230,28 @@ class CampaignCase(unittest.TestCase):
         self.ok(self.home, "verify", pid)
         self.ok(self.home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
 
-    def review(self, pid: str, lens: str, verdict: str, commit: str = "") -> None:
+    def review(
+        self, pid: str, lens: str, verdict: str, commit: str = "", findings: tuple[tuple[str, str, str], ...] = ()
+    ) -> str:
+        """Writes and commits a review file of the quest's head (or COMMIT); findings are (ID, yes|no, kind)
+        rows of its table. Returns the commit reviewed."""
+        if not commit:
+            branch = subprocess.run(
+                ["git", "-C", str(self.home), "rev-parse", "--verify", "--quiet", f"quest/demo/{pid}"],
+                capture_output=True,
+                text=True,
+            )
+            commit = branch.stdout.strip()
         folder = self.home / ".campaign/demo/reviews"
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / f"{pid}-{lens}.md").write_text(f"# {pid} review: {lens}\n\nCommit: {commit}\nVerdict: {verdict}\n")
+        table = "| ID | Blocking | Kind | Finding | Evidence | Fix |\n|---|---|---|---|---|---|\n"
+        table += "".join(f"| {f} | {b} | {k} | finding {f} | probe | fix it |\n" for f, b, k in findings)
+        (folder / f"{pid}-{lens}.md").write_text(
+            f"# {pid} review: {lens}\n\nCommit: {commit}\nVerdict: {verdict}\n\n## Findings\n\n{table}"
+        )
         self.git(self.home, "add", ".campaign/demo/reviews")
         self.git(self.home, "commit", "-q", "-m", f"review {pid} {lens}")
+        return commit
 
     def wait_until(self, predicate: Any, timeout: float = 30) -> None:
         end = time.time() + timeout

@@ -107,8 +107,12 @@ class Scenarios(CampaignCase):
         self.ok(self.home, "wait", fuzz)
         self.fails(self.home, "accept", "decoder", "security", "--waive", "looks fine", match="cannot be waived")
         self.fails(self.home, "land", "decoder", match="security review not accepted")
-        self.review("decoder", "security", "CHANGES")
-        self.ok(self.home, "accept", "decoder", "security", "--jobs", fuzz)
+        self.review("decoder", "security", "CHANGES", findings=(("S1", "yes", "defect"),))
+        self.commit(wt, {"lib/util.py": "def decode(b):\n    return bytes(b[:16])\n"}, "fix S1")
+        self.verified("decoder")
+        rerun = self.ok(self.home, "job", "rerun", fuzz).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        self.ok(self.home, "accept", "decoder", "security", "--confirm", f"S1={rerun}")
         self.ok(self.home, "land", "decoder")
 
     def test_e_durability_gets_an_early_design_review_and_one_code_review(self) -> None:
@@ -121,7 +125,7 @@ class Scenarios(CampaignCase):
         self.commit(wt, {"lib/util.py": "def commit(log, index):\n    log.fsync()\n    index.write()\n"}, "implement")
         self.verified("wal")
         self.fails(self.home, "land", "wal", match="durability review not accepted")
-        self.review("wal", "durability", "CHANGES")
+        self.review("wal", "durability", "CHANGES", findings=(("D1", "yes", "defect"),))
         self.commit(
             wt,
             {"lib/util.py": "def commit(log, index):\n    log.fsync()\n    index.write()\n    index.fsync()\n"},
@@ -130,7 +134,7 @@ class Scenarios(CampaignCase):
         probe = self.submit(wt, "--quest", "wal", "--", "grep -q 'index.fsync' lib/util.py")
         self.ok(self.home, "wait", probe)
         self.verified("wal")
-        self.ok(self.home, "accept", "wal", "durability", "--jobs", probe)
+        self.ok(self.home, "accept", "wal", "durability", "--confirm", f"D1={probe}")
         self.ok(self.home, "land", "wal")
         reviews = sorted(r.name for r in (self.home / ".campaign/demo/reviews").glob("*.md"))
         self.assertEqual(reviews, ["wal-design.md", "wal-durability.md"])  # no recheck, no second round

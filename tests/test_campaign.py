@@ -272,7 +272,11 @@ class Evidence(CampaignCase):
     def test_land_needs_every_criterion_proven_and_every_task_merged_or_dropped(self) -> None:
         wt = self.started("fix", files="app.py,lib/**,README.md")
         brief = self.home / ".campaign/demo/quests/fix.md"
-        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: unit\n- A2 helper: unit"))
+        brief.write_text(
+            brief.read_text().replace(
+                "None in this test.", "- A1 [manual] prints two: unit\n- A2 [manual] helper: unit"
+            )
+        )
         self.git(self.home, "commit", "-qam", "criteria")
         self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
         self.ok(self.home, "start", "fix", "--task", "docs", "--files", "README.md")
@@ -292,6 +296,36 @@ class Evidence(CampaignCase):
         self.assertIn("lib: dropped: superseded by the docs task", self.ok(self.home, "status").out)
         self.commit(wt, {".campaign/demo/journal/fix.md": journal.replace("| A2 | pending |", "| A2 | job 2 |")})
         self.ok(self.home, "land", "fix")  # the journal commit keeps the checks' evidence
+
+    def test_each_criterion_needs_the_kind_of_evidence_it_names(self) -> None:
+        wt = self.started("fix", files="app.py,docs/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        criteria = (
+            "- A1 prints two: the unit check\n- A2 [artifact] the results note: docs/perf/fix.md\n"
+            "- A3 [decision] the owner approves the name\n- A4 [manual] the output reads well: the lead reads it"
+        )
+        brief.write_text(brief.read_text().replace("None in this test.", criteria))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n", "docs/perf/fix.md": "2x\n"})
+        jid = self.ok(self.home, "verify", "fix").out.split()[1]
+        self.ok(self.home, "wait", jid)
+        journal = ".campaign/demo/journal/fix.md"
+        rows = "| A1 | tested it, all green |\n| A2 | `docs/perf/gone.md` |\n| A3 | D1 |\n| A4 | |\n"
+        self.commit(wt, {journal: f"## Evidence\n\n{rows}"})
+        self.fails(self.home, "land", "fix", match="criteria without evidence in a journal's Evidence table at")
+        out = self.ok(self.home, "status", "fix").out
+        self.assertIn("names no job", out)
+        self.assertIn("docs/perf/gone.md is not in", out)
+        self.assertIn("names no decision in PLAN.md", out)
+        rows = f"| A1 | {jid} |\n| A2 | `docs/perf/fix.md` |\n| A3 | D1 |\n| A4 | the lead read the output |\n"
+        self.commit(wt, {journal: f"## Evidence\n\n{rows}"})
+        self.fails(self.home, "land", "fix", match=": A3 (")
+        plan = self.home / ".campaign/demo/PLAN.md"
+        plan.write_text(plan.read_text() + "| D1 | 2026-11-08 | name it fix | owner | short |\n")
+        self.git(self.home, "commit", "-qam", "decision D1")
+        out = self.ok(self.home, "status", "fix").out
+        self.assertIn("A4  met      [manual] the output reads well", out)
+        self.ok(self.home, "land", "fix")
 
     def test_cited_jobs_count_only_when_they_passed_at_the_code_being_landed(self) -> None:
         wt = self.started("fix", files="app.py")
@@ -365,7 +399,9 @@ class Evidence(CampaignCase):
     def test_status_shows_progress_from_the_criteria_and_the_journal(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"
-        brief.write_text("# fix\n\n## Acceptance criteria\n\n- A1 one: a test\n- A2 two: a test\n- A3 three: a test\n")
+        brief.write_text(
+            "# fix\n\n## Acceptance criteria\n\n- A1 [manual] one: a test\n- A2 [manual] two: a test\n- A3 three: a test\n"
+        )
         self.git(self.home, "commit", "-qam", "criteria")
         out = self.ok(self.home, "status").out  # the template's placeholder row lists nothing
         self.assertIn("0% 0 of 3 criteria with evidence\n", out)
@@ -402,9 +438,9 @@ class Evidence(CampaignCase):
         self.assertNotIn("criteria:", out)  # the list is for one quest's view
         one = self.ok(self.home, "status", "fix").out
         for line in (
-            "A1  met      one: a test",
+            "A1  met      [manual] one: a test",
             "             journal: job 261106-1",
-            "A2  met      two: a test",
+            "A2  met      [manual] two: a test",
             "             journal: <pending>",
             "             two: test_two",
             "A3  pending  three: a test",
@@ -483,12 +519,14 @@ class Reviews(CampaignCase):
 
     def test_changes_need_confirming_jobs_and_reject_cannot_be_accepted(self) -> None:
         self.normal()
-        self.review("feat", "correctness", "CHANGES")
-        self.fails(self.home, "accept", "feat", "correctness", match="--jobs")
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
+        self.fails(self.home, "accept", "feat", "correctness", match="fix them, or the reviewer withdraws them")
+        self.commit(self.wt("feat"), {"app.py": "print('feature, fixed')\n"})
+        self.fails(self.home, "accept", "feat", "correctness", match="--confirm")
         jid = self.submit(self.wt("feat"), "--quest", "feat", "--", "python3 app.py")
         self.ok(self.home, "wait", jid)
-        self.ok(self.home, "accept", "feat", "correctness", "--jobs", jid)
-        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["jobs"][0]["job"], jid)
+        self.ok(self.home, "accept", "feat", "correctness", "--confirm", f"C1={jid}")
+        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["findings"]["C1"]["jobs"][0]["job"], jid)
         self.review("feat", "correctness", "REJECT")
         self.fails(self.home, "accept", "feat", "correctness", match="re-plan")
 
@@ -557,6 +595,192 @@ class Reviews(CampaignCase):
         self.assertEqual(data["reviews"][0]["findings"], 2)
 
 
+class ReviewBinding(CampaignCase):
+    """An acceptance covers the code its review saw and the review's own content; after CHANGES, each
+    blocking finding is confirmed by jobs that passed at the fixed code."""
+
+    def feature(self) -> tuple[Path, str]:
+        wt = self.started("feat", files="app.py,tests/**", risk="normal")
+        self.commit(wt, {"app.py": "print('feature')\n"})
+        self.verified("feat")
+        return wt, self.git(wt, "rev-parse", "HEAD")
+
+    def probe(self, wt: Path, cmd: str = "python3 app.py", commit: str = "") -> str:
+        jid = self.submit(wt, "--quest", "feat", *(["--commit", commit] if commit else []), "--", cmd)
+        self.run_cli(self.home, "wait", jid, "--timeout", "60")
+        return jid
+
+    def test_an_approval_covers_only_the_commit_it_reviewed(self) -> None:
+        wt, reviewed = self.feature()
+        self.review("feat", "correctness", "APPROVE")
+        self.commit(wt, {"app.py": "print('unreviewed')\n"})
+        self.verified("feat")
+        self.fails(self.home, "accept", "feat", "correctness", match=f"the review approved {reviewed[:12]}")
+        self.ok(self.home, "accept", "feat", "correctness", "--commit", reviewed)
+        self.fails(self.home, "land", "feat", match="changed since")
+
+    def test_metadata_commits_after_a_review_keep_it(self) -> None:
+        wt, _ = self.feature()
+        self.review("feat", "correctness", "APPROVE")
+        self.commit(wt, {".campaign/demo/journal/feat.md": "State: ready for review\n"})
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.commit(wt, {".campaign/demo/journal/feat.md": "State: landing\n"})
+        self.ok(self.home, "land", "feat")
+
+    def test_a_review_edited_after_acceptance_voids_it(self) -> None:
+        self.feature()
+        self.review("feat", "correctness", "APPROVE")
+        review = self.home / ".campaign/demo/reviews/feat-correctness.md"
+        review.write_text(review.read_text() + "\nThe lead's disposition: fine.\n")
+        self.fails(self.home, "accept", "feat", "correctness", match="commit it")
+        self.git(self.home, "checkout", "--", str(review))
+        self.ok(self.home, "accept", "feat", "correctness")
+        review.write_text(
+            review.read_text().replace("Verdict: APPROVE", "Verdict: CHANGES")
+            + "| C1 | yes | defect | leak | p | f |\n"
+        )
+        self.git(self.home, "commit", "-qam", "the reviewer changed its ruling")
+        self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
+
+    def test_a_waiver_never_overrides_a_review(self) -> None:
+        self.feature()
+        self.ok(self.home, "accept", "feat", "correctness", "--waive", "a one-line change")
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
+        self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
+        self.fails(self.home, "accept", "feat", "correctness", "--waive", "small", match="a review exists")
+
+    def test_a_verdict_agrees_with_its_findings(self) -> None:
+        self.feature()
+        self.review("feat", "correctness", "APPROVE", findings=(("C1", "yes", "defect"),))
+        self.fails(self.home, "accept", "feat", "correctness", match="APPROVE but lists blocking findings C1")
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "no", "nit"),))
+        self.fails(self.home, "accept", "feat", "correctness", match="CHANGES but lists no blocking finding")
+
+    def test_only_jobs_that_passed_at_the_fixed_code_confirm_each_finding(self) -> None:
+        wt, reviewed = self.feature()
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"), ("C2", "yes", "gap")))
+        self.commit(wt, {"app.py": "print('feature, fixed')\n"})
+        self.verified("feat")
+        other = self.repo("other", {"x.py": "print(1)\n"})
+        unrelated = self.submit(other, "--sync", "--", "true")
+        old = self.probe(wt, "python3 app.py && true", commit=reviewed)  # passed, but only before the fix
+        failed = self.probe(wt, "exit 1")
+        good = self.probe(wt)
+        for jid, why in ((unrelated, "not the quest's repository"), (old, "ran other code"), (failed, "failed")):
+            self.fails(
+                self.home,
+                "accept",
+                "feat",
+                "correctness",
+                "--confirm",
+                f"C1={jid}",
+                "--confirm",
+                f"C2={good}",
+                match=why,
+            )
+        self.fails(self.home, "accept", "feat", "correctness", "--confirm", f"C1={good}", match="C2 has no confirming")
+        self.fails(self.home, "accept", "feat", "correctness", "--confirm", f"C9={good}", match="no finding C9")
+        self.ok(self.home, "accept", "feat", "correctness", "--confirm", f"C1={good}", "--confirm", f"C2={good}")
+        record = self.quest("feat")["accepted"]["correctness"]
+        self.assertEqual(record["reviewed"], reviewed)
+        self.assertEqual(
+            {k: [j["job"] for j in v["jobs"]] for k, v in record["findings"].items()}, {"C1": [good], "C2": [good]}
+        )
+        self.assertFalse(record["findings"]["C1"]["reproduced"])  # no failing run of its probe before the fix
+        self.ok(self.home, "land", "feat")
+
+    def test_a_confirmation_records_the_failure_it_reproduced(self) -> None:
+        wt, _ = self.feature()
+        probe = self.probe(wt, "python3 app.py | grep -q fixed")  # the reviewer's probe fails at the reviewed code
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
+        self.commit(wt, {"app.py": "print('feature, fixed')\n"})
+        self.verified("feat")
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        self.ok(self.home, "accept", "feat", "correctness", "--confirm", f"C1={rerun}")
+        self.assertTrue(self.quest("feat")["accepted"]["correctness"]["findings"]["C1"]["reproduced"])
+
+    def test_a_fix_beyond_the_reviewed_files_needs_a_review_or_a_reason(self) -> None:
+        wt, _ = self.feature()
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
+        self.commit(wt, {"app.py": "print('fixed')\n", "tests/test_app.py": "assert True\n"})
+        self.verified("feat")
+        good = self.probe(wt)
+        self.fails(
+            self.home, "accept", "feat", "correctness", "--confirm", f"C1={good}", match="tests/test_app.py, which the"
+        )
+        why = "tests/test_app.py is C1's regression test"
+        self.ok(self.home, "accept", "feat", "correctness", "--confirm", f"C1={good}", "--fix-scope", why)
+        self.assertEqual(
+            self.quest("feat")["accepted"]["correctness"]["fix_scope"], {"paths": ["tests/test_app.py"], "reason": why}
+        )
+        self.review("feat", "correctness", "APPROVE")  # or the reviewer reviews the fix at its commit
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.ok(self.home, "land", "feat")
+
+
+class RiskPolicy(CampaignCase):
+    """What a quest must pass is never weakened silently: lowering its risk, removing a lens, or removing,
+    replacing or deferring a check needs --weaken REASON, is recorded, and voids its acceptances."""
+
+    def test_a_downgrade_after_review_needs_a_reason_and_voids_acceptance(self) -> None:
+        wt = self.started("dur", files="lib/**", risk="high", check="unit=true", lenses="durability,correctness")
+        self.commit(wt, {"lib/util.py": "X = 3\n"})
+        self.verified("dur")
+        for lens in ("durability", "correctness"):
+            self.review("dur", lens, "APPROVE")
+            self.ok(self.home, "accept", "dur", lens)
+        self.fails(self.home, "set", "dur", "risk=normal", match="--weaken")
+        self.fails(self.home, "set", "dur", "lenses=correctness", match="lens durability removed")
+        self.assertEqual(self.quest("dur")["risk"], "high")  # refused without writing
+        why = "durability moved to the wal quest"
+        self.ok(self.home, "set", "dur", "risk=normal", "lenses=correctness", "--weaken", why)
+        q = self.quest("dur")
+        self.assertEqual(q["accepted"], {})
+        self.assertEqual(q["history"][-1]["reason"], why)
+        self.assertIn("risk high -> normal", q["history"][-1]["weakened"])
+        self.assertIn(why, self.ok(self.home, "status", "dur").out)
+        self.fails(self.home, "land", "dur", match="correctness review not accepted")
+
+    def test_the_review_a_risk_needs_cannot_be_removed(self) -> None:
+        self.fails(
+            self.home, "new", "x", "--title", "x", "--risk", "normal", "--lenses", "", match="needs a code review"
+        )
+        self.fails(
+            self.home, "new", "y", "--title", "y", "--risk", "critical", "--lenses", "correctness", match="design"
+        )
+        self.started("z", files="app.py", risk="normal", check="unit=true")
+        self.fails(self.home, "set", "z", "lenses=design", "--weaken", "why", match="needs a code review")
+        state = self.home / ".campaign/demo/state.json"
+        data = json.loads(state.read_text())
+        data["quests"]["z"]["lenses"] = []  # a hand edit
+        state.write_text(json.dumps(data))
+        self.git(self.home, "commit", "-qam", "hand edit")
+        self.commit(self.wt("z"), {"app.py": "print(2)\n"})
+        self.verified("z")
+        self.fails(self.home, "land", "z", match="needs a code review")
+
+    def test_a_failing_gate_is_neither_replaced_nor_deferred_silently(self) -> None:
+        wt = self.started("fix", files="app.py", check="unit=python3 app.py")
+        self.commit(wt, {"app.py": "raise SystemExit(3)\n"})
+        self.ok(self.home, "verify", "fix")
+        self.run_cli(self.home, "wait", "--quest", "fix", "--timeout", "60")
+        self.fails(self.home, "set", "fix", "--check", "unit=true", match="gate check unit changed")
+        self.fails(
+            self.home, "set", "fix", "--check", "other=true", "--later", "unit=python3 app.py", match="unit deferred"
+        )
+        self.fails(self.home, "land", "fix", match="not green")
+        self.ok(self.home, "set", "fix", "--check", "unit=true", "--weaken", "the unit check was the wrong command")
+        self.assertEqual(self.quest("fix")["history"][-1]["weakened"], ["gate check unit changed"])
+
+    def test_strengthening_needs_no_reason(self) -> None:
+        self.started("fix", files="app.py", risk="normal", check="unit=true")
+        self.ok(self.home, "set", "fix", "risk=critical")
+        self.assertEqual(sorted(self.quest("fix")["lenses"]), ["correctness", "design"])
+        self.ok(self.home, "set", "fix", "--check", "unit=true", "--check", "lint=true")
+        self.ok(self.home, "set", "fix", "lenses=correctness,design,security")
+
+
 class Increments(CampaignCase):
     def test_a_safe_prefix_lands_before_the_quest(self) -> None:
         wt = self.started("big", files="lib/**,app.py", risk="normal", check="unit=true")
@@ -565,7 +789,16 @@ class Increments(CampaignCase):
         self.ok(self.home, "verify", "big", "--commit", first)
         self.ok(self.home, "wait", "--quest", "big", "--timeout", "60")
         self.fails(self.home, "land", "big", "--upto", first, match="--reason")
-        self.ok(self.home, "land", "big", "--upto", first, "--reason", "behavior-preserving refactor")
+        why = "behavior-preserving refactor"
+        self.fails(self.home, "land", "big", "--upto", first, "--reason", why, match="May land early")
+        brief = self.home / ".campaign/demo/quests/big.md"
+        text = brief.read_text()
+        start = text.index("## May land early")
+        brief.write_text(text[:start] + "## May land early\n\nThe lib/ refactor.\n")
+        self.git(self.home, "commit", "-qam", "may land early")
+        self.verified("big")
+        self.fails(self.home, "land", "big", "--upto", "quest/demo/big", "--reason", why, match="the whole quest")
+        self.ok(self.home, "land", "big", "--upto", first, "--reason", why)
         p = self.quest("big")
         self.assertEqual(p["status"], "active")
         self.assertFalse(p["landed"][0]["final"])
@@ -587,7 +820,7 @@ class DirectPath(CampaignCase):
             "--check",
             "unit=true",
             "--later",
-            "soak=sleep 1; exit 3",
+            "soak=sleep 1; grep -q fixed app.py",
             "--later",
             "other-platform=echo other",
         )
@@ -612,8 +845,8 @@ class DirectPath(CampaignCase):
         status = self.ok(self.home, "status").out
         self.assertIn("deferred checks: 1 done, 1 failed", status)
         self.assertNotIn("not in a journal yet", status)  # a landed quest's failures are history
-        # the fix lands like any quest; rerunning the deferred checks on main clears the error
-        self.ok(self.home, "set", "fast", "--later", "soak=true", "--later", "other-platform=echo other")
+        # the fix lands (here straight on main); rerunning the deferred checks on main clears the error
+        self.commit(self.home, {"app.py": "print(2)  # fixed\n"})
         self.ok(self.home, "verify", "fast", "--deferred")
         rerun = self.quest("fast")["landed"][0]["later"]
         self.assertNotEqual(rerun, record["later"])
@@ -971,6 +1204,19 @@ class Integration(CampaignCase):
         self.fake_gh('[{"name": "build", "status": "completed", "conclusion": "success"}]')
         self.ok(self.home, "land", "fix")
 
+    def test_landing_without_ci_needs_a_reason_and_is_recorded(self) -> None:
+        state = self.state()
+        state["ci"] = "github"
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-q", "-am", "require CI")
+        wt = self.started("fix", files="app.py", check="unit=true")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.fake_gh('[{"name": "build", "status": "completed", "conclusion": "failure"}]')
+        self.fails(self.home, "land", "fix", "--no-ci")
+        self.ok(self.home, "land", "fix", "--no-ci", "the runner pool is down; the build passed locally as a job")
+        self.assertIn("runner pool is down", self.quest("fix")["landed"][0]["ci_skipped"])
+
     def test_push_sends_the_landing_and_the_state(self) -> None:
         remote = self.root / "remote.git"
         self.git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
@@ -1316,8 +1562,12 @@ class Recovery(CampaignCase):
         head = self.commit(wt, {"README.md": "done\n"})
         self.git(self.home, "merge", "-q", "--no-ff", "-m", "by hand", head)
         self.assertIn("not recorded", self.ok(self.home, "check").out)
-        self.ok(self.home, "land", "done", "--record", head)
+        self.fails(self.home, "land", "done", "--record", head, match="--reason")
+        self.ok(self.home, "land", "done", "--record", head, "--reason", "merged by hand before the tool existed")
         self.assertEqual(self.quest("done")["status"], "landed")
+        record = self.quest("done")["landed"][0]
+        self.assertEqual(record["unverified"], ["unit: no job"])  # what the landing never checked
+        self.assertIn("unverified: unit: no job", self.ok(self.home, "status", "done").out)
 
     def test_contracts_with_two_providers_are_reported(self) -> None:
         self.ok(self.home, "new", "a", "--title", "a", "--provides", "api:store")

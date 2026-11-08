@@ -44,6 +44,7 @@ STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
 FLIGHT = ("active", "review", "blocked")  # in flight: started, neither landed nor dropped
 RISKS = ("low", "normal", "high", "critical")
 LENSES = ("correctness", "security", "durability", "design", "system")
+CODE_LENSES = ("correctness", "security", "durability")  # lenses that review code, not a design
 CLASSES = ("sage", "wizard", "artificer", "scout", "bard", "squire")
 ROLES = ("adventurer", "paladin", "scout")
 LEVELS = ("none", "light", "strict", "exclusive")
@@ -237,6 +238,17 @@ def merge_base(repo: Path, a: str, b: str) -> str:
     return str(on_commits(("merge-base", str(repo), a, b), lambda: git(repo, "merge-base", a, b)))
 
 
+_common: dict[str, str] = {}
+
+
+def same_repo(a: Path, b: Path) -> bool:
+    """Whether two checkouts (a main checkout, its worktrees) share one repository."""
+    for p in (a, b):
+        if str(p) not in _common:
+            _common[str(p)] = git(p, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    return bool(_common[str(a)]) and _common[str(a)] == _common[str(b)]
+
+
 def changed(repo: Path, a: str, b: str) -> list[str]:
     """Paths that differ between the trees of a and b."""
     return list(
@@ -420,6 +432,7 @@ QUEST_FIELDS: dict[str, type] = {
     "landed": list,
     "notes": list,  # messages filed before they were called messages
     "messages": list,
+    "history": list,  # changes to risk, lenses and checks
     "reason": str,
     "milestone": str,
     "updated": str,
@@ -570,6 +583,10 @@ class Campaign:
         if pid not in self.quests:
             die(f"no quest {pid}")
         return self.quests[pid]
+
+    def quest_file(self, pid: str) -> str:
+        path = self.home / self.meta / "quests" / f"{pid}.md"
+        return path.read_text() if path.exists() else ""
 
     def repo(self, p: Json) -> Path:
         return (self.home / p["repo"]).resolve()
@@ -725,6 +742,7 @@ def landing_record(repo: Path, main: str, intent: Json) -> Json | None:
         "final": intent["final"],
         "reason": intent.get("reason", ""),
         "evidence": intent.get("evidence", []),
+        **({"ci_skipped": intent["ci_skipped"]} if intent.get("ci_skipped") else {}),
     }
 
 
@@ -770,6 +788,35 @@ def gates(p: Json) -> list[Json]:
 
 def deferred(p: Json) -> list[Json]:
     return [x for x in p["checks"] if x.get("later")]
+
+
+def lens_floor(risk: str, lenses: list[str]) -> list[str]:
+    """The reviews RISK requires that LENSES lack: any risk above low a code review, critical a design."""
+    need = (
+        []
+        if risk == "low" or set(lenses) & set(CODE_LENSES)
+        else ["a code review (correctness, security or durability)"]
+    )
+    return need + (["a design review"] if risk == "critical" and "design" not in lenses else [])
+
+
+def weakening(before: Json, after: Json) -> list[str]:
+    """What a change to a quest's risk, lenses or checks removes from what it must pass."""
+    out: list[str] = []
+    if RISKS.index(after["risk"]) < RISKS.index(before["risk"]):
+        out.append(f"risk {before['risk']} -> {after['risk']}")
+    out += [f"lens {x} removed" for x in before["lenses"] if x not in after["lenses"]]
+    new = {x["name"]: x for x in after["checks"]}
+    for old in before["checks"]:
+        kind = "deferred check" if old.get("later") else "gate check"
+        now = new.get(old["name"])
+        if now is None:
+            out.append(f"{kind} {old['name']} removed")
+        elif now.get("later") and not old.get("later"):
+            out.append(f"gate check {old['name']} deferred")
+        elif (now["cmd"], now["level"]) != (old["cmd"], old["level"]):
+            out.append(f"{kind} {old['name']} changed")
+    return out
 
 
 def stem(glob: str) -> str:
@@ -1019,6 +1066,10 @@ def cmd_new(a: argparse.Namespace) -> int:
         repo = (c.home / a.repo).resolve()
         if not git_ok(repo, "rev-parse", "--git-dir"):
             die(f"{repo} is not a git repository")
+        lenses = csv(a.lenses) if a.lenses is not None else list(DEFAULT_LENSES[a.risk])
+        need = lens_floor(a.risk, lenses)
+        if need:
+            die(f"{a.risk} risk needs {' and '.join(need)}: --lenses {','.join(lenses + DEFAULT_LENSES[a.risk])}")
         c.quests[a.id] = {
             "title": a.title,
             "status": "planned",
@@ -1030,7 +1081,7 @@ def cmd_new(a: argparse.Namespace) -> int:
             "consumes": csv(a.consumes),
             "files": csv(a.files),
             "checks": [parse_check(x) for x in a.check] + [parse_check(x, later=True) for x in a.later],
-            "lenses": csv(a.lenses) if a.lenses is not None else list(DEFAULT_LENSES[a.risk]),
+            "lenses": list(dict.fromkeys(lenses)),
             "milestone": a.milestone or "",
             "accepted": {},
             "landed": [],
@@ -1121,6 +1172,7 @@ def cmd_set(a: argparse.Namespace) -> int:
             c.save(f"campaign: set {a.id} task {a.task} " + " ".join(a.assignments))
             print(f"{a.id} task {a.task}: " + ("dropped" if task.get("status") == "dropped" else "updated"))
             return 0
+        before = {k: json.loads(json.dumps(p[k])) for k in ("risk", "lenses", "checks")}
         for item in a.assignments:
             key, sep, value = item.partition("=")
             if not sep:
@@ -1144,12 +1196,40 @@ def cmd_set(a: argparse.Namespace) -> int:
             p["checks"] = [parse_check(x) for x in a.check] + deferred(p)
         if a.later:
             p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later]
+        if RISKS.index(p["risk"]) > RISKS.index(before["risk"]):  # a raised risk brings its reviews
+            p["lenses"] = list(dict.fromkeys(p["lenses"] + DEFAULT_LENSES[p["risk"]]))
+        need = lens_floor(p["risk"], p["lenses"])
+        if need:
+            die(f"{a.id} is {p['risk']} risk and needs {' and '.join(need)}; lower the risk instead (--weaken REASON)")
+        weakened = weakening(before, p)
+        if weakened and not a.weaken:
+            die(
+                f"{a.id}: this weakens what it must pass ({'; '.join(weakened)}): --weaken REASON records why "
+                "and voids its review acceptances"
+            )
+        after = {k: p[k] for k in before}
+        if after != before:
+            voided: list[str] = sorted(p.get("accepted", {})) if weakened or p["risk"] != before["risk"] else []
+            if voided:
+                p["accepted"].clear()
+            p.setdefault("history", []).append(
+                {
+                    "at": stamp(),
+                    **{k: [before[k], after[k]] for k in before if before[k] != after[k]},
+                    "weakened": weakened,
+                    "reason": a.weaken or "",
+                    "voided": voided,
+                }
+            )
+        elif a.weaken:
+            die("--weaken: nothing here weakens the quest")
         if p["status"] not in ("blocked", "dropped") and not any(x.startswith("reason=") for x in a.assignments):
             p.pop("reason", None)
         p["updated"] = stamp()
         c.save(
             f"campaign: set {a.id} "
             + " ".join(a.assignments + [f"check={x}" for x in a.check] + [f"later={x}" for x in a.later])
+            + (f" (weakened: {'; '.join(weakened)}; why: {a.weaken})" if weakened else "")
         )
         if any(x == "status=blocked" for x in a.assignments):
             notify(f"Blocked: {a.id}", p.get("reason", ""))
@@ -1236,6 +1316,12 @@ def cmd_start(a: argparse.Namespace) -> int:
     return 0
 
 
+def own_blobs(repo: Path, main_head: str, commit: str) -> dict[str, str]:
+    """The quest's own code changes at COMMIT (path -> blob), against its merge base with main."""
+    base = merge_base(repo, main_head, commit)
+    return blobs(repo, commit, [x for x in changed(repo, base, commit) if not is_meta(x)])
+
+
 def cmd_accept(a: argparse.Namespace) -> int:
     with writing() as c:
         p = c.quest(a.id)
@@ -1245,48 +1331,141 @@ def cmd_accept(a: argparse.Namespace) -> int:
             die(f"{a.id} has no branch")
         repo = c.repo(p)
         commit = rev(repo, a.commit or p["branch"])
-        verdict = ""
+        main_head = rev(repo, main_branch(repo))
+        path = review_path(c, a.id, a.lens)
+        rel = path.relative_to(c.home)
+        r: Json = {"verdict": "", "commit": "", "findings": []}
+        reviewed = ""
+        findings: dict[str, Json] = {}
+        fix_scope: Json = {}
         if a.waive:
             if p["risk"] in ("high", "critical"):
                 die(f"{a.id} is {p['risk']} risk: its {a.lens} review cannot be waived")
+            if path.exists():
+                die(
+                    f"a review exists ({rel}, verdict {verdict(c, a.id, a.lens)}): accept it; a waiver never overrides a review"
+                )
         else:
-            review = c.home / c.meta / "reviews" / f"{a.id}-{a.lens}.md"
-            if not review.exists():
-                die(f"no review at {review.relative_to(c.home)} (or --waive REASON)")
-            m = re.search(r"^Verdict:\s*\**\s*(APPROVE|CHANGES|REJECT)\b", review.read_text(), re.M)
-            if not m:
-                die(f"{review.name}: no 'Verdict: APPROVE|CHANGES|REJECT' line")
-            verdict = m.group(1)
-            if verdict == "REJECT":
+            if not path.exists():
+                die(f"no review at {rel} (or --waive REASON)")
+            if git(c.home, "status", "--porcelain", "--", str(path)):
+                die(
+                    f"{rel} is not committed: commit it, then accept (an acceptance names the review's committed content)"
+                )
+            r = read_review(path.read_text())
+            blocking = [f["id"] for f in r["findings"] if f["blocking"]]
+            if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
+                die(f"{rel}: no 'Verdict: APPROVE|CHANGES|REJECT' line")
+            if r["verdict"] == "REJECT":
                 die(f"{a.lens} review rejected {a.id}: re-plan the quest")
-            if verdict == "CHANGES" and not a.jobs:
-                die("CHANGES: confirm each blocking fix with a job that reruns its probe, then --jobs")
-        confirmations: list[Json] = []
-        for jid in csv(a.jobs):
-            job = load_job(jobs_dir() / jid)
-            if job["state"].get("state") != "done":
-                die(f"job {jid} is {job['state'].get('state')}, not done")
-            confirmations.append(job_summary(job))
-        main_head = rev(repo, main_branch(repo))
-        base = merge_base(repo, main_head, commit)
-        paths = [x for x in changed(repo, base, commit) if not is_meta(x)]
+            if r["verdict"] == "APPROVE" and blocking:
+                die(
+                    f"{rel}: APPROVE but lists blocking findings {', '.join(blocking)}: the reviewer corrects one or the other"
+                )
+            if r["verdict"] == "CHANGES" and not blocking:
+                die(f"{rel}: CHANGES but lists no blocking finding (a findings row with Blocking yes)")
+            if r["verdict"] == "APPROVE" and a.confirm:
+                die("an APPROVE needs no --confirm")
+            seen: dict[str, str] = {}
+            if a.lens != "design":  # a design is reviewed before the code exists
+                if not r["commit"] or not git_ok(repo, "cat-file", "-e", f"{r['commit']}^{{commit}}"):
+                    die(f"{rel}: no 'Commit:' line naming the reviewed commit in {repo}")
+                reviewed = rev(repo, r["commit"])
+                seen = own_blobs(repo, main_head, reviewed)
+                since = drift(repo, main_head, commit, seen)
+                if r["verdict"] == "APPROVE" and since:
+                    die(
+                        f"the review approved {reviewed[:12]}; {commit[:12]} changes {', '.join(since[:8])} since: "
+                        f"have the reviewer review them, or accept --commit {reviewed[:12]}"
+                    )
+                defects = [f["id"] for f in r["findings"] if f["blocking"] and f["kind"] == "defect"]
+                if r["verdict"] == "CHANGES" and not since and defects:
+                    die(
+                        f"{', '.join(defects)}: blocking defects, and {commit[:12]} has the code the review saw: fix "
+                        "them, or the reviewer withdraws them"
+                    )
+                unseen = [x for x in since if x not in seen]
+                if unseen and r["verdict"] == "CHANGES":
+                    if not a.fix_scope:
+                        die(
+                            f"the fix changes {', '.join(unseen[:8])}, which the {a.lens} review never saw: have the reviewer "
+                            "review the fix (the review names the fixed commit and approves), or --fix-scope REASON when "
+                            "it adds no mechanism (a regression test for a finding)"
+                        )
+                    fix_scope = {"paths": unseen, "reason": a.fix_scope}
+            if r["verdict"] == "CHANGES":
+                findings = confirmations(repo, commit, reviewed, table=r["findings"], given=a.confirm)
         p.setdefault("accepted", {})[a.lens] = {
             "commit": commit,
-            "base": base,
+            "base": merge_base(repo, main_head, commit),
             "brief": brief_hash(c, a.id),
             "by": "waived" if a.waive else "review",
-            "verdict": verdict,
+            "verdict": r["verdict"],
             "note": a.waive or a.note or "",
-            "jobs": confirmations,
-            "blobs": blobs(repo, commit, paths),
+            "review": "" if a.waive else review_identity(c, a.id, a.lens),
+            "reviewed": reviewed,
+            "findings": findings,
+            **({"fix_scope": fix_scope} if fix_scope else {}),
+            "blobs": own_blobs(repo, main_head, commit),
             "at": stamp(),
         }
         if a.lens not in p["lenses"] and not a.waive:
             p["lenses"].append(a.lens)
         p["updated"] = stamp()
         c.save(f"campaign: accept {a.id} {a.lens} at {commit[:12]}" + (" (waived)" if a.waive else ""))
-    print(f"{a.id}: {a.lens} accepted at {commit[:12]} ({len(paths)} paths)")
+    for fid, f in findings.items():
+        if f["kind"] == "defect" and not f["reproduced"]:
+            print(f"note: {fid} is a defect and no job shows its probe failing at the reviewed {reviewed[:12]}")
+    print(f"{a.id}: {a.lens} accepted at {commit[:12]} ({len(p['accepted'][a.lens]['blobs'])} paths)")
     return 0
+
+
+def confirmations(repo: Path, commit: str, reviewed: str, *, table: list[Json], given: list[str]) -> dict[str, Json]:
+    """Each blocking finding of a CHANGES review with the jobs that confirm its fix: jobs of the quest's
+    repository that passed at the accepted commit's code, named for that finding (`--confirm C1=J1,J2`).
+    Records whether a run of the same command failed at the reviewed code (the failure reproduced)."""
+    kinds = {f["id"]: f["kind"] for f in table}
+    named: dict[str, list[str]] = {}
+    for item in given:
+        fid, sep, jobs = item.partition("=")
+        if not sep or not csv(jobs):
+            die(f"--confirm FINDING=JOB[,JOB], not {item!r}")
+        if fid not in kinds:
+            die(f"no finding {fid} in the review (its findings: {', '.join(kinds) or 'none'})")
+        named.setdefault(fid, []).extend(csv(jobs))
+    missing = [f["id"] for f in table if f["blocking"] and f["id"] not in named]
+    if missing:
+        die(
+            "; ".join(f"{fid} has no confirming job" for fid in missing)
+            + ": rerun its probe or the new test as a job at the fixed commit, then --confirm FINDING=JOB"
+        )
+    problem = job_problem(repo, [commit])
+    out: dict[str, Json] = {}
+    for fid, jids in named.items():
+        why = [w for w in map(problem, dict.fromkeys(jids)) if w]
+        if why:
+            die(f"{fid}: " + "; ".join(why) + f" (a confirming job passed at {commit[:12]}'s code in {repo})")
+        jobs = [passed_at(load_job(jobs_dir() / jid), commit) for jid in dict.fromkeys(jids)]
+        out[fid] = {
+            "kind": kinds[fid],
+            "jobs": [job_summary(j) for j in jobs],
+            "reproduced": bool(reviewed) and any(failed_at(j, reviewed) for j in jobs),
+        }
+    return out
+
+
+def passed_at(job: Json, commit: str) -> Json:
+    """The run of this job's command that passed at COMMIT's code: the job itself, or its rerun."""
+    twin = job_with_key({**job["spec"], "commit": commit})
+    return twin if twin is not None else job
+
+
+def failed_at(job: Json, commit: str) -> bool:
+    """Whether the same job (command, directory, level, environment) failed at COMMIT's code."""
+    with contextlib.suppress(CampaignError, KeyError):
+        twin = job_with_key({**job["spec"], "commit": commit})
+        return twin is not None and twin["state"].get("state") in ("failed", "timeout")
+    return False
 
 
 def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> list[str]:
@@ -1345,13 +1524,42 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+VERDICT = re.compile(r"^Verdict:\s*\**\s*(\w+)", re.M)
+REVIEWED = re.compile(r"^Commit:\s*\**\s*`?([0-9a-f]{7,64})\b", re.M)
+
+
+def review_path(c: Campaign, pid: str, lens: str) -> Path:
+    return c.home / c.meta / "reviews" / f"{pid}-{lens}.md"
+
+
+def read_review(text: str) -> Json:
+    """A review file's verdict, the commit it reviewed, and its findings table: ID, blocking, kind."""
+    verdict, reviewed = VERDICT.search(text), REVIEWED.search(text)
+    findings: list[Json] = []
+    for row in (section(text, "Findings") or text).splitlines():
+        cells = [x.strip().strip("*`") for x in row.strip().strip("|").split("|")] if row.startswith("|") else []
+        if len(cells) < 3 or cells[0].lower() in ("id", "") or set(cells[0]) <= set("-: "):
+            continue
+        findings.append({"id": cells[0], "blocking": cells[1].lower() == "yes", "kind": cells[2].lower()})
+    return {
+        "verdict": verdict.group(1) if verdict else "",
+        "commit": reviewed.group(1) if reviewed else "",
+        "findings": findings,
+    }
+
+
+def review_identity(c: Campaign, pid: str, lens: str) -> str:
+    """The review file's git blob id: what an acceptance accepted, "" when there is none."""
+    path = review_path(c, pid, lens)
+    return git(c.home, "hash-object", "--", str(path)) if path.exists() else ""
+
+
 def verdict(c: Campaign, pid: str, lens: str) -> str:
-    """A paladin's verdict on the quest; "none yet" without a review file."""
-    review = c.home / c.meta / "reviews" / f"{pid}-{lens}.md"
+    """A reviewer's verdict on the quest; "none yet" without a review file."""
+    review = review_path(c, pid, lens)
     if not review.exists():
         return "none yet"
-    m = re.search(r"^Verdict:\s*\**\s*(\w+)", review.read_text(), re.M)
-    return m.group(1) if m else "no verdict"
+    return read_review(review.read_text())["verdict"] or "no verdict"
 
 
 def review_step(said: str, pid: str, lens: str) -> str:
@@ -1359,7 +1567,7 @@ def review_step(said: str, pid: str, lens: str) -> str:
     if said == "APPROVE":
         return f"approved; `campaign accept {pid} {lens}`"
     if said == "CHANGES":
-        return f"verdict CHANGES; fix what blocks, rerun its probes as jobs, then `campaign accept {pid} {lens} --jobs IDS`"
+        return f"verdict CHANGES; fix what blocks, rerun each finding's probe as a job, then `campaign accept {pid} {lens} --confirm FINDING=JOB ...`"
     if said == "REJECT":
         return "verdict REJECT; re-plan the quest"
     if said == "none yet":
@@ -1400,7 +1608,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
             )
     wanted = criteria(c, pid) if final else {}
     carried = journals_at(c, repo, target, pid) if final else {}
-    rows = evidence(carried, list(wanted), cited_jobs([target])) if wanted else {}
+    rows = evidence(carried, wanted, proof(c, repo, [target])) if wanted else {}
     unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
     if unproven:
         gaps.append(
@@ -1417,12 +1625,22 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     for missing in check_evidence(c, p, target)[0]:
         name, _, why = missing.partition(": ")
         gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
+    need = lens_floor(p["risk"], p["lenses"]) if final else []
+    if need:
+        gaps.append(f"{p['risk']} risk needs {' and '.join(need)}: `campaign set {pid} lenses=...`")
     for lens in p["lenses"] if final else []:
         acc = p.get("accepted", {}).get(lens)
         if not acc:
             gaps.append(f"{lens} review not accepted: {review_step(verdict(c, pid, lens), pid, lens)}")
         elif acc.get("brief") != brief_hash(c, pid):
             gaps.append(f"the quest file changed after {lens} was accepted: re-accept against the current criteria")
+        elif "review" not in acc:
+            gaps.append(f"{lens} was accepted by an older campaign that did not record the review: re-accept it")
+        elif acc["review"] != review_identity(c, pid, lens):
+            gaps.append(
+                f"the {lens} review changed after it was accepted (verdict now {verdict(c, pid, lens)}): "
+                f"`campaign accept {pid} {lens}` again"
+            )
         elif lens != "design":  # design approves the approach before the code exists
             moved_since = drift(repo, main_head, target, acc["blobs"])
             upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
@@ -1435,7 +1653,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     if ci and c.state.get("ci") == "github":
         state = ci_state(repo, target, c.state.get("ci_later", []))
         if state != "success":
-            gaps.append(f"CI at {target[:12]}: {state} (--no-ci to land without it)")
+            gaps.append(f"CI at {target[:12]}: {state} (--no-ci REASON to land without it)")
     return gaps
 
 
@@ -1470,22 +1688,30 @@ def cmd_land(a: argparse.Namespace) -> int:
             target = rev(repo, a.record)
             if not ancestor(repo, target, main):
                 die(f"{target[:12]} is not on {main}")
+            if not a.reason:
+                die("--record needs --reason: how it landed without `campaign land`")
             final = rev(repo, p["branch"]) == target if p.get("branch") else True
+            unverified = check_evidence(c, p, target)[0] + [
+                f"{x} review not accepted" for x in p["lenses"] if final and x not in p.get("accepted", {})
+            ]
             p["landed"].append(
                 {
                     "commit": target,
                     "tested": target,
                     "at": stamp(),
                     "final": final,
-                    "reason": "recorded after the fact",
-                    "evidence": [],
+                    "reason": f"recorded after the fact: {a.reason}",
+                    "evidence": check_evidence(c, p, target)[1],
+                    "unverified": unverified,
                 }
             )
             if final:
                 p["status"] = "landed"
             p["updated"] = stamp()
-            c.save(f"campaign: record {a.id} landed at {target[:12]}")
-            print(f"{a.id}: recorded {target[:12]}")
+            c.save(f"campaign: record {a.id} landed at {target[:12]}" + (" (unverified)" if unverified else ""))
+            print(
+                f"{a.id}: recorded {target[:12]}" + (f"; never verified: {'; '.join(unverified)}" if unverified else "")
+            )
             return 0
         if p["status"] not in ("active", "review"):
             die(f"{a.id} is {p['status']}")
@@ -1496,11 +1722,19 @@ def cmd_land(a: argparse.Namespace) -> int:
         target = rev(repo, a.upto) if a.upto else head
         if not ancestor(repo, target, head):
             die(f"{a.upto} is not on {p['branch']}")
+        if not final:
+            early = section(c.quest_file(a.id), "May land early").strip()
+            if not early or early.startswith("<") or re.match(r"none\b", early, re.I):
+                die(
+                    f"{a.id}'s quest file names nothing under 'May land early': the lead writes what may, before it lands"
+                )
+            if code_tree(repo, target) == code_tree(repo, head):
+                die(f"{a.upto} has the whole quest's code: land it without --upto")
         if git(checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) != main:
             die(f"{checkout} is not on {main}")
         if git(checkout, "status", "--porcelain", "--untracked-files=no"):
             die(f"{checkout} has uncommitted changes")
-        gaps = landing_gaps(c, a.id, target, final=final, ci=not a.no_ci)
+        gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
             die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
         evidence = check_evidence(c, p, target)[1]
@@ -1516,6 +1750,7 @@ def cmd_land(a: argparse.Namespace) -> int:
             "evidence": evidence,
             "mode": mode,
             "at": stamp(),
+            **({"ci_skipped": a.no_ci} if a.no_ci and c.state.get("ci") else {}),
         }
         write_json(c.path, c.state)
         before = rev(checkout, "HEAD")
@@ -1642,15 +1877,54 @@ def section(text: str, title: str) -> str:
     return m.group(1) if m else ""
 
 
-def criteria(c: Campaign, pid: str) -> dict[str, str]:
-    """A quest's acceptance criteria (A1, A2, ...) and the first line of each, from its quest file."""
+PROOF = ("job", "artifact", "decision", "manual")  # what a criterion's evidence must be; job by default
+
+
+def criteria(c: Campaign, pid: str) -> dict[str, Json]:
+    """A quest's acceptance criteria (A1, A2, ...) from its quest file: the first line of each and the
+    kind of evidence it needs, `- A2 [artifact] ...` (job when untagged)."""
     brief = c.home / c.meta / "quests" / f"{pid}.md"
     text = section(brief.read_text() if brief.exists() else "", "Acceptance criteria")
-    found: dict[str, str] = {}
-    for cid, line in re.findall(r"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(.*)$", text, re.M):
+    found: dict[str, Json] = {}
+    tags = "|".join(PROOF)
+    for cid, kind, line in re.findall(rf"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$", text, re.M):
         if not line.startswith("<"):  # the template's unfilled placeholder
-            found.setdefault(cid, line.strip())
+            found.setdefault(cid, {"text": line.strip(), "kind": kind or "job"})
     return found
+
+
+def decisions(c: Campaign) -> set[str]:
+    """The ids in PLAN.md's Decisions table: what a [decision] criterion's evidence names."""
+    plan = c.home / c.meta / "PLAN.md"
+    rows = section(plan.read_text() if plan.exists() else "", "Decisions").splitlines()
+    ids = (r.strip().strip("|").split("|")[0].strip() for r in rows if r.startswith("|"))
+    return {x for x in ids if x and x.lower() != "id" and not set(x) <= set("-: ")}
+
+
+def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], list[str]]:
+    """What keeps an Evidence row's text from proving a criterion of a kind, at one of these commits:
+    a job criterion needs a job that passed at the code; an artifact one a `path` in the commit; a
+    decision one an id from PLAN.md's Decisions table; a manual one only a non-empty row. Every job a row
+    names must have passed, whatever its kind."""
+    job = job_problem(repo, commits)
+    recorded = decisions(c)
+
+    def check(kind: str, text: str) -> list[str]:
+        cited = list(dict.fromkeys(JOB_ID.findall(text)))
+        why = [w for w in map(job, cited) if w]
+        if kind == "job" and not cited:
+            why.append("names no job (a job criterion needs a job id; tag it [manual] or [artifact] otherwise)")
+        elif kind == "artifact":
+            paths = re.findall(r"`([^`\s]+)`", text)
+            missing = [x for x in paths if not any(git_ok(repo, "cat-file", "-e", f"{k}:{x}") for k in commits)]
+            why += [f"{x} is not in {commits[0][:12]}" for x in missing] if commits else []
+            if not paths:
+                why.append("names no file (an artifact criterion names a `path` in the repository)")
+        elif kind == "decision" and not set(re.findall(r"[\w.-]+", text)) & recorded:
+            why.append("names no decision in PLAN.md's Decisions table")
+        return why
+
+    return check
 
 
 UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b", re.I)
@@ -1659,9 +1933,9 @@ UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b"
 JOB_ID = re.compile(r"\b\d{6}-\d{6}-[0-9a-f]{6}\b")
 
 
-def cited_jobs(commits: list[str]) -> Callable[[str], str]:
-    """What is wrong with a job an Evidence row cites; "" when it, or the same job rerun, passed at
-    the code of one of these commits (`campaign job rerun` makes that one command)."""
+def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
+    """What is wrong with a job as evidence; "" when it, or the same job rerun, passed at the code of
+    one of these commits in REPO (`campaign job rerun` makes that one command)."""
 
     def problem(jid: str) -> str:
         d = jobs_dir() / jid
@@ -1673,6 +1947,8 @@ def cited_jobs(commits: list[str]) -> Callable[[str], str]:
             return f"{jid} {state or 'has no result'}"
         if not job["spec"].get("commit"):
             return f"{jid} is unversioned"
+        if repo is not None and not same_repo(Path(job["spec"]["repo"]), repo):
+            return f"{jid} ran in {job['spec']['repo']}, not the quest's repository"
         for commit in commits:
             with contextlib.suppress(CampaignError, KeyError):
                 twin = job_with_key({**job["spec"], "commit": commit})
@@ -1684,12 +1960,12 @@ def cited_jobs(commits: list[str]) -> Callable[[str], str]:
 
 
 def evidence(
-    journals: dict[str, str], ids: list[str], cited: Callable[[str], str] | None = None
+    journals: dict[str, str], wanted: dict[str, Json], check: Callable[[str, str], list[str]] | None = None
 ) -> dict[str, list[Json]]:
     """Each criterion's rows in the journals' Evidence tables (the quest's and its tasks'): which
-    journal, what it cites, and whether that is evidence, a row whose other cells are not empty, a
-    <placeholder>, pending or failed, and whose cited jobs (checked by `cited`) all passed at the code."""
-    rows: dict[str, list[Json]] = {x: [] for x in ids}
+    journal, what it cites, and whether that is evidence: a row whose other cells are not empty, a
+    <placeholder>, pending or failed, and that `check` finds proves its criterion's kind."""
+    rows: dict[str, list[Json]] = {x: [] for x in wanted}
     for name, text in journals.items():
         for row in section(text, "Evidence").splitlines():
             cells = [x.strip() for x in row.strip().strip("|").split("|")]
@@ -1697,9 +1973,9 @@ def evidence(
                 continue
             rest = [x for x in cells[1:] if x]
             met = bool(rest) and not any(UNMET.match(x) or set(x) <= set("-: ") for x in rest)
-            why = [w for w in map(cited, dict.fromkeys(JOB_ID.findall(" ".join(rest)))) if w] if met and cited else []
             for cid in re.findall(r"\bA\d+\b", cells[0]):
                 if cid in rows:
+                    why = check(wanted[cid]["kind"], " ".join(rest)) if met and check else []
                     rows[cid].append(
                         {"journal": name, "evidence": " | ".join(rest), "met": met and not why, "why": why}
                     )
@@ -1870,6 +2146,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
     keeps only what an agent acts on."""
     p = c.quests[pid]
     view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"], "missing": []}
+    view["weakened"] = [h for h in p.get("history", []) if h.get("weakened")]
     view["files"] = p["files"]
     unmet = [d for d in p["needs"] if not c.landed(d)]
     view["ready"] = p["status"] == "planned" and not unmet
@@ -1890,7 +2167,13 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         return False
 
     view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
-    view["landed"] = [x["commit"][:12] + ("" if x.get("final") else " (increment)") for x in p["landed"]]
+    view["landed"] = [
+        x["commit"][:12]
+        + ("" if x.get("final") else " (increment)")
+        + (f" (unverified: {'; '.join(x['unverified'])})" if x.get("unverified") else "")
+        + (f" (CI skipped: {x['ci_skipped']})" if x.get("ci_skipped") else "")
+        for x in p["landed"]
+    ]
     later = [load_job(jobs_dir() / j)["state"].get("state", "missing") for x in p["landed"] for j in x.get("later", [])]
     if later:
         view["deferred"] = {s: later.count(s) for s in sorted(set(later))}
@@ -1935,12 +2218,12 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         tasks = [w["state"] for name, w in work.items() if name != pid and not w["state"].startswith("dropped: ")]
         tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
         journals = {pid: journal, **{n: t for n, t in texts.items() if n != pid}}
-        rows = evidence(journals, list(wanted), cited_jobs(tips))
+        rows = evidence(journals, wanted, proof(c, repo, tips))
         view["progress"] = {
             "criteria": len(wanted),
             "met": [x for x, r in rows.items() if any(e["met"] for e in r)],
             "unlisted": [x for x, r in rows.items() if not r],
-            "detail": [{"id": x, "text": wanted[x], "rows": r} for x, r in rows.items()],
+            "detail": [{"id": x, **wanted[x], "rows": r} for x, r in rows.items()],
             "tasks": len(tasks),
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
@@ -1961,18 +2244,15 @@ def review_rows(c: Campaign) -> list[Json]:
     rows: list[Json] = []
     folder = c.home / c.meta / "reviews"
     for f in sorted(folder.glob("*.md")) if folder.exists() else []:
-        text = f.read_text()
-        m = re.search(r"^Verdict:\s*\**\s*(\w+)", text, re.M)
-        table = [r for r in text.splitlines() if r.startswith("|") and not re.match(r"^\|\s*(ID|-)", r)]
-        blocking = [r for r in table if re.match(r"^\|[^|]*\|\s*yes\s*\|", r, re.I)]
-        defects = [r for r in blocking if re.match(r"^\|[^|]*\|[^|]*\|\s*defect\s*\|", r, re.I)]
+        r = read_review(f.read_text())
+        blocking = [x for x in r["findings"] if x["blocking"]]
         rows.append(
             {
                 "file": f.name,
-                "verdict": m.group(1) if m else "?",
-                "findings": len(table),
+                "verdict": r["verdict"] or "?",
+                "findings": len(r["findings"]),
                 "blocking": len(blocking),
-                "blocking_defects": len(defects),
+                "blocking_defects": sum(1 for x in blocking if x["kind"] == "defect"),
             }
         )
     return rows
@@ -2038,7 +2318,8 @@ def print_criteria(pid: str, detail: list[Json]) -> None:
         state = "met" if any(r["met"] for r in d["rows"]) else "pending" if d["rows"] else "no row"
         style, emoji = {"met": ("green", "✅"), "pending": ("yellow", "⏳")}.get(state, ("dim", "⬜"))
         indent = len(lead) + pad + 15
-        print(f"    {mark(emoji)}{d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(d['text'], indent)}")
+        text = d["text"] if d.get("kind", "job") == "job" else f"[{d['kind']}] {d['text']}"
+        print(f"    {mark(emoji)}{d['id']:<{pad}}  {paint(f'{state:<7}', style)}  {fit(text, indent)}")
         for r in d["rows"]:
             where = "journal" if r["journal"] == pid else r["journal"].split("--", 1)[-1]
             line = f"{where}: {r['evidence']}" + (f" ({'; '.join(r['why'])})" if r.get("why") else "")
@@ -2061,6 +2342,13 @@ def task_mark(state: str) -> str:
 def print_quest(v: Json, full: bool) -> None:
     color, emoji = STAGES.get(v["status"], ("dim", "❔"))
     print(f"\n{mark(emoji)}{paint(v['id'], 'bold')}  {paint(v['status'], color)}  {v['risk']}  {v['title']}")
+    for h in v.get("weakened", []) if full else []:
+        voided = f"; voided {', '.join(h['voided'])}" if h.get("voided") else ""
+        print(
+            f"  {mark('⚠️')}"
+            + paint(f"weakened {h['at'][:16]}: {'; '.join(h['weakened'])}", "yellow")
+            + f" ({h['reason']}{voided})"
+        )
     g = v.get("progress")
     if g and (g["criteria"] or g["tasks"]):
         tasks = f"{g['tasks_done']} of {plural(g['tasks'], 'task')} complete" if g["tasks"] else ""
@@ -3917,6 +4205,9 @@ def parser() -> argparse.ArgumentParser:
         "change a quest's fields",
         "Sets a quest's fields: title, status, risk, reason, repo, milestone, needs, after, provides, consumes, "
         "files, lenses, and with --check or --later its checks. A blocked or dropped status needs reason=R. "
+        "Lowering the risk, removing a lens, or removing, changing or deferring a check needs --weaken REASON: "
+        "the change is recorded in the quest's history and voids its review acceptances; any risk change voids "
+        "them too. A risk's minimum reviews (a code review above low, a design review for critical) stay. "
         "With --task T: the task's files=GLOBS, or status=dropped reason=R. `campaign get ID` prints them.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
@@ -3924,6 +4215,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="the fields to set (lists comma-separated)")
     p.add_argument("--check", action="append", default=[], metavar=check, help="replace the gate checks")
     p.add_argument("--later", action="append", default=[], metavar=check, help="replace the deferred checks")
+    p.add_argument(
+        "--weaken",
+        metavar="REASON",
+        help="needed to lower the risk, remove a lens, or remove, change or defer a check: recorded, voids acceptances",
+    )
     p.set_defaults(fn=cmd_set)
 
     p = command(
@@ -4000,16 +4296,31 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "accept",
-        "record a review lens as passed for the quest's current content",
-        "Records a review lens as accepted for the quest's current content: its changed files, its quest file "
-        "and its merge base. After a CHANGES verdict, --jobs names the jobs that confirmed each blocking fix; "
-        "--waive skips the review of a low or normal risk quest with strong evidence.",
+        "record a review lens as passed for the code it reviewed",
+        "Records a review lens as accepted: the committed review file, the quest file, and the quest's changed "
+        "files at the accepted commit. An APPROVE covers the code at the review's Commit: line (metadata-only "
+        "commits after it keep it). After CHANGES, --confirm names, for each blocking finding, jobs that passed "
+        "at the fixed code; a fix that changes files the review never saw needs the reviewer or --fix-scope. "
+        "--waive skips the review of a low or normal risk quest that has no review file.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("lens", metavar="LENS", choices=LENSES, help=f"the review: {', '.join(LENSES)}")
     p.add_argument("--commit", metavar="REF", help="the commit accepted (default: the branch head)")
-    p.add_argument("--jobs", metavar="JOBS", help="jobs that confirmed each blocking fix (needed after CHANGES)")
-    p.add_argument("--waive", metavar="REASON", help="no review: low or normal risk with strong evidence")
+    p.add_argument(
+        "--confirm",
+        action="append",
+        default=[],
+        metavar="FINDING=JOBS",
+        help="after CHANGES, for each blocking finding: jobs that passed at the fixed code (repeat per finding)",
+    )
+    p.add_argument(
+        "--fix-scope",
+        metavar="REASON",
+        help="the fix changes files the review never saw; why they add no mechanism (else the reviewer reviews the fix)",
+    )
+    p.add_argument(
+        "--waive", metavar="REASON", help="no review: low or normal risk with strong evidence, no review file"
+    )
     p.add_argument("--note", metavar="TEXT", help="a remark kept with the acceptance")
     p.set_defaults(fn=cmd_accept)
 
@@ -4025,8 +4336,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--upto", metavar="REF", help="land the branch up to this commit, as an increment")
     p.add_argument("--reason", metavar="TEXT", help="why the increment is safe to land alone")
     p.add_argument("--push", action="store_true", help="push main after landing")
-    p.add_argument("--no-ci", action="store_true", help="land without waiting for CI")
-    p.add_argument("--record", metavar="REF", help="record a landing that already happened")
+    p.add_argument("--no-ci", metavar="REASON", help="land without green CI, saying why (recorded with the landing)")
+    p.add_argument(
+        "--record", metavar="REF", help="record a landing that already happened (with --reason; unchecked gates kept)"
+    )
     p.set_defaults(fn=cmd_land)
 
     p = command(
