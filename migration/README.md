@@ -34,7 +34,9 @@ The whole procedure, in order. `checklist.md` has the detail of steps 4 to 7.
    `git worktree list` outside the repository.
 5. Create its campaign: a pre-release campaign in `docs/campaign/` is moved in place, with its
    registry entry renamed and its jobs retagged (Detent); otherwise `campaign init --name NAME`
-   (Xapiand). Set `ci=github` where landing needs green CI.
+   (Xapiand). Set `ci=github` where landing needs green CI. Through step 8, export
+   `CAMPAIGN_NO_COMMIT=1`: the tool writes its state without a commit per change, and the
+   migration lands as one commit of `.campaign/NAME` and the history marks.
 6. Map the work: `PLAN.md` from the lead's plan (goals, milestones with their validation,
    decisions); each workstream a planned quest with its milestone, its branch created for
    adoption in its own repository (`git -C REPO branch quest/NAME/ID BRANCH`), its ledger's

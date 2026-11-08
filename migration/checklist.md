@@ -16,7 +16,9 @@ rolling back is a matter of links.
 2. **Install** (`install.sh --dry-run`, then `install.sh`), remove `~/.local/bin/lease`, restart
    sessions. Do it for every session on the machine at once: the old `quiet` reads the new
    `<name>.starving` marker as a strict hold.
-3. **Map the work** with `campaign init --name <name>` in the home repository, then:
+3. **Map the work** with `campaign init --name <name>` in the home repository, then (with
+   `CAMPAIGN_NO_COMMIT=1` exported, so the tool writes its state without a commit per change, and
+   the mapping lands as one commit of `.campaign/<name>` and the history marks):
    - a live workstream: `campaign new <id> ...`, `git branch quest/<name>/<id> <old-branch>`,
      `campaign start <id>` (it adopts the branch);
    - two branches building one outcome: one quest, the second branch adopted as a task
