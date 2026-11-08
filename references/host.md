@@ -25,7 +25,7 @@ campaign verify ID            # the quest's gate checks at its branch head (--al
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
 campaign job list | show J | log J | rerun J... | cancel J   # rerun: same jobs at the quest's head
-campaign usage [--json]       # agent runs and jobs per quest, role and class
+campaign usage [--json]       # agent runs and jobs per quest, role and assignment
 ```
 
 - **Identity.** A job runs at the commit resolved when it was submitted, in a fresh detached
