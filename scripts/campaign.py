@@ -47,9 +47,6 @@ LENSES = ("correctness", "security", "durability", "design", "system")
 CODE_LENSES = ("correctness", "security", "durability")  # lenses that review code, not a design
 ASSIGNMENTS = ("implementation", "design", "research", "performance", "exploration", "documentation", "maintenance")
 ROLES = ("contributor", "reviewer")
-# words of launch prompts and task names from before 2026-11-08, read only from usage logs
-OLD_NAMES = {"adventurer": "contributor", "paladin": "reviewer", "scout": "exploration", "sage": "design"}
-OLD_NAMES.update(wizard="research", artificer="performance", bard="documentation", squire="maintenance")
 LEVELS = ("none", "light", "strict", "exclusive")
 DEFAULT_LENSES: dict[str, list[str]] = {
     "low": [],
@@ -2609,17 +2606,11 @@ def print_problem(severity: str, message: str) -> None:
 
 # Usage: read from what the harnesses and jobs already record; agents write nothing for it.
 ROLE = re.compile(
-    r"You (?:are (?:the |an? )?(?:(?P<lens>\S+) )?(?P<role>contributor|reviewer|adventurer|paladin|scout)\b"
-    r"|(?P<resume>resume) quest )"
+    r"You (?:are (?:the |an? )?(?:(?P<lens>\S+) )?(?P<role>contributor|reviewer)\b|(?P<resume>resume) quest )"
 )
 QUEST = re.compile(r"\bquest (?P<id>[\w.-]+?)[:,.]?(?:\s|$)")
 NAMED = re.compile(r"\bcampaign (?P<name>[\w.-]+)(?: \((?P<home>[^)]+)\))?")
-ASSIGNMENT = re.compile(r"^(?:Assignment|Class): (\w+)", re.M)
-
-
-def assignment_of(word: str) -> str:
-    word = OLD_NAMES.get(word.lower(), word.lower())
-    return word if word in ASSIGNMENTS else "implementation"
+ASSIGNMENT = re.compile(r"^Assignment: (\w+)", re.M)
 
 
 def launch(prompt: str) -> Json | None:
@@ -2628,20 +2619,15 @@ def launch(prompt: str) -> Json | None:
         role, named = ROLE.search(line), NAMED.search(line)
         if role and named:
             quest, given = QUEST.search(line), ASSIGNMENT.search(prompt)
-            word = "contributor" if role["resume"] else role["role"]
-            kind = "reviewer" if OLD_NAMES.get(word, word) == "reviewer" else "contributor"
+            kind = "contributor" if role["resume"] else role["role"]
+            reviewer = kind == "reviewer"
+            assignment = given[1] if given and given[1] in ASSIGNMENTS else "implementation"
             return {
                 "role": kind,
                 "resume": bool(role["resume"]),
-                "lens": role["lens"] or "" if kind == "reviewer" else "",
+                "lens": role["lens"] or "" if reviewer else "",
                 "quest": quest["id"] if quest else "-",
-                "assignment": ""
-                if kind == "reviewer"
-                else "exploration"
-                if word == "scout"
-                else assignment_of(given[1])
-                if given
-                else "implementation",
+                "assignment": "" if reviewer else assignment,
                 "name": named["name"],
                 "home": named["home"] or "",
             }
@@ -2934,10 +2920,9 @@ def task_attribution(c: Campaign, task: str) -> Json | None:
     holds one of the campaign's quest or task ids as whole words (the longest wins); a lens marks a
     reviewer, and a quest or task without one its contributor. Parts of words are never guessed at."""
     words = task.lower().replace("_", "-").split("-")  # "--" leaves an empty word, as in task ids
-    first = OLD_NAMES.get(words[0], words[0])
-    role = first if first in ROLES else "contributor" if first == "exploration" else ""
+    role = words[0] if words[0] in ROLES else ""
     lens = next((w for w in words if w in LENSES), "")
-    given = next((OLD_NAMES.get(w, w) for w in words[1:] if OLD_NAMES.get(w, w) in ASSIGNMENTS), "")
+    given = next((w for w in words[1:] if w in ASSIGNMENTS), "")
 
     def holds(ident: str) -> bool:
         part = ident.split("-")
@@ -2955,7 +2940,7 @@ def task_attribution(c: Campaign, task: str) -> Json | None:
     if not role:
         return None
     reviewer = role == "reviewer"
-    assignment = "" if reviewer else "exploration" if first == "exploration" else given or "implementation"
+    assignment = "" if reviewer else given or "implementation"
     return {"role": role, "quest": quest, "assignment": assignment, "lens": lens if reviewer else ""}
 
 

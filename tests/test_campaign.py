@@ -996,7 +996,6 @@ class Usage(CampaignCase):
         self.codex_log("agent", "agent")
         u = json.loads(self.ok(self.home, "usage", "--json").out)
         (run,) = u["runs"]
-        # the fixture is a log from before the renaming: "adventurer", "Class: Artificer"
         self.assertEqual((run["role"], run["assignment"], run["quest"]), ("contributor", "performance", "fix"))
         self.assertEqual(
             (run["model"], run["effort"], run["tokens"], run["seconds"]), ("gpt-6-astra", "high", 1200, 120)
@@ -1038,8 +1037,13 @@ class Usage(CampaignCase):
 
     def test_codex_runs_are_attributed_by_task_name_when_the_prompt_is_encrypted(self) -> None:
         self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low")
-        names = ("contributor_fix_performance", "adventurer_fix_artificer", "reviewer_fix_security", "fix_security")
-        names += ("night_fix_v2", "night_security")
+        names = (
+            "contributor_fix_performance",
+            "reviewer_fix_security",
+            "fix_security",
+            "night_fix_v2",
+            "night_security",
+        )
         names += ("fixer", "builder")
         for task in names:
             log = self.codex_log("agent", task)  # no parent log: the launch prompt is unreadable
@@ -1050,7 +1054,6 @@ class Usage(CampaignCase):
             got,
             {
                 "contributor_fix_performance": ("contributor", "fix", "performance", ""),
-                "adventurer_fix_artificer": ("contributor", "fix", "performance", ""),  # a name from before
                 "reviewer_fix_security": ("reviewer", "fix", "", "security"),
                 "fix_security": ("reviewer", "fix", "", "security"),  # a lens marks a reviewer
                 "night_fix_v2": ("contributor", "fix", "implementation", ""),  # the quest's id as a whole word
@@ -1171,7 +1174,7 @@ class Usage(CampaignCase):
                     10,
                 ),
                 (f"You resume quest fix of campaign demo ({home}) after the previous contributor stopped.", "a2", 4),
-                (f"You are the correctness paladin for quest fix of campaign demo ({home}). You have not", "p1", 6),
+                (f"You are the correctness reviewer for quest fix of campaign demo ({home}). You have not", "p1", 6),
                 ("You are researching orchestration systems for a campaign skill.", "x1", 99),
                 ("You are the contributor for quest fix of campaign other (/elsewhere).", "o1", 50),
             ],
@@ -1179,7 +1182,7 @@ class Usage(CampaignCase):
         )
         self.copilot_session("unrelated", [("Explore the repository.", "u1", 70)], lead_cost=77)
         old = self.copilot_session(
-            "before-init", [(f"You are the adventurer for quest fix of campaign demo ({home}).", "z1", 33)], 0
+            "before-init", [(f"You are the contributor for quest fix of campaign demo ({home}).", "z1", 33)], 0
         )
         os.utime(old, (0, 0))
         u = json.loads(self.ok(self.home, "usage", "--json").out)
@@ -1189,7 +1192,7 @@ class Usage(CampaignCase):
             [
                 ("contributor", "", "implementation", "fix", 4),
                 ("contributor", "", "performance", "fix", 10),
-                ("reviewer", "correctness", "", "fix", 6),  # "the correctness paladin": a prompt from before
+                ("reviewer", "correctness", "", "fix", 6),
             ],
         )
         first = next(r for r in u["runs"] if r["agent"] == "a1")

@@ -10,8 +10,7 @@ How machine work runs. Rules about when to use what are in SKILL.md; this is the
 `~/.claude/agents` when Claude Code is installed, and generates the Copilot and Codex agent files
 for the harnesses installed. It replaces only links into a campaign checkout and dangling ones;
 anything else in the way is reported and kept. `--dry-run` prints what it would change, `--check`
-reports what is missing (and 1.x's `lease`, if installed), `--uninstall` removes only what it
-linked and generated. Without it, run `python3 <skill>/scripts/campaign.py` and `python3
+reports what is missing, `--uninstall` removes only what it linked and generated. Without it, run `python3 <skill>/scripts/campaign.py` and `python3
 <skill>/scripts/quiet.py` directly. `campaign` needs only `python3` (3.9 or newer) and `git` (2.31
 or newer).
 

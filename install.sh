@@ -4,7 +4,7 @@
 # ones; anything else in the way is reported and left alone.
 #   install.sh              link everything
 #   install.sh --dry-run    print what it would change, change nothing
-#   install.sh --check      exit 1 when a link is missing or points elsewhere, or 1.x's lease is installed
+#   install.sh --check      exit 1 when a link is missing or points elsewhere
 #   install.sh --uninstall  remove what it linked and generated, nothing else
 set -euo pipefail
 repo=$(cd "$(dirname "$0")" && pwd)
@@ -63,9 +63,6 @@ case $mode in
 	--uninstall) act "$repo/scripts/sync-agents.py" --remove ;;
 	*) act "$repo/scripts/sync-agents.py" ;;
 esac
-if [ "$mode" = --check ] && command -v lease > /dev/null; then
-	echo "lease (campaign 1.x's cloud provisioning) is installed at $(command -v lease): remove it"; bad=1
-fi
 [ "$mode" = --uninstall ] && exit 0
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "add ~/.local/bin to PATH" >&2 ;; esac
 exit $bad

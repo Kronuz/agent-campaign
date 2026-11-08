@@ -57,11 +57,7 @@ class Install(unittest.TestCase):
         generated = sorted(p.name for p in copilot.glob("*.agent.md") if p.name != "mine.agent.md")
         self.assertEqual(generated, sorted(f"{p.stem}.agent.md" for p in (SKILL / "agents").glob("*.md")))
 
-        (bin_dir / "lease").write_text("#!/bin/sh\n")
-        (bin_dir / "lease").chmod(0o755)
-        check = self.install("--check")
-        self.assertEqual(check.returncode, 1)
-        self.assertIn("lease (campaign 1.x's cloud provisioning) is installed", check.stdout)
+        self.assertEqual(self.install("--check").returncode, 1)  # report and the agent file are still in the way
 
         self.assertEqual(self.install("--uninstall").returncode, 0)
         for gone in ("campaign", "quiet", "pace"):

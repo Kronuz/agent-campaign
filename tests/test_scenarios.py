@@ -285,9 +285,7 @@ class Scenarios(CampaignCase):
         self.assertFalse((SKILL / "scripts" / "lease.sh").exists())
         commands = self.ok(self.home, "--help").out
         self.assertNotRegex(commands, r"\b(lease|rent|cloud|provision)\b")
-        installer = (SKILL / "install.sh").read_text()
-        self.assertNotRegex(installer, r"(?m)^\s*link [^\n]*lease")  # it only checks that lease is gone
-        self.assertIn("command -v lease", installer)
+        self.assertNotIn("lease", (SKILL / "install.sh").read_text())
 
 
 if __name__ == "__main__":

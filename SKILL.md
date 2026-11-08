@@ -283,4 +283,4 @@ permission system denied an agent stays undone until the owner authorizes it.
 | `references/host.md` | for jobs, `quiet`, build slots, remote hosts and failure behavior |
 | `references/harness.md` | for launching, resuming and model tiers in Claude Code, Copilot CLI and Codex |
 | `references/lessons.md` | before changing a rule: the incidents behind them |
-| `references/migration.md` | when moving a project from campaign 1.x, or rolling back |
+| `references/migration.md` | once, to move a project from campaign 1.x (a temporary file) |
