@@ -307,6 +307,19 @@ class Prune(CampaignCase):
             all((keys.parent / os.readlink(k)).exists() for k in keys.iterdir()), "a key names a pruned job"
         )
         self.assertIn("reused", self.ok(self.home, "job", "submit", "--", "true 4").text)
+
+    def test_prune_keeps_a_landed_job_an_open_quest_reuses(self) -> None:
+        wt = self.started("a", files="app.py", check="unit=python3 app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("a")
+        self.ok(self.home, "land", "a")
+        (gate,) = [j["job"] for j in self.quest("a")["landed"][0]["evidence"]]
+        self.started("b", files="README.md", check="unit=python3 app.py")  # main's code: a's job is b's gate
+        self.assertIn("reused", self.ok(self.home, "verify", "b").out)
+        self.age(gate, 30)
+        self.ok(self.home, "job", "prune", "--days", "14")
+        self.assertTrue((self.root / "jobs" / gate).exists(), "b's gate evidence was pruned")
+        self.assertNotIn("no job", self.ok(self.home, "brief", "b").out)
         self.assertNotIn("reused", self.ok(self.home, "job", "submit", "--sync", "--", "true 3").text)
 
 

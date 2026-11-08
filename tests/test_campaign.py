@@ -11,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from harness import CAMPAIGN, CampaignCase, campaign_module
 
@@ -589,6 +590,31 @@ class ReviewBinding(CampaignCase):
             + "| C1 | yes | defect | leak | p | f |\n"
         )
         self.git(self.home, "commit", "-qam", "the reviewer changed its ruling")
+        self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
+
+    def test_an_acceptance_names_the_review_it_read(self) -> None:
+        """A review rewritten while `accept` runs is not accepted under the verdict read before it."""
+        self.feature()
+        self.review("feat", "correctness", "APPROVE")
+        path = self.home / ".campaign/demo/reviews/feat-correctness.md"
+        campaign = campaign_module()
+        parse = campaign.read_review
+
+        def read_then_rewrite(text: str) -> Any:
+            parsed = parse(text)
+            path.write_text(text.replace("Verdict: APPROVE", "Verdict: REJECT"))
+            return parsed
+
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.home)
+            with (
+                mock.patch.dict(os.environ, self.env, clear=True),
+                mock.patch.object(campaign, "read_review", read_then_rewrite),
+            ):
+                self.assertEqual(campaign.main(["accept", "feat", "correctness"]), 0)
+        finally:
+            os.chdir(cwd)
         self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
 
     def test_a_waiver_never_overrides_a_review(self) -> None:
@@ -1190,6 +1216,9 @@ class Integration(CampaignCase):
         self.verified("fix")
         self.fake_gh('[{"name": "build", "status": "completed", "conclusion": "failure"}]')
         self.fails(self.home, "land", "fix", "--no-ci")
+        for blank in ("", "  "):
+            self.fails(self.home, "land", "fix", "--no-ci", blank, match="--no-ci needs a reason")
+            self.fails(self.home, "set", "fix", "risk=low", "--weaken", blank, match="--weaken needs a reason")
         self.ok(self.home, "land", "fix", "--no-ci", "the runner pool is down; the build passed locally as a job")
         self.assertIn("runner pool is down", self.quest("fix")["landed"][0]["ci_skipped"])
 
@@ -1511,6 +1540,17 @@ class Recovery(CampaignCase):
         record = self.quest("done")["landed"][0]
         self.assertEqual(record["unverified"], ["unit: no job"])  # what the landing never checked
         self.assertIn("unverified: unit: no job", self.ok(self.home, "status", "done").out)
+        wt = self.started("rec", files="lib/**", risk="normal", check="unit=true")
+        head = self.commit(wt, {"lib/util.py": "X = 9\n"})
+        self.verified("rec")
+        self.review("rec", "correctness", "APPROVE")
+        self.ok(self.home, "accept", "rec", "correctness")
+        self.review("rec", "correctness", "REJECT")  # after acceptance, which no longer holds
+        self.git(self.home, "merge", "-q", "--no-ff", "-m", "by hand", head)
+        self.ok(self.home, "land", "rec", "--record", head, "--reason", "merged by hand")
+        unverified = self.quest("rec")["landed"][0]["unverified"]
+        self.assertEqual(len(unverified), 1, unverified)
+        self.assertIn("correctness review changed after it was accepted", unverified[0])
 
     def test_contracts_with_two_providers_are_reported(self) -> None:
         self.ok(self.home, "new", "a", "--title", "a", "--provides", "api:store")

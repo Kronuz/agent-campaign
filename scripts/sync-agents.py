@@ -31,7 +31,12 @@ environment:
   COPILOT_MODEL_<FAMILY>  overrides a model mapping (e.g. COPILOT_MODEL_OPUS=claude-opus-5.5)
 """
 MARK = "by agent-campaign sync-agents.py"
-OURS = re.compile(r"by agent-campaign sync-agents\.(py|sh)|by campaign/scripts/sync-agents\.sh")
+# the generated line itself, whole, never a mention of the tool elsewhere in a file
+OURS = re.compile(
+    r"^(?:<!-- |# )Generated from agents/[\w.-]+\.md by (?:agent-campaign sync-agents\.(?:py|sh)"
+    r"|campaign/scripts/sync-agents\.sh); edit the source\.(?: -->)?$|^<!-- by campaign/scripts/sync-agents\.sh -->$",
+    re.MULTILINE,
+)
 MODELS = {"opus": "claude-opus-5.5", "sonnet": "claude-sonnet-5.5", "haiku": "claude-haiku-5.5"}
 
 

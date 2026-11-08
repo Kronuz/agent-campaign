@@ -1267,6 +1267,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
         path = review_path(c, a.id, a.lens)
         rel = path.relative_to(c.home)
         r: Json = {"verdict": "", "commit": "", "findings": []}
+        data = b""
         reviewed = ""
         findings: dict[str, Json] = {}
         fix_scope: Json = {}
@@ -1280,7 +1281,8 @@ def cmd_accept(a: argparse.Namespace) -> int:
         else:
             if not path.exists():
                 die(f"no review at {rel} (or --waive REASON)")
-            r = read_review(path.read_text())
+            data = path.read_bytes()  # parsed and identified from one read
+            r = read_review(data.decode(errors="replace"))
             blocking = [f["id"] for f in r["findings"] if f["blocking"]]
             if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
                 die(
@@ -1333,7 +1335,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
             "by": "waived" if a.waive else "review",
             "verdict": r["verdict"],
             "note": a.waive or a.note or "",
-            "review": "" if a.waive else review_identity(c, a.id, a.lens),
+            "review": "" if a.waive else blob_id(c.home, data),
             "reviewed": reviewed,
             "findings": findings,
             **({"fix_scope": fix_scope} if fix_scope else {}),
@@ -1484,10 +1486,17 @@ def read_review(text: str) -> Json:
     }
 
 
+def blob_id(repo: Path, data: bytes) -> str:
+    p = subprocess.run(["git", "-C", str(repo), "hash-object", "--stdin"], input=data, capture_output=True)
+    if p.returncode != 0:
+        die(f"git hash-object: {p.stderr.decode(errors='replace').strip()}")
+    return p.stdout.decode().strip()
+
+
 def review_identity(c: Campaign, pid: str, lens: str) -> str:
     """The review file's git blob id: what an acceptance accepted, "" when there is none."""
     path = review_path(c, pid, lens)
-    return git(c.home, "hash-object", "--", str(path)) if path.exists() else ""
+    return blob_id(c.home, path.read_bytes()) if path.exists() else ""
 
 
 def verdict(c: Campaign, pid: str, lens: str) -> str:
@@ -1561,10 +1570,25 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     for missing in check_evidence(c, p, target)[0]:
         name, _, why = missing.partition(": ")
         gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
-    need = lens_floor(p["risk"], p["lenses"]) if final else []
+    gaps += review_gaps(c, pid, target, main_head) if final else []
+    if ci and c.state.get("ci") == "github":
+        state = ci_state(repo, target, c.state.get("ci_later", []))
+        if state != "success":
+            gaps.append(f"CI at {target[:12]}: {state} (--no-ci REASON to land without it)")
+    return gaps
+
+
+def review_gaps(c: Campaign, pid: str, target: str, main_head: str) -> list[str]:
+    """What the quest's reviews still lack for TARGET's code: a lens its risk requires, an acceptance,
+    or one that no longer holds (the quest file, the review, or the code changed since)."""
+    p = c.quests[pid]
+    repo = c.repo(p)
+    base = merge_base(repo, main_head, target)
+    gaps: list[str] = []
+    need = lens_floor(p["risk"], p["lenses"])
     if need:
         gaps.append(f"{p['risk']} risk needs {' and '.join(need)}: `campaign set {pid} lenses=...`")
-    for lens in p["lenses"] if final else []:
+    for lens in p["lenses"]:
         acc = p.get("accepted", {}).get(lens)
         if not acc:
             gaps.append(f"{lens} review not accepted: {review_step(verdict(c, pid, lens), pid, lens)}")
@@ -1584,12 +1608,9 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
                 gaps.append(f"{lens} was accepted at {acc['commit'][:12]}; changed since: {', '.join(moved_since[:8])}")
             elif upstream and p["risk"] in ("high", "critical"):
                 gaps.append(
-                    f"{lens}: {main} changed {plural(len(upstream), 'code file')} under this {p['risk']}-risk quest since its review (`git diff {acc.get('base', base)[:12]} {base[:12]}`); read them, then re-accept"
+                    f"{lens}: main changed {plural(len(upstream), 'code file')} under this {p['risk']}-risk quest "
+                    f"since its review (`git diff {acc.get('base', base)[:12]} {base[:12]}`); read them, then re-accept"
                 )
-    if ci and c.state.get("ci") == "github":
-        state = ci_state(repo, target, c.state.get("ci_later", []))
-        if state != "success":
-            gaps.append(f"CI at {target[:12]}: {state} (--no-ci REASON to land without it)")
     return gaps
 
 
@@ -1627,9 +1648,11 @@ def cmd_land(a: argparse.Namespace) -> int:
             if not a.reason:
                 die("--record needs --reason: how it landed without `campaign land`")
             final = rev(repo, p["branch"]) == target if p.get("branch") else True
-            unverified = check_evidence(c, p, target)[0] + [
-                f"{x} review not accepted" for x in p["lenses"] if final and x not in p.get("accepted", {})
-            ]
+            # the reviews as they stood against the code the branch started from
+            reviewed_from = p.get("base") or target
+            unverified = check_evidence(c, p, target)[0] + (
+                review_gaps(c, a.id, target, reviewed_from) if final else []
+            )
             p["landed"].append(
                 {
                     "commit": target,
@@ -3972,8 +3995,12 @@ def needed_jobs() -> tuple[set[str], set[tuple[str, str]], set[str]]:
                 continue
             open_quests.add((c.ident, pid))
             slots.add(f"{name}-{pid}")
+            repo = c.repo(p)
             for jname, branch, rel, _ in branches(c, pid):
                 named.update(JOB_ID.findall(journal_text(c, jname, branch, rel)))
+                if has_ref(repo, branch):  # its gates' evidence, whichever quest's job it was
+                    head = rev(repo, branch)
+                    named.update(j["id"] for j in (job_for_check(repo, head, x) for x in gates(p)) if j)
     return named, open_quests, slots
 
 
@@ -4552,9 +4579,10 @@ def parser() -> argparse.ArgumentParser:
         "prune",
         "delete old finished jobs nothing needs",
         "Deletes finished jobs that ended more than --days ago, except those of quests not landed or dropped "
-        "(in any campaign on this machine) and those a journal, review, landing or acceptance names; their kept "
-        "checkouts and identity links go with them, and so do build slots no open quest uses. Landing records "
-        "in state.json keep a summary of the evidence they relied on.",
+        "(in any campaign on this machine), the jobs that are an open quest's gate evidence, and those a journal, "
+        "review, deferred check or acceptance names; their kept checkouts and identity links go with them, and so "
+        "do build slots no open quest uses. A landed quest's gate jobs may go: its landing record in state.json "
+        "keeps their summary (job, commit, command, result).",
     )
     p.add_argument(
         "--days", type=float, default=14, metavar="N", help="keep jobs that ended within N days (default 14)"
@@ -4567,6 +4595,11 @@ def parser() -> argparse.ArgumentParser:
 
     add_help(sub, "campaign")
     return ap
+
+
+# options that bypass or weaken a safeguard: each needs a non-empty reason, which is recorded
+REASONS = {"no_ci": "--no-ci", "weaken": "--weaken", "waive": "--waive", "fix_scope": "--fix-scope"}
+REASONS.update(reason="--reason", force="--force")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4588,6 +4621,10 @@ def main(argv: list[str] | None = None) -> int:
         setattr(args, dest, [*getattr(args, dest), *extra])
     elif extra:
         ap.error(f"unrecognized arguments: {' '.join(extra)}")
+    for dest, flag in REASONS.items():
+        value = getattr(args, dest, None)
+        if isinstance(value, str) and not value.strip():
+            ap.error(f"{flag} needs a reason")
     try:
         return int(args.fn(args))
     except CampaignError as e:

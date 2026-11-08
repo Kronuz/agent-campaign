@@ -83,9 +83,10 @@ Retries are off by default because a command may not be safe to run twice; check
 
 `campaign job prune [--days N] [--dry-run]` deletes finished jobs that ended more than N days ago
 (14), with their kept checkouts and identity links, and build slots no open quest uses. It keeps
-every job of a quest not landed or dropped, in any campaign on the machine, and every job a
-journal, review, landing or acceptance names. A landing record in `state.json` keeps a summary of
-the evidence it relied on.
+every job of a quest not landed or dropped, in any campaign on the machine, every job that is an
+open quest's gate evidence (whichever quest submitted it), and every job a journal, review,
+deferred check or acceptance names. A landed quest's gate jobs may go; its landing record in
+`state.json` keeps their summary.
 
 ## quiet: host holds
 
