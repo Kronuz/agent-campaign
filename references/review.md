@@ -1,7 +1,7 @@
 # Review and proof
 
 What proves a claim, what each review lens asks, and how a review runs. Builders read the proof
-standards before writing tests; paladins read all of it.
+standards before writing tests; reviewers read all of it.
 
 ## Proof standards
 
@@ -41,9 +41,9 @@ timing-dependent coverage check reports what it reached and never fails the run.
 
 ## Lenses
 
-The paladin carries every question the game master names; the lens decides the emphasis. For
-critical quests and the plan challenge, the game master sends a paladin from another model family
-when the harness offers one (`references/harness.md`).
+The reviewer carries every question the lead names; the lens decides the emphasis. For critical
+quests and the plan challenge, the lead sends a reviewer from another model family when the harness
+offers one (`references/harness.md`).
 
 | Lens | Asks |
 |---|---|
@@ -55,19 +55,16 @@ when the harness offers one (`references/harness.md`).
 
 ## How a review runs
 
-1. **Start from the evidence.** List the criteria the journal's successful jobs already prove at
-   the reviewed commit. Reuse those results: an identical job returns the same record.
-2. **Probe the rest.** One probe per suspicion, as a job, kept under
-   `.scratch/review-<ID>-<lens>/` in the home checkout so a fix can be confirmed by rerunning it.
+1. **Start from the evidence.** `campaign status <ID>` lists each criterion with the jobs behind
+   it; list the criteria successful jobs already prove at the reviewed commit. Reuse those results:
+   an identical job returns the same record, so do not rebuild what one shows.
+2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
+   `.scratch/review-<ID>-<lens>/` in the home checkout: the lead confirms each fix by rerunning its
+   finding's probe at the fixed commit (`campaign accept --confirm`), with no second review.
    Build once with the sanitizer the risk needs; CI covers other platforms.
-3. **Stop at what blocks landing.** List non-blocking notes in a line each.
-4. **Write the review file** from `templates/review.md`: `Commit:`, `Verdict:` (APPROVE, CHANGES or
-   REJECT), the evidence relied on, what was checked, a findings table with Blocking (yes or no) and
-   Kind (defect, gap, nit), and "Not run".
-
-## Confirming fixes
-
-For each blocking finding the adventurer fixes, the game master reruns the paladin's probe (or the new test)
-as a job at the fixed commit, and its revert check where the finding was a defect, then
-`campaign accept ID LENS --jobs J1,J2`. No second review, unless the fix adds a mechanism or changes
-an assumption: then one review scoped to the fix. After two fix rounds, stop and re-plan.
+3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
+   blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
+4. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
+   `Verdict:` (APPROVE, CHANGES or REJECT), the evidence relied on, what was checked, a findings
+   table (ID, Blocking yes or no, Kind defect, gap or nit), and "Not run". An APPROVE has no
+   blocking row; a CHANGES has at least one.

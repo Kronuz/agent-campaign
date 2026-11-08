@@ -1,6 +1,6 @@
-# Wizard
+# Research
 
-A Wizard is sent rarely, one at a time, when the mechanism itself is the limit or for a long-lived
+A research assignment is rare, one at a time, when the mechanism itself is the limit or for a long-lived
 bet.
 
 - Start from the hard bound: what the hardware can do (memory bandwidth, cache sizes, branch and
@@ -15,4 +15,4 @@ bet.
   keep the losers' numbers.
 - Correctness and parity are non-negotiable; formats change only through a design review.
 - Write `docs/research/<piece>.md`: the bound, the survey with sources, each idea with its result,
-  and a recommendation a Sage or an Artificer can build.
+  and a recommendation a design or performance assignment can build.

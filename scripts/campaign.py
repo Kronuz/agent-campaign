@@ -39,14 +39,17 @@ META = ".campaign"  # .campaign/NAME/ holds a campaign's files in its home repos
 LEGACY_META = "docs/campaign"  # where an older campaign keeps them until `campaign migrate`
 EXCLUDE_META = (f":(exclude){META}", f":(exclude){LEGACY_META}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-GAME_MASTER_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")
+LEAD_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")  # the lead writes these, never a quest branch
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
 FLIGHT = ("active", "review", "blocked")  # in flight: started, neither landed nor dropped
 RISKS = ("low", "normal", "high", "critical")
 LENSES = ("correctness", "security", "durability", "design", "system")
 CODE_LENSES = ("correctness", "security", "durability")  # lenses that review code, not a design
-CLASSES = ("sage", "wizard", "artificer", "scout", "bard", "squire")
-ROLES = ("adventurer", "paladin", "scout")
+ASSIGNMENTS = ("implementation", "design", "research", "performance", "exploration", "documentation", "maintenance")
+ROLES = ("contributor", "reviewer")
+# words of launch prompts and task names from before 2026-11-08, read only from usage logs
+OLD_NAMES = {"adventurer": "contributor", "paladin": "reviewer", "scout": "exploration", "sage": "design"}
+OLD_NAMES.update(wizard="research", artificer="performance", bard="documentation", squire="maintenance")
 LEVELS = ("none", "light", "strict", "exclusive")
 DEFAULT_LENSES: dict[str, list[str]] = {
     "low": [],
@@ -271,9 +274,9 @@ def is_meta(path: str) -> bool:
     return meta_rel(path) is not None
 
 
-def game_master_file(path: str) -> bool:
+def lead_file(path: str) -> bool:
     rel = meta_rel(path)
-    return rel is not None and any(rel == o or (o.endswith("/") and rel.startswith(o)) for o in GAME_MASTER_FILES)
+    return rel is not None and any(rel == o or (o.endswith("/") and rel.startswith(o)) for o in LEAD_FILES)
 
 
 _cat: dict[str, tuple[int, subprocess.Popen[bytes]]] = {}
@@ -621,7 +624,7 @@ def register(name: str, home: Path) -> None:
 
 
 def notify(title: str, body: str) -> None:
-    """A notice in the patron's cmux feed; silent outside cmux."""
+    """A notice in the owner's cmux feed; silent outside cmux."""
     if os.environ.get("CMUX_WORKSPACE_ID"):
         report.notify(title, body)
 
@@ -856,7 +859,7 @@ def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
 
 
 def mailbox(c: Campaign, pid: str) -> Path:
-    """Where messages for a quest ("" for the campaign's game master) wait, in the home's .git: any
+    """Where messages for a quest ("" for the campaign's lead) wait, in the home's .git: any
     agent on the machine can leave one there without being the campaign's one writer."""
     common = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     folder = common / "campaign-mail" / c.state["campaign"]
@@ -869,7 +872,7 @@ def mailbox(c: Campaign, pid: str) -> Path:
 
 
 def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -> str:
-    """Leaves a message for a quest ("" for the game master) under a fresh id, and notifies."""
+    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies."""
     folder = mailbox(c, pid)
     folder.mkdir(parents=True, exist_ok=True)
     record = c.quests[pid] if pid else c.state
@@ -891,7 +894,7 @@ def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -
 
 
 def tell_peers(c: Campaign, pid: str) -> list[str]:
-    """Messages for the game masters of the other campaigns on this machine whose work a quest just
+    """Messages for the leads of the other campaigns on this machine whose work a quest just
     started overlaps: the same files in the same repository, or a contract one changes and the other
     consumes. Once per finding."""
     p = c.quests[pid]
@@ -931,7 +934,7 @@ def tell_peers(c: Campaign, pid: str) -> list[str]:
 
 
 def inbox(c: Campaign, pid: str) -> list[Json]:
-    """The open messages for a quest ("" for the game master), oldest first."""
+    """The open messages for a quest ("" for the lead), oldest first."""
     found: list[Json] = []
     folder = mailbox(c, pid)
     for f in folder.glob("*-*.json") if folder.is_dir() else []:
@@ -1312,7 +1315,7 @@ def cmd_start(a: argparse.Namespace) -> int:
     print(f"{name}: {branch} in {wt}")
     if not a.task:
         for peer in tell_peers(c, a.id):
-            print(f"told campaign {peer}'s game master that {a.id} overlaps its work (a message)")
+            print(f"told campaign {peer}'s lead that {a.id} overlaps its work (a message)")
     return 0
 
 
@@ -1571,8 +1574,8 @@ def review_step(said: str, pid: str, lens: str) -> str:
     if said == "REJECT":
         return "verdict REJECT; re-plan the quest"
     if said == "none yet":
-        return f"not reviewed yet; launch a {lens} paladin"
-    return f"its review has {said}; the paladin writes `Verdict: APPROVE|CHANGES|REJECT`"
+        return f"not reviewed yet; launch a {lens} reviewer"
+    return f"its review has {said}; the reviewer writes `Verdict: APPROVE|CHANGES|REJECT`"
 
 
 def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -> list[str]:
@@ -1593,9 +1596,9 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
             f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): rebase onto {main}, run `campaign verify {pid}`, then land"
         )
     paths = changed(repo, base, target)
-    owned = [x for x in paths if game_master_file(x)]
+    owned = [x for x in paths if lead_file(x)]
     if owned:
-        gaps.append(f"{p['branch']} edits the game master's files: {', '.join(owned)}")
+        gaps.append(f"{p['branch']} edits the lead's files: {', '.join(owned)}")
     stray = outside(paths, p["files"])
     if stray:
         gaps.append(
@@ -2050,9 +2053,9 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                 )
             against = rev(repo, main) if name == pid else rev(repo, p["branch"])
             paths = changed(repo, merge_base(repo, against, head), head)
-            owned = [x for x in paths if game_master_file(x)]
+            owned = [x for x in paths if lead_file(x)]
             if owned:
-                out.append(("warning", f"{name}: edits the game master's files {', '.join(owned[:5])}"))
+                out.append(("warning", f"{name}: edits the lead's files {', '.join(owned[:5])}"))
             code = [x for x in paths if not is_meta(x)]
             if p["files"]:
                 outside = [x for x in code if not any(fnmatch.fnmatch(x, g) for g in p["files"])]
@@ -2088,9 +2091,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                 for x in sorted(set(p["consumes"]) & set(q.get("provides", []))):
                     out.append(("warning", f"{pid}: contract {x} is changing in {name}:{qid}; build against its brief"))
                 for x in sorted(set(p["provides"]) & set(q.get("consumes", []))):
-                    out.append(
-                        ("warning", f"{pid}: changes contract {x}, which {name}:{qid} consumes; tell its game master")
-                    )
+                    out.append(("warning", f"{pid}: changes contract {x}, which {name}:{qid} consumes; tell its lead"))
     providers: dict[str, list[str]] = {}
     for pid, p in c.quests.items():
         if p["status"] != "dropped":
@@ -2471,7 +2472,7 @@ def print_brief(b: Json) -> None:
             f"jobs {jobs['queued']} queued, {jobs['running']} running"
         )
     for m in b.get("messages", []):
-        print(f"- {m['id']} for the game master, from {m['by']}: {m['text']}")
+        print(f"- {m['id']} for the lead, from {m['by']}: {m['text']}")
     if not b["quests"] and "counts" in b:
         print("nothing in flight or planned (`campaign new ID --title T` plans a quest)")
     for q in b["quests"]:
@@ -2560,7 +2561,7 @@ def show_status(a: argparse.Namespace) -> int:
         f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
     )
     for m in inbox(c, "") if not a.id else []:
-        print(f"  {mark('📨')}" + paint(f"{m['id']} for the game master, from {m['by']}", "yellow") + f": {m['text']}")
+        print(f"  {mark('📨')}" + paint(f"{m['id']} for the lead, from {m['by']}", "yellow") + f": {m['text']}")
     if not views:
         print("  no quests yet (`campaign new ID --title T` plans one)")
     if a.id:
@@ -2597,26 +2598,39 @@ def print_problem(severity: str, message: str) -> None:
 
 # Usage: read from what the harnesses and jobs already record; agents write nothing for it.
 ROLE = re.compile(
-    r"You (?:are (?:the |an? )?(?:(?P<lens>\S+) )?(?P<role>adventurer|paladin|scout)\b|(?P<resume>resume) quest )"
+    r"You (?:are (?:the |an? )?(?:(?P<lens>\S+) )?(?P<role>contributor|reviewer|adventurer|paladin|scout)\b"
+    r"|(?P<resume>resume) quest )"
 )
 QUEST = re.compile(r"\bquest (?P<id>[\w.-]+?)[:,.]?(?:\s|$)")
 NAMED = re.compile(r"\bcampaign (?P<name>[\w.-]+)(?: \((?P<home>[^)]+)\))?")
-CLASS = re.compile(r"^Class: (\w+)", re.M)
+ASSIGNMENT = re.compile(r"^(?:Assignment|Class): (\w+)", re.M)
+
+
+def assignment_of(word: str) -> str:
+    word = OLD_NAMES.get(word.lower(), word.lower())
+    return word if word in ASSIGNMENTS else "implementation"
 
 
 def launch(prompt: str) -> Json | None:
-    """The role, quest, class and campaign a launch prompt names (references/prompts.md)."""
+    """The role, quest, assignment and campaign a launch prompt names (references/prompts.md)."""
     for line in prompt.splitlines():
         role, named = ROLE.search(line), NAMED.search(line)
         if role and named:
-            quest, cls = QUEST.search(line), CLASS.search(prompt)
-            kind = "adventurer" if role["resume"] else role["role"]
+            quest, given = QUEST.search(line), ASSIGNMENT.search(prompt)
+            word = "contributor" if role["resume"] else role["role"]
+            kind = "reviewer" if OLD_NAMES.get(word, word) == "reviewer" else "contributor"
             return {
                 "role": kind,
                 "resume": bool(role["resume"]),
-                "lens": role["lens"] or "" if kind == "paladin" else "",
+                "lens": role["lens"] or "" if kind == "reviewer" else "",
                 "quest": quest["id"] if quest else "-",
-                "class": cls[1] if cls else "",
+                "assignment": ""
+                if kind == "reviewer"
+                else "exploration"
+                if word == "scout"
+                else assignment_of(given[1])
+                if given
+                else "implementation",
                 "name": named["name"],
                 "home": named["home"] or "",
             }
@@ -2634,7 +2648,7 @@ BREAKDOWN = ("cached_input_tokens", "cache_write_tokens", "output_tokens", "reas
 
 
 def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
-    """Agent runs and game master sessions from Copilot CLI's session events."""
+    """Agent runs and lead sessions from Copilot CLI's session events."""
     root = Path(os.environ.get("CAMPAIGN_COPILOT_LOGS") or Path.home() / ".copilot" / "session-state")
     runs: list[Json] = []
     sessions: list[Json] = []
@@ -2869,7 +2883,7 @@ def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
                     "home": meta.get("cwd", ""),
                     "quest": "-",
                     "role": "unattributed",
-                    "class": "",
+                    "assignment": "",
                     "lens": "",
                 }
             attribution = what
@@ -2899,19 +2913,20 @@ def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
 USAGE_READERS = {
     "copilot": copilot_runs,
     "codex": codex_runs,
-}  # harness -> reader(since) -> (agent runs, game master sessions)
+}  # harness -> reader(since) -> (agent runs, lead sessions)
 
 
 def task_attribution(c: Campaign, task: str) -> Json | None:
-    """Role, quest and class or lens from a launch's task name, for harnesses that keep only the
+    """Role, quest and assignment or lens from a launch's task name, for harnesses that keep only the
     name in plaintext (Codex, whose names allow only lowercase letters, digits and underscores):
-    `<role>_<quest>[_<class or lens>]`, `_` read as `-`. A name counts toward a quest when it holds
-    one of the campaign's quest or task ids as whole words (the longest wins); a lens marks a
-    paladin, and a quest or task without one its adventurer. Parts of words are never guessed at."""
+    `<role>_<quest>[_<assignment or lens>]`, `_` read as `-`. A name counts toward a quest when it
+    holds one of the campaign's quest or task ids as whole words (the longest wins); a lens marks a
+    reviewer, and a quest or task without one its contributor. Parts of words are never guessed at."""
     words = task.lower().replace("_", "-").split("-")  # "--" leaves an empty word, as in task ids
-    role = words[0] if words[0] in ROLES else ""
+    first = OLD_NAMES.get(words[0], words[0])
+    role = first if first in ROLES else "contributor" if first == "exploration" else ""
     lens = next((w for w in words if w in LENSES), "")
-    cls = next((w for w in words[1:] if w in CLASSES), "")
+    given = next((OLD_NAMES.get(w, w) for w in words[1:] if OLD_NAMES.get(w, w) in ASSIGNMENTS), "")
 
     def holds(ident: str) -> bool:
         part = ident.split("-")
@@ -2925,11 +2940,12 @@ def task_attribution(c: Campaign, task: str) -> Json | None:
     best = max(found.values(), default=0)
     quests = [pid for pid, n in found.items() if n == best]
     quest = quests[0] if len(quests) == 1 else "-"
-    role = role or ("paladin" if lens else "adventurer" if quest != "-" else "")
+    role = role or ("reviewer" if lens else "contributor" if quest != "-" else "")
     if not role:
         return None
-    paladin = role == "paladin"
-    return {"role": role, "quest": quest, "class": "" if paladin else cls.capitalize(), "lens": lens if paladin else ""}
+    reviewer = role == "reviewer"
+    assignment = "" if reviewer else "exploration" if first == "exploration" else given or "implementation"
+    return {"role": role, "quest": quest, "assignment": assignment, "lens": lens if reviewer else ""}
 
 
 def usage(c: Campaign) -> Json:
@@ -2972,7 +2988,7 @@ def usage(c: Campaign) -> Json:
                 "ran": max(0.0, st["ended"] - st["began"]) if st.get("ended") and st.get("began") else 0.0,
             }
         )
-    return {"campaign": c.state["campaign"], "since": since, "runs": runs, "game_master": sessions, "jobs": jobs}
+    return {"campaign": c.state["campaign"], "since": since, "runs": runs, "lead": sessions, "jobs": jobs}
 
 
 def amount(n: float) -> str:
@@ -3025,14 +3041,14 @@ def cmd_usage(a: argparse.Namespace) -> int:
     if runs:
         table("by quest", lambda r: "(unattributed)" if r["quest"] == "-" else r["quest"])
         table(
-            "by role, class, model and effort",
+            "by role, assignment, model and effort",
             lambda r: " ".join(
                 x
                 for x in (
                     r["role"],
                     "resume" if r.get("resume") else "",
                     r["lens"],
-                    r["class"],
+                    r["assignment"],
                     r["task"] if r["role"] == "unattributed" else "",
                     r["model"],
                     r["effort"],
@@ -3055,9 +3071,9 @@ def cmd_usage(a: argparse.Namespace) -> int:
             print(
                 f"{labels[q]:<{width}}  {len(js):>4} {span(sum(j['ran'] for j in js)):>7} {span(sum(j['waited'] for j in js)):>7}"
             )
-    for s in u["game_master"]:
+    for s in u["lead"]:
         print(
-            f"\n{mark('🧙')}game master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens "
+            f"\nlead session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens "
             f"({cached_share([s])} cached input), cost {cost_of([s])} (the whole session, which may include other work)"
         )
     print(
@@ -3919,15 +3935,15 @@ def fetch_peers(c: Campaign) -> list[str]:
 
 
 def message_target(text: str) -> tuple[str, str]:
-    """(campaign name, quest id) from ID, NAME:ID, NAME: (its game master) or : (this campaign's)."""
+    """(campaign name, quest id) from ID, NAME:ID, NAME: (its lead) or : (this campaign's)."""
     name, sep, pid = text.rpartition(":")
     return (name, pid) if sep else ("", text)
 
 
 def cmd_message(a: argparse.Namespace) -> int:
-    """Sends a message to a quest or a game master, from anywhere; or (the game master) closes one."""
+    """Sends a message to a quest or a lead, from anywhere; or (the lead) closes one."""
     name, pid = message_target(a.quest)
-    whom = pid or "the game master"
+    whom = pid or "the lead"
     if a.close:
         if not a.reason:
             die("closing a message needs --reason R")
@@ -3974,10 +3990,10 @@ def cmd_message(a: argparse.Namespace) -> int:
         p = c.quest(pid)
         if p["status"] in ("landed", "dropped"):
             die(
-                f"{pid} is {p['status']}: a finding about it is a new quest; tell the game master (`campaign message {c.name}: ...`)"
+                f"{pid} is {p['status']}: a finding about it is a new quest; tell the lead (`campaign message {c.name}: ...`)"
             )
     nid = leave_message(c, pid, a.text, a.by)
-    then = "its journal answers it by that id, or the game master closes it" if pid else "the game master closes it"
+    then = "its journal answers it by that id, or the lead closes it" if pid else "the lead closes it"
     print(f"{nid} for {whom}: {then}")
     return 0
 
@@ -4113,7 +4129,7 @@ def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
 
 def wait_events(c: Campaign, timeout: float) -> int:
     """Returns at the first commit on a quest branch in flight or job of this campaign that ended
-    since the game master last saw them (recorded in the home's .git), so nothing that happens
+    since the lead last saw them (recorded in the home's .git), so nothing that happens
     between two waits is missed; then lists what is still in flight, to wait for next."""
     seen_file = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-seen.json"
     records: Json = (read_json(seen_file) if seen_file.exists() else None) or {}
@@ -4183,7 +4199,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for key in arrived:
         n = waiting[key]
         target = key.split()[0]
-        whom = f" for the game master, from {n['by']}" if target.endswith(":") else f" from {n['by']}"
+        whom = f" for the lead, from {n['by']}" if target.endswith(":") else f" from {n['by']}"
         print(f"{target.rstrip(':')}: {n['id']}{whom}: {n['text']}")
     for jid in finished:
         s = job_summary(ended[jid])
@@ -4249,7 +4265,7 @@ EXAMPLES = """examples:
   campaign job submit --quest cart --level strict --minutes 10 -- ./bench.sh
   campaign verify cart && campaign wait --quest cart
   campaign accept cart correctness && campaign land cart
-  campaign message shop:cart "totals round half-even" --from scout   # from anywhere on the machine"""
+  campaign message shop:cart "totals round half-even" --from explorer   # from anywhere on the machine"""
 
 
 def parser() -> argparse.ArgumentParser:
@@ -4273,7 +4289,7 @@ def parser() -> argparse.ArgumentParser:
         "start a campaign in this repository's main checkout",
         "Creates the campaign's directory (.campaign/NAME/: state.json and PLAN.md) in this repository's main "
         "checkout, registers it on this machine and commits it. This repository becomes the campaign's home; "
-        "the patron writes its goals in PLAN.md.",
+        "the owner writes its goals in PLAN.md.",
         parents=False,
     )
     p.add_argument("--name", help="campaign name, unique on this machine (default: the directory's)")
@@ -4298,7 +4314,7 @@ def parser() -> argparse.ArgumentParser:
         "new",
         "plan a quest",
         "Records a quest in state.json and writes its quest file (.campaign/NAME/quests/ID.md) from the "
-        "template. The game master fills in its outcome, acceptance criteria and contracts before it starts.",
+        "template. The lead fills in its outcome, acceptance criteria and contracts before it starts.",
     )
     p.add_argument("id", metavar="ID", help="the quest's id: lowercase letters, digits and single dashes")
     p.add_argument("--title", required=True, help="what it delivers, in a few words")
@@ -4398,8 +4414,8 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "usage",
-        "tokens, cost and time per quest, role and class",
-        "Agent runs and job time since the campaign began, per quest and per role, class, model and effort, "
+        "tokens, cost and time per quest, role and assignment",
+        "Agent runs and job time since the campaign began, per quest and per role, assignment, model and effort, "
         "read from the harnesses' session logs (Copilot CLI, Codex) and the job records. Tokens are cumulative "
         "(context rereads included); cost is in each harness's own unit.",
     )
@@ -4481,14 +4497,14 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "message",
-        "send a finding to a quest or a game master, from anywhere",
-        "Sends a message to a quest (ID, or NAME:ID from outside its home) or to a campaign's game master "
+        "send a finding to a quest or a lead, from anywhere",
+        "Sends a message to a quest (ID, or NAME:ID from outside its home) or to a campaign's lead "
         "(NAME:, or : for this campaign's), from anywhere on the machine. A quest's message stays open, shown by "
         "status and brief and blocking its landing, until one of its journals names the message's id or the "
-        "game master closes it; a game master's message until it is closed (--close MSG --reason R, from the "
+        "lead closes it; a lead's message until it is closed (--close MSG --reason R, from the "
         "home). For a campaign on another machine named in `campaign config peers`, the message goes to this "
-        "campaign's outbox, which `campaign wait` there fetches. Starting a quest sends a message to the game "
-        "masters of the other campaigns on this machine whose work it overlaps.",
+        "campaign's outbox, which `campaign wait` there fetches. Starting a quest sends a message to the "
+        "leads of the other campaigns on this machine whose work it overlaps.",
     )
     p.add_argument("quest", metavar="TARGET", help="ID, NAME:ID, NAME: or :")
     p.add_argument("text", metavar="TEXT", nargs="?", default="", help="what was found")
@@ -4499,7 +4515,7 @@ def parser() -> argparse.ArgumentParser:
         default=os.environ.get("USER", "someone"),
         help="who found it (default $USER)",
     )
-    p.add_argument("--close", metavar="MSG", help="close an open message (the game master)")
+    p.add_argument("--close", metavar="MSG", help="close an open message (the lead)")
     p.add_argument("--reason", metavar="TEXT", help="why it is closed")
     p.set_defaults(fn=cmd_message)
 

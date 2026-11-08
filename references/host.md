@@ -5,11 +5,15 @@ How machine work runs. Rules about when to use what are in SKILL.md; this is the
 
 ## Install
 
-`install.sh` links `campaign`, `quiet`, `pace` and `report` into `~/.local/bin` and
-the agent types into every installed harness; it never replaces a file it did not link. If one is
-missing, run `install.sh` again (ask the patron before removing anything in its way). Without it, run
-`python3 <skill>/scripts/campaign.py` and `python3 <skill>/scripts/quiet.py` directly. `campaign`
-needs only `python3` (3.9 or newer) and `git` (2.31 or newer).
+`install.sh` links the skill into `~/.agents/skills/campaign` (and `~/.claude/skills`), the tools
+`campaign`, `quiet`, `pace` and `report` into `~/.local/bin`, the agent types into
+`~/.claude/agents` when Claude Code is installed, and generates the Copilot and Codex agent files
+for the harnesses installed. It replaces only links into a campaign checkout and dangling ones;
+anything else in the way is reported and kept. `--dry-run` prints what it would change, `--check`
+reports what is missing (and 1.x's `lease`, if installed), `--uninstall` removes only what it
+linked and generated. Without it, run `python3 <skill>/scripts/campaign.py` and `python3
+<skill>/scripts/quiet.py` directly. `campaign` needs only `python3` (3.9 or newer) and `git` (2.31
+or newer).
 
 ## Jobs
 
@@ -28,15 +32,27 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
   checkout under `$CAMPAIGN_JOBS/<id>/src` (default `~/.scratch/campaign/jobs`), never in the
   agent's worktree. Extra commits, of this or another repository, are checked out at
   `$JOB_REF_<NAME>`. `$JOB_OUT` is the attempt's output directory; `$JOB_SRC` the working directory.
-- **Reuse.** Host, toolchain fingerprint (`uname`, compiler and interpreter versions, plus the
-  output of `$CAMPAIGN_FINGERPRINT`), repository, commits, command, directory, level and `--env`
-  form the job's key. An identical job that is pending or succeeded is returned instead of rerun;
-  `--force` reruns. Name unpinned inputs (a dataset version, a download) in `--env` so they are part
-  of the key. Upgrading `campaign` can change how keys are computed; run `campaign verify` again
-  after an upgrade. A journal's Evidence row naming a job counts only while that job, or the same
-  job rerun, passed at the quest's current code.
-- **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; it is verified
-  clean at the job's commit before every run, and one job uses it at a time. `campaign verify` uses
+- **Reuse.** A job's key is the host, the toolchain fingerprint (`uname`, compiler and interpreter
+  versions found on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the
+  repository, the code (each commit's tree without `.campaign/`), refs, command, directory, level
+  and `--env`. The job runs with the submitter's PATH, whoever started the worker. An identical job
+  that is pending or succeeded is returned instead of rerun; `--force` reruns. What the key does
+  not see is the submitter's to name:
+
+  | Input | How it enters the identity |
+  |---|---|
+  | code, command, toolchain, host | the key |
+  | a dataset version, a download, a feature flag | `--env NAME=VERSION` |
+  | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
+  | a measurement | the key; a strict or exclusive job is self-contained (A and B in one job, `--ref base=`), so its result stands for that code, host and toolchain |
+  | files outside the checkout | not seen: `submit` warns about paths into jobs or worktrees; build them in the job |
+
+  Upgrading `campaign` can change how keys are computed; run `campaign verify` again after an
+  upgrade. A journal's Evidence row naming a job counts only while that job, or the same job rerun,
+  passed at the quest's current code.
+- **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
+  are verified clean at the job's commit before every run (untracked build outputs stay, which is
+  the point), and one job uses it at a time. `campaign verify` uses
   a slot per quest, except for critical quests and `--fresh`, which check out afresh.
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to a quarter of the CPUs' worth
@@ -53,7 +69,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
 | Event | What happens |
 |---|---|
 | Timeout (`--minutes` after the hold is granted) | TERM, then KILL after 10 s; state `timeout`, exit 124; never valid evidence |
-| Runner or worker killed, host suspended past 2 min | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt, and requeues it if `--retries` allows, else marks it `interrupted` |
+| Runner or worker killed, host suspended past a minute | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt's session (only if its leader is gone or is that runner: a reused pid is spared), and requeues it if `--retries` allows, else marks it `interrupted` |
 | Host rebooted | The same, without killing anything (the boot id changed, so old pids mean nothing) |
 | Command finished but the runner died before recording | The exit code was written first; the reaper records it |
 | An old runner wakes after its attempt was replaced | It no longer owns the attempt and writes nothing |
@@ -61,11 +77,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and class
 | Dependency (`--after`) failed | `skipped` |
 | Disk below 5 GiB | `quiet` admits nothing until space is freed |
 | No worker can run | `--sync` runs the job in the foreground through the same runner and records the same result |
+| A job's state file is corrupt | it counts as finished (`corrupt`), never as evidence |
 
 Retries are off by default because a command may not be safe to run twice; checks queued by
-`campaign verify` retry once. Old job directories can be deleted once their quest is landed and
-its deferred checks are green; the landing record in `state.json` keeps their summary, and
-`campaign check` warns that their evidence is gone.
+`campaign verify` retry once.
+
+`campaign job prune [--days N] [--dry-run]` deletes finished jobs that ended more than N days ago
+(14), with their kept checkouts and identity links, and build slots no open quest uses. It keeps
+every job of a quest not landed or dropped, in any campaign on the machine, and every job a
+journal, review, landing or acceptance names. A landing record in `state.json` keeps a summary of
+the evidence it relied on.
 
 ## quiet: host holds
 
@@ -114,9 +135,17 @@ outside a home, name it: `campaign -C HOME ...`, `--campaign NAME`, or `$CAMPAIG
 
 ## Messages
 
+`campaign message NAME:ID "text" --from WHO` leaves a message for a quest of any campaign on the
+machine (`ID` alone from the quest's own home or worktree); `NAME:` (`:` for your own campaign)
+leaves one for that campaign's lead. A quest's message blocks its landing until a journal names its
+id or the lead closes it (`campaign message ID --close msg-N --reason R`); a lead's message never
+blocks a landing and stays in `campaign brief` until closed (`campaign message : --close msg-N
+--reason R`). The tool sends one itself when another campaign starts a quest on your files or
+contracts: settle the order (`--after NAME:ID`) or confirm the two are independent, then close it.
+
 Messages wait in the home's `.git` (`campaign-mail/<campaign>/`), so any agent can leave one
-without being the campaign's one writer. A new one notifies the patron and wakes the game master's
-`campaign wait`; `campaign brief` lists it for the quest's adventurer and the game master. Landing
+without being the campaign's one writer. A new one notifies the owner and wakes the lead's
+`campaign wait`; `campaign brief` lists it for the quest's contributor and the lead. Landing
 moves a quest's answered and closed messages into its state.
 
 A campaign on another machine is reached as a peer: `campaign config peers=NAME=URL,...`, where
@@ -124,20 +153,19 @@ URL is a repository both machines can push to and fetch from. A message to `NAME
 for a peer goes into this campaign's outbox, a ref only it writes (`refs/campaign/outbox/<name>`),
 pushed to `outbox=REMOTE` (default `origin`). Each campaign's `campaign wait` fetches its peers'
 outboxes every minute and imports each message once; one for a quest the peer has landed or does
-not know goes to its game master. No receipt comes back: the sender learns the answer from the
-landed journal, or from the patron.
+not know goes to its lead. No receipt comes back: the sender learns the answer from the
+landed journal, or from the owner.
 
 ## Other tools
 
-- **ccache:** every CMake build goes through it (`~/.profile` sets the compiler launchers;
-  `~/.ccache/ccache.conf` shares entries across worktrees and job checkouts). An old build
-  directory needs a fresh configure to pick it up.
+- **Compiler caches** (ccache, sccache) are optional and work across job checkouts when configured
+  to share entries; jobs inherit the submitter's PATH, so a launcher found there is used.
 - **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
   it runs out before its reset, read from each harness's own records (`references/harness.md`).
   It is information for decisions (will this batch exhaust the week before the milestone?), never
   a reason to launch work. It does not see credits bought for Claude Code, so it can report a
-  window as spent while those credits still cover it: ask the patron before stopping work for it.
-- **`report`** draws the patron's sidebar progress and notifications (cmux; elsewhere the terminal
+  window as spent while those credits still cover it: ask the owner before stopping work for it.
+- **`report`** draws the owner's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). `campaign` and `quiet` keep it current by themselves: every state change and
   `campaign status` update the bar (the current milestone's quests), a `campaign-<name>` pill (the
   whole campaign) and a pill per quest in flight, sending only what changed; landings, blocked

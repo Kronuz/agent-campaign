@@ -1,21 +1,15 @@
 # {id}: journal
 
 State: working
-Quest: {brief} (the game master's; never edit it)
+Quest: {brief} (the lead's; never edit it)
 
-The adventurer keeps this journal current and commits it with the work, so a fresh adventurer can
-pick the quest up. `campaign status` reads State, the first step under Next, and the Evidence
-table, one row per criterion with its job id or test: that table is the quest's progress, and
-landing needs every criterion in it. A row naming a job counts while that job, or the same job
-rerun (`campaign job rerun`), passed at the quest's current code. Name each job you examined by its
-id, failures included; status lists the failed jobs no journal names yet. Answer each message
-`campaign brief` lists by naming its id (msg-N) with what you did. State is one of: working,
-waiting on jobs <ids>, ready for review, fixing <review>, blocked on <who>: <what> (say which
-criteria are done and which wait).
+Keep this current and commit it with the work, so a fresh contributor can continue. `campaign
+status` reads State, the first step under Next, and the Evidence table. State is one of: working,
+waiting on jobs <ids>, ready for review, fixing <findings>, blocked on <who>: <what>.
 
 ## Doing
 
-<The current step, precisely enough for a fresh adventurer to continue it.>
+<The current step, precisely enough for a fresh contributor to continue it.>
 
 ## Next
 
@@ -27,10 +21,14 @@ criteria are done and which wait).
 
 ## Evidence
 
-| Criterion | Evidence (job id, test, commit) |
+One row per criterion, with what its kind needs: a job id (it, or the same job rerun, passed at
+the current code), a `path`, a decision id, or for a [manual] one who checked what. Name every job
+you examined, failures included, and answer each message by its id (msg-N).
+
+| Criterion | Evidence |
 |---|---|
-| <A1> | <job id at the current code, or a test that fails without the change> |
+| <A1> | <job id at the current code> |
 
 ## Rulings I made
 
-<Decisions taken inside the quest's scope, so the paladin can check them.>
+<Decisions inside the quest's scope, so the reviewer can check them.>

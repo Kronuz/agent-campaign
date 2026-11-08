@@ -16,7 +16,7 @@ from harness import CAMPAIGN, CampaignCase, campaign_module
 
 
 class Quests(CampaignCase):
-    def test_wait_returns_when_an_adventurer_commits_its_journal(self) -> None:
+    def test_wait_returns_when_an_contributor_commits_its_journal(self) -> None:
         wt = self.started("fix", files="app.py")
         waiting = subprocess.Popen(
             [sys.executable, str(CAMPAIGN), "wait", "--commits", "--timeout", "60"],
@@ -28,12 +28,12 @@ class Quests(CampaignCase):
         time.sleep(2)
         self.assertIsNone(waiting.poll())  # nothing has happened yet
         journal = ".campaign/demo/journal/fix.md"
-        state = "State: blocked on the game master: the publication code\n"
+        state = "State: blocked on the lead: the publication code\n"
         self.commit(wt, {journal: state + (wt / journal).read_text().split("\n", 3)[-1]})
         out, _ = waiting.communicate(timeout=30)
         self.assertEqual(waiting.returncode, 0)
         self.assertIn("fix: quest/demo/fix moved to", out)
-        self.assertIn("journal: blocked on the game master: the publication code", out)
+        self.assertIn("journal: blocked on the lead: the publication code", out)
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
 
@@ -41,13 +41,13 @@ class Quests(CampaignCase):
         a = self.started("one", files="app.py")
         b = self.started("two", files="README.md")
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)  # starts from now
-        self.commit(a, {"app.py": "print(2)\n"})  # both adventurers finish while the game master is busy
+        self.commit(a, {"app.py": "print(2)\n"})  # both contributors finish while the lead is busy
         self.commit(b, {"README.md": "two\n"})
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
         self.assertIn("one: quest/demo/one moved to", out)
         self.assertIn("two: quest/demo/two moved to", out)
         self.assertIn("still in flight: one (working), two (working)", out)
-        self.commit(b, {"README.md": "two again\n"})  # lands while the game master handles the first two
+        self.commit(b, {"README.md": "two again\n"})  # lands while the lead handles the first two
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
         self.assertIn("two: quest/demo/two moved to", out)
         self.assertNotIn("one: quest/demo/one moved", out)
@@ -186,12 +186,12 @@ class Ownership(CampaignCase):
         self.verified("fix")
         self.fails(self.home, "land", "fix", match="outside its file set")
 
-    def test_landing_refuses_edits_to_the_game_masters_files(self) -> None:
+    def test_landing_refuses_edits_to_the_leads_files(self) -> None:
         wt = self.started("fix", files="app.py", check="unit=true")
         self.commit(wt, {".campaign/demo/quests/fix.md": "weakened criteria\n"})
         self.verified("fix")
-        self.fails(self.home, "land", "fix", match="game master's files")
-        self.assertIn("game master's files", self.ok(self.home, "check").out)
+        self.fails(self.home, "land", "fix", match="lead's files")
+        self.assertIn("lead's files", self.ok(self.home, "check").out)
 
     def test_check_reports_two_branches_changing_one_file(self) -> None:
         a = self.started("a", files="app.py")
@@ -380,7 +380,7 @@ class Evidence(CampaignCase):
         # the check passed, the probe did not, and no journal mentions it yet
         self.assertIn("jobs at this code: 1 passed, 1 failed; not in a journal yet (`campaign job log ID`):", out)
         self.assertIn(f"    {failed}  exit 1 at ", out)  # which job and what it ran
-        self.assertIn("0 of 1 criterion with evidence", out)  # the template's <criterion> is not one
+        self.assertNotIn("criterion with evidence", out)  # the template's <criterion> is not one
         self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
         self.assertIn(f"    {failed}  exit 1 at ", self.ok(self.home, "status").out)
         self.commit(wt, {".campaign/demo/journal/fix.md": f"{failed} ran the wrong command\n"})
@@ -555,7 +555,7 @@ class Reviews(CampaignCase):
         self.assertIn("rebase onto main", status)
         self.assertNotIn("changed since", status)  # the reviewed code did not change
         self.started("other", files="lib.py", risk="normal")
-        self.assertIn("not reviewed yet; launch a correctness paladin", self.ok(self.home, "status", "other").out)
+        self.assertIn("not reviewed yet; launch a correctness reviewer", self.ok(self.home, "status", "other").out)
         self.review("other", "correctness", "CHANGES")
         status = self.ok(self.home, "status", "other").out
         self.assertIn("correctness review not accepted: verdict CHANGES; fix what blocks", status)
@@ -579,7 +579,7 @@ class Reviews(CampaignCase):
         self.git(wt, "rebase", "-q", "main")
         self.verified("dur")
         self.fails(self.home, "land", "dur", match="re-accept")
-        self.ok(self.home, "accept", "dur", "correctness")  # the game master read the upstream diff
+        self.ok(self.home, "accept", "dur", "correctness")  # the lead read the upstream diff
         self.ok(self.home, "land", "dur")
 
     def test_review_counts_are_derived_from_review_files(self) -> None:
@@ -892,12 +892,12 @@ class Campaigns(CampaignCase):
         api = self.lib_quest(self.home, "api", "--files", "lib.py")
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
-        self.ok(elsewhere, "message", "demo:api", "the parser rejects tabs", "--from", "scout")
+        self.ok(elsewhere, "message", "demo:api", "the parser rejects tabs", "--from", "explorer")
         self.ok(api, "message", "api", "and spaces", "--from", "me")  # from its worktree in the library
         brief = self.ok(api, "brief").out
         self.assertTrue(brief.startswith("api active low: quest/demo/api at "), brief)
         self.assertIn("  files: lib.py\n", brief)
-        self.assertIn("  - msg-1 from scout: the parser rejects tabs\n", brief)
+        self.assertIn("  - msg-1 from explorer: the parser rejects tabs\n", brief)
         self.assertIn("  - msg-2 from me: and spaces\n", brief)
         self.assertEqual(self.ok(api, "get", "api", "repo").out, "../lib\n")
         job = self.submit(api, "--quest", "api", "--", "true")
@@ -931,10 +931,10 @@ class Campaigns(CampaignCase):
         )
         started = self.ok(self.other, "start", "use")
         self.assertIn("may overlap demo:api", started.err)
-        self.assertIn("told campaign demo's game master that use overlaps its work", started.out)
-        told = self.ok(self.home, "status").out  # demo's game master hears it from the tool
-        self.assertIn("msg-1 for the game master, from campaign other: other:use started and may change files", told)
-        self.assertIn("msg-2 for the game master, from campaign other: other:use started and builds against", told)
+        self.assertIn("told campaign demo's lead that use overlaps its work", started.out)
+        told = self.ok(self.home, "status").out  # demo's lead hears it from the tool
+        self.assertIn("msg-1 for the lead, from campaign other: other:use started and may change files", told)
+        self.assertIn("msg-2 for the lead, from campaign other: other:use started and builds against", told)
         mine, theirs = self.run_cli(self.home, "check").out, self.run_cli(self.other, "check").out
         self.assertIn("api: changes contract lib-api, which other:use consumes", mine)
         self.assertIn("api: files may overlap other:use", mine)
@@ -987,12 +987,13 @@ class Usage(CampaignCase):
         self.codex_log("agent", "agent")
         u = json.loads(self.ok(self.home, "usage", "--json").out)
         (run,) = u["runs"]
-        self.assertEqual((run["role"], run["class"], run["quest"]), ("adventurer", "Artificer", "fix"))
+        # the fixture is a log from before the renaming: "adventurer", "Class: Artificer"
+        self.assertEqual((run["role"], run["assignment"], run["quest"]), ("contributor", "performance", "fix"))
         self.assertEqual(
             (run["model"], run["effort"], run["tokens"], run["seconds"]), ("gpt-6-astra", "high", 1200, 120)
         )
         self.assertEqual((run["cached_input_tokens"], run["output_tokens"], run["cost"]), (800, 200, 0))
-        (lead,) = u["game_master"]
+        (lead,) = u["lead"]
         self.assertEqual(
             (lead["tokens"], lead["seconds"], lead["model"], lead["effort"]), (550, 180, "gpt-6.1-sol", "medium")
         )
@@ -1022,27 +1023,29 @@ class Usage(CampaignCase):
         (run,) = u["runs"]
         self.assertEqual((run["role"], run["quest"], run["tokens"]), ("unattributed", "-", 1200))
         # This parent is related by thread id even though its cwd differs.
-        self.assertEqual(len(u["game_master"]), 1)
+        self.assertEqual(len(u["lead"]), 1)
         other.write_text(other.read_text().replace('"lead"', '"unrelated"'))
-        self.assertEqual(json.loads(self.ok(self.home, "usage", "--json").out)["game_master"], [])
+        self.assertEqual(json.loads(self.ok(self.home, "usage", "--json").out)["lead"], [])
 
     def test_codex_runs_are_attributed_by_task_name_when_the_prompt_is_encrypted(self) -> None:
         self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low")
-        names = ("adventurer_fix_artificer", "paladin_fix_security", "fix_security", "night_fix_v2", "night_security")
+        names = ("contributor_fix_performance", "adventurer_fix_artificer", "reviewer_fix_security", "fix_security")
+        names += ("night_fix_v2", "night_security")
         names += ("fixer", "builder")
         for task in names:
             log = self.codex_log("agent", task)  # no parent log: the launch prompt is unreadable
             log.write_text(log.read_text().replace("/root/builder", f"/root/{task}").replace('"builder"', f'"{task}"'))
         u = json.loads(self.ok(self.home, "usage", "--json").out)
-        got = {r["task"]: (r["role"], r["quest"], r["class"], r["lens"]) for r in u["runs"]}
+        got = {r["task"]: (r["role"], r["quest"], r["assignment"], r["lens"]) for r in u["runs"]}
         self.assertEqual(
             got,
             {
-                "adventurer_fix_artificer": ("adventurer", "fix", "Artificer", ""),
-                "paladin_fix_security": ("paladin", "fix", "", "security"),
-                "fix_security": ("paladin", "fix", "", "security"),  # a lens marks a paladin
-                "night_fix_v2": ("adventurer", "fix", "", ""),  # the quest's id as a whole word
-                "night_security": ("paladin", "-", "", "security"),  # a role, but no quest named
+                "contributor_fix_performance": ("contributor", "fix", "performance", ""),
+                "adventurer_fix_artificer": ("contributor", "fix", "performance", ""),  # a name from before
+                "reviewer_fix_security": ("reviewer", "fix", "", "security"),
+                "fix_security": ("reviewer", "fix", "", "security"),  # a lens marks a reviewer
+                "night_fix_v2": ("contributor", "fix", "implementation", ""),  # the quest's id as a whole word
+                "night_security": ("reviewer", "-", "", "security"),  # a role, but no quest named
                 "fixer": ("unattributed", "-", "", ""),  # part of a word is not guessed at
                 "builder": ("unattributed", "-", "", ""),
             },
@@ -1154,14 +1157,14 @@ class Usage(CampaignCase):
             "s1",
             [
                 (
-                    f"---\nname: adventurer\n---\nYou are the adventurer for quest fix of campaign demo ({home}).\nClass: Artificer; your method",
+                    f"---\nname: campaign-contributor\n---\nYou are the contributor for quest fix of campaign demo ({home}).\nAssignment: performance; for any",
                     "a1",
                     10,
                 ),
-                (f"You resume quest fix of campaign demo ({home}) after the previous adventurer stopped.", "a2", 4),
+                (f"You resume quest fix of campaign demo ({home}) after the previous contributor stopped.", "a2", 4),
                 (f"You are the correctness paladin for quest fix of campaign demo ({home}). You have not", "p1", 6),
                 ("You are researching orchestration systems for a campaign skill.", "x1", 99),
-                ("You are the adventurer for quest fix of campaign other (/elsewhere).", "o1", 50),
+                ("You are the contributor for quest fix of campaign other (/elsewhere).", "o1", 50),
             ],
             lead_cost=5,
         )
@@ -1171,20 +1174,20 @@ class Usage(CampaignCase):
         )
         os.utime(old, (0, 0))
         u = json.loads(self.ok(self.home, "usage", "--json").out)
-        runs = sorted((r["role"], r["lens"], r["class"], r["quest"], r["cost"]) for r in u["runs"])
+        runs = sorted((r["role"], r["lens"], r["assignment"], r["quest"], r["cost"]) for r in u["runs"])
         self.assertEqual(
             runs,
             [
-                ("adventurer", "", "", "fix", 4),
-                ("adventurer", "", "Artificer", "fix", 10),
-                ("paladin", "correctness", "", "fix", 6),
+                ("contributor", "", "implementation", "fix", 4),
+                ("contributor", "", "performance", "fix", 10),
+                ("reviewer", "correctness", "", "fix", 6),  # "the correctness paladin": a prompt from before
             ],
         )
         first = next(r for r in u["runs"] if r["agent"] == "a1")
         self.assertEqual(
             (first["effort"], first["tokens"], first["seconds"], first["tool_calls"]), ("high", 1200, 120, 7)
         )
-        self.assertEqual([(s["session"], s["cost"]) for s in u["game_master"]], [("s1", 5)])
+        self.assertEqual([(s["session"], s["cost"]) for s in u["lead"]], [("s1", 5)])
         (job,) = u["jobs"]
         self.assertEqual((job["id"], job["quest"], job["state"]), (jid, "fix", "done"))
         self.assertGreaterEqual(job["ran"], 1)
@@ -1194,8 +1197,8 @@ class Usage(CampaignCase):
         self.assertEqual([r["agent"] for r in u["runs"] if r["resume"]], ["a2"])
         text = self.ok(self.home, "usage").out
         self.assertIn("recovery: 1 fresh resume, 1,200 tokens", text)
-        self.assertIn("adventurer Artificer claude-opus-5.5 high", text)
-        self.assertIn("paladin correctness claude-opus-5.5 high", text)
+        self.assertIn("contributor performance claude-opus-5.5 high", text)
+        self.assertIn("reviewer correctness claude-opus-5.5 high", text)
 
 
 class Integration(CampaignCase):
@@ -1258,7 +1261,7 @@ class Migration(CampaignCase):
         self.fails(self.home, "migrate", match="land or drop fix")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        self.ok(self.home, "message", "fix", "the older layout takes messages too", "--from", "scout")
+        self.ok(self.home, "message", "fix", "the older layout takes messages too", "--from", "explorer")
         self.fails(self.home, "land", "fix", match="unanswered messages: msg-1")
         self.commit(wt, {"docs/campaign/journal/fix.md": "msg-1: noted, nothing to change\n"})
         self.ok(self.home, "land", "fix")
@@ -1294,7 +1297,7 @@ class SharedHome(CampaignCase):
         self.env["CAMPAIGN"] = "perf"
         self.assertIn("campaign perf", self.ok(self.home, "status").out)
         self.env.pop("CAMPAIGN")
-        # each game master's wait sees only its campaign's events
+        # each lead's wait sees only its campaign's events
         for name in ("demo", "perf"):
             self.run_cli(self.home, "wait", "--commits", "--timeout", "1", "--campaign", name)
         self.commit(perf, {"app.py": "print('perf')\n"})
@@ -1321,12 +1324,12 @@ class SharedHomeMessages(CampaignCase):
         self.assertIn("msg-1 from b: for perf", seen)
         self.assertIn("msg-2 from c: from its own worktree", seen)
         self.assertNotIn("for demo", seen)
-        # starting perf:fix told demo's game master, whose work it overlaps, and nobody else
+        # starting perf:fix told demo's lead, whose work it overlaps, and nobody else
         self.assertIn(
-            "for the game master, from campaign perf: perf:fix started",
+            "for the lead, from campaign perf: perf:fix started",
             self.ok(self.home, "status", "--campaign", "demo").out,
         )
-        self.assertNotIn("for the game master", self.ok(self.home, "status", "--campaign", "perf").out)
+        self.assertNotIn("for the lead", self.ok(self.home, "status", "--campaign", "perf").out)
         # each campaign's outbox is its own ref
         bare = self.root / "remote.git"
         self.git(self.root, "init", "-q", "--bare", str(bare))
@@ -1356,26 +1359,26 @@ class Messages(CampaignCase):
         self.ok(elsewhere, "set", "fix", "risk=normal")
         self.assertEqual(self.quest("fix")["risk"], "normal")
         del self.env["CAMPAIGN_HOME"]
-        self.fails(wt, "set", "fix", "risk=high", match="run this there, or with -C")  # an adventurer never writes
+        self.fails(wt, "set", "fix", "risk=high", match="run this there, or with -C")  # an contributor never writes
         self.fails(elsewhere, "brief", "--campaign", "nope", match="no campaign nope here or on this machine")
         self.fails(elsewhere, "brief", match="pass -C DIR, --campaign NAME, or set CAMPAIGN_HOME")
 
-    def test_a_game_masters_message_shows_until_it_is_closed(self) -> None:
+    def test_a_leads_message_shows_until_it_is_closed(self) -> None:
         wt = self.started("fix", files="app.py")
         self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
-        sent = self.ok(elsewhere, "message", "demo:", "the CI runner moved", "--from", "patron").out
-        self.assertIn("msg-1 for the game master", sent)
+        sent = self.ok(elsewhere, "message", "demo:", "the CI runner moved", "--from", "owner").out
+        self.assertIn("msg-1 for the lead", sent)
         woke = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertIn("demo: msg-1 for the game master, from patron: the CI runner moved", woke)
-        self.assertIn("msg-1 for the game master, from patron: the CI runner moved", self.ok(self.home, "status").out)
-        self.assertIn("- msg-1 for the game master, from patron: the CI runner moved", self.ok(self.home, "brief").out)
-        self.assertNotIn("CI runner", self.ok(wt, "brief").out)  # an adventurer's brief is its quest's
+        self.assertIn("demo: msg-1 for the lead, from owner: the CI runner moved", woke)
+        self.assertIn("msg-1 for the lead, from owner: the CI runner moved", self.ok(self.home, "status").out)
+        self.assertIn("- msg-1 for the lead, from owner: the CI runner moved", self.ok(self.home, "brief").out)
+        self.assertNotIn("CI runner", self.ok(wt, "brief").out)  # an contributor's brief is its quest's
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        self.ok(self.home, "land", "fix")  # a game master's message blocks no quest
-        self.assertIn("msg-1 for the game master", self.ok(self.home, "brief").out)
+        self.ok(self.home, "land", "fix")  # a lead's message blocks no quest
+        self.assertIn("msg-1 for the lead", self.ok(self.home, "brief").out)
         self.fails(self.home, "message", ":", "--close", "msg-1", match="needs --reason")
         self.ok(self.home, "message", ":", "--close", "msg-1", "--reason", "updated the runbook")
         self.assertNotIn("CI runner", self.ok(self.home, "status").out)
@@ -1393,14 +1396,14 @@ class Messages(CampaignCase):
         self.env["CAMPAIGN_JOBS"] = str(self.root / "far-machine" / "jobs")  # its registry is beside it
         self.ok(far, "init", "--name", "far")
         self.ok(far, "config", f"peers=demo={self.root / 'demo.git'}")
-        sent = self.ok(far, "message", "demo:fix", "the encoder drops the last byte", "--from", "scout").out
+        sent = self.ok(far, "message", "demo:fix", "the encoder drops the last byte", "--from", "explorer").out
         self.assertIn("queued in far's outbox", sent)
         self.fails(far, "message", "nowhere:x", "text", match="no campaign nowhere on this machine or among the peers")
         self.env["CAMPAIGN_JOBS"] = here
         self.ok(self.home, "config", f"peers=far={bare}")
         self.env["CAMPAIGN_PEER_SECONDS"] = "0"
         woke = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertIn("fix: msg-1 from far: scout: the encoder drops the last byte", woke)
+        self.assertIn("fix: msg-1 from far: explorer: the encoder drops the last byte", woke)
         self.assertIn("unanswered messages: msg-1", self.ok(self.home, "brief").out)  # it gates like a local note
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "2").code, 3)  # fetched once
 
@@ -1408,26 +1411,26 @@ class Messages(CampaignCase):
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        self.run_cli(self.home, "wait", "--commits", "--timeout", "1")  # the game master has seen it all
+        self.run_cli(self.home, "wait", "--commits", "--timeout", "1")  # the lead has seen it all
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
-        r = self.ok(elsewhere, "message", "demo:fix", "util rounds wrong past 2^53", "--from", "scout hunt-lib")
+        r = self.ok(elsewhere, "message", "demo:fix", "util rounds wrong past 2^53", "--from", "explorer hunt-lib")
         self.assertIn("msg-1 for fix", r.out)
         woke = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertIn("fix: msg-1 from scout hunt-lib: util rounds wrong past 2^53", woke)
-        self.assertIn("msg-1 from scout hunt-lib", self.ok(self.home, "status").out)
+        self.assertIn("fix: msg-1 from explorer hunt-lib: util rounds wrong past 2^53", woke)
+        self.assertIn("msg-1 from explorer hunt-lib", self.ok(self.home, "status").out)
         self.fails(self.home, "land", "fix", match="unanswered messages: msg-1")
         self.commit(wt, {".campaign/demo/journal/fix.md": "msg-1: util.py is outside this quest; no change\n"})
         self.assertNotIn("msg-1 from", self.ok(self.home, "status").out)  # answered
         self.ok(self.home, "land", "fix")
         filed = self.quest("fix")["messages"]
-        self.assertEqual([(n["id"], n["by"]) for n in filed], [("msg-1", "scout hunt-lib")])
+        self.assertEqual([(n["id"], n["by"]) for n in filed], [("msg-1", "explorer hunt-lib")])
         self.assertTrue(filed[0]["answered"])
         self.fails(elsewhere, "message", "demo:fix", "late", match="fix is landed")
 
     def test_the_game_master_closes_a_message_with_a_reason(self) -> None:
         self.started("fix", files="app.py")
-        self.ok(self.home, "message", "fix", "cache the parse", "--from", "patron")
+        self.ok(self.home, "message", "fix", "cache the parse", "--from", "owner")
         self.fails(self.home, "message", "fix", "--close", "msg-1", match="needs --reason")
         self.ok(self.home, "message", "fix", "--close", "msg-1", "--reason", "measured: no gain")
         self.assertNotIn("msg-1", self.ok(self.home, "status").out)
@@ -1442,13 +1445,13 @@ class Style(CampaignCase):
         self.commit(wt, {"app.py": "print(2)\n"})
         failed = self.submit(self.home, "--quest", "fix", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
-        self.ok(self.home, "message", "fix", "check the overflow", "--from", "scout")
+        self.ok(self.home, "message", "fix", "check the overflow", "--from", "explorer")
         brief = self.ok(wt, "brief").out  # in the quest's worktree: that quest only
         self.assertTrue(brief.startswith("fix active low: quest/demo/fix at "), brief)
         self.assertIn("  files: app.py\n", brief)
         self.assertIn("  - check unit is not green at", brief)
         self.assertIn("  - unanswered messages: msg-1:", brief)
-        self.assertIn("  - msg-1 from scout: check the overflow\n", brief)
+        self.assertIn("  - msg-1 from explorer: check the overflow\n", brief)
         self.assertIn(f"  - {failed} failed, in no journal yet: exit 1 at ", brief)
         self.assertNotIn("other", brief)
         self.assertNotIn("criteria", brief)
@@ -1462,7 +1465,7 @@ class Style(CampaignCase):
         [quest] = data["quests"]
         self.assertEqual((quest["id"], quest["files"], quest["next"]), ("fix", ["app.py"], ""))
         self.assertTrue(any(g.startswith("check unit is not green") for g in quest["to_land"]), quest)
-        self.assertEqual([(n["id"], n["by"]) for n in quest["messages"]], [("msg-1", "scout")])
+        self.assertEqual([(n["id"], n["by"]) for n in quest["messages"]], [("msg-1", "explorer")])
         self.assertEqual([f["job"] for f in quest["failed"]], [failed])
         data = json.loads(self.ok(self.home, "brief", "--json").out)
         self.assertEqual(data["counts"]["planned"], 1)
@@ -1547,9 +1550,7 @@ class Recovery(CampaignCase):
             "at": "now",
         }
         (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
-        self.git(
-            self.home, "merge", "-q", "--no-ff", "-m", "crash after this", head
-        )  # main moved, then the game master died
+        self.git(self.home, "merge", "-q", "--no-ff", "-m", "crash after this", head)  # main moved, then the lead died
         self.assertIn("interrupted", self.ok(self.home, "check").out)
         r = self.ok(self.home, "new", "next", "--title", "next")
         self.assertIn("completed the interrupted landing", r.err)

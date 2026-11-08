@@ -3,22 +3,22 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 
-A party of AI agents for long coding projects: quests in worktrees, fresh reviews, checks on the
-exact code that lands.
+AI agents for long coding projects: quests in worktrees, fresh reviews, checks on the exact code
+that lands.
 
 `campaign` is a skill and a small tool for running a multi-day coding project with AI agents in
 [Claude Code](https://www.anthropic.com/claude-code),
 [GitHub Copilot CLI](https://github.com/features/copilot/cli) or
-[Codex](https://github.com/openai/codex). A game master session splits your goals into quests,
-adventurer agents each take one quest in their own git worktree, and paladins (fresh agents that
+[Codex](https://github.com/openai/codex). A lead session splits your goals into quests,
+contributor agents each take one quest in their own git worktree, and reviewers (fresh agents that
 did not write the code) review what is risky. The tool keeps the quest log, runs builds, tests and
 benchmarks as jobs on exact commits, and lands only code whose checks passed on that exact code.
 Reach for it when a project needs several agents over days; a one-file fix needs none of it.
 
 ## Example
 
-The tool on its own, on a repository with one quest. In a campaign, the game master runs these
-commands and an adventurer makes the commit.
+The tool on its own, on a repository with one quest. In a campaign, the lead runs these commands
+and a contributor makes the commit.
 
 ```sh
 campaign init --name wordcount
@@ -49,11 +49,15 @@ Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and sta
 
 ## Features
 
-- Four roles: you (the patron), a game master, adventurers and paladins, as two agent types. An
-  adventurer's class (Sage, Wizard, Artificer, Scout, Bard, Squire) sets its method and model; a
-  paladin's lens (correctness, security, durability, design, system) sets its review.
+- Four roles: you (the owner), a lead session, contributors and reviewers, as two agent types
+  (`campaign-contributor`, `campaign-reviewer`). A contributor's assignment (implementation,
+  design, research, performance, exploration, documentation, maintenance) sets its method and model
+  tier; a reviewer's lens (correctness, security, durability, design, system) sets its review.
 - Review by risk: a low-risk quest lands on green checks, a normal one gets one review, a critical
-  one also gets a paladin from another model family.
+  one also gets a reviewer from another model family. An acceptance is bound to the commit the
+  review saw and to the review's content; a fix is confirmed per finding by a job at the fixed code.
+- Criteria name their evidence (a job by default, or a committed file, a recorded decision, a
+  manual check), and nothing a quest must pass is weakened without a recorded reason.
 - Evidence keyed by code: a check result is reused for identical code and toolchain and no longer
   counts once the code changes.
 - Landing checks dependencies, the quest's file set, every gate check on the exact code, every
@@ -63,7 +67,8 @@ Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and sta
 - Direct path first: gate checks block a landing; deferred checks (other platforms, soaks, full
   matrices) run after it at low priority and block the milestone.
 - Several campaigns per machine, with cross-campaign warnings, `--after NAME:ID` and a lock per
-  shared repository; `campaign usage` reports tokens, cost and time per quest, role and class.
+  shared repository; `campaign usage` reports tokens (cached, output, reasoning), cost and time per
+  quest, role and assignment.
 
 ## Install
 
@@ -74,32 +79,34 @@ git clone https://github.com/Kronuz/agent-campaign.git ~/code/agent-campaign
 
 `install.sh` links the skill into `~/.agents/skills/campaign` (and `~/.claude/skills`), the tools
 `campaign`, `quiet`, `pace` and `report` into `~/.local/bin`, and the agent types into
-`~/.claude/agents`, and generates the Copilot and Codex agent files for the harnesses installed. It
-never replaces a file it did not link; `install.sh --check` reports what is missing. Agent types
-load when a session starts.
+`~/.claude/agents`, and generates the Copilot and Codex agent files for the harnesses installed.
+It replaces only links into a campaign checkout and reports anything else in its way.
+`install.sh --dry-run` prints what it would change, `--check` what is missing, and `--uninstall`
+removes only what it linked and generated. Agent types load when a session starts.
 
 **Requirements:** Python 3.9 or newer (standard library only), git 2.31 or newer and bash. One of Claude Code, GitHub Copilot CLI or Codex; [cmux](https://cmux.dev) is optional
 and shows the campaign in its sidebar.
 
 ## Usage
 
-The game master drives the tool; these are the commands it reaches for most.
+The lead drives the tool; these are the commands it reaches for most.
 
 | Command | What it does |
 |---|---|
 | `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
 | `campaign migrate` | moves an older campaign's `docs/campaign/` to `.campaign/<name>/`, once no quest is in flight |
 | `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
-| `campaign get ID`, `set ID KEY=VALUE` | reads and changes a quest's fields; `campaign config` does the same for the campaign's settings |
+| `campaign get ID`, `set ID KEY=VALUE` | reads and changes a quest's fields (`--weaken REASON` to lower what it must pass); `campaign config` does the same for the campaign's settings |
 | `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
-| `campaign accept ID LENS` | records a paladin's verdict for the quest's current content |
+| `campaign accept ID LENS` | records a review as accepted for the commit it saw; after CHANGES, `--confirm FINDING=JOB` per blocking finding |
 | `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code |
 | `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
 | `campaign brief [--json]` | the same for agents: one line (or JSON field) per thing to act on; in a quest's worktree, that quest |
-| `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's game master) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
+| `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's lead) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
-| `campaign usage` | agent runs and job time per quest, role and class |
+| `campaign usage` | agent runs and job time per quest, role and assignment |
+| `campaign job prune` | deletes old finished jobs that no open quest, landing or acceptance needs |
 | `campaign help COMMAND` | each command's description and options (`quiet help`, `report help` too) |
 
 [`SKILL.md`](SKILL.md) is what agents read; [`references/`](references) holds the prompts, the
@@ -110,12 +117,13 @@ review and measurement rules, the host tools and the per-harness notes.
 State lives in `.campaign/<name>/` of the home repository and only the tool writes it, from the main
 checkout, under a lock. Every change is a commit that says what happened (`campaign: start`, `accept`,
 `land ... at <commit>`), so `git log -- .campaign/<name>` is the campaign's ledger; each quest's
-journal is its builder's, and `PLAN.md`'s Decisions table is the game master's. Agents submit work as jobs and end their turn; one worker per machine runs
-the queue in priority order under `quiet`, and the game master waits on results with one background
-command. A check result is keyed by the machine, the toolchain, the command and the commit's code
-without the campaign's own files, which is what lets `land` prove that the code on `main` is the
-code that was tested. [`docs/`](docs) holds the design record of version 2.0: the audit of 1.x,
-the research, the architecture and the validation.
+journal is its contributor's, and `PLAN.md`'s Decisions table is the lead's. Agents submit work as jobs and end their turn; one worker per machine runs
+the queue in priority order under `quiet`, and the lead waits on results with one background
+command. A check result is keyed by the machine, the toolchain (on the submitter's PATH), the
+command and the commit's code without the campaign's own files, which is what lets `land` prove
+that the code on `main` is the code that was tested. [`docs/`](docs) holds the design record of
+version 2.0 (the audit of 1.x, the research, the architecture, the validation) and the preflight
+review before its first week-long trial.
 
 ## Limitations
 
@@ -138,8 +146,8 @@ ruff check scripts tests && pyrefly check
 Run the suite inside a `quiet light` hold when other agents share the machine. `run.py -j 1`
 runs one test at a time, and `python3 -m unittest` still works.
 
-`run.py` ends with one line from `scripts/context-size.py`: the words the game master, an
-adventurer and a paladin load at launch, and what every session pays for the skill's listing. It
+`run.py` ends with one line from `scripts/context-size.py`: the words the lead, a contributor and
+a reviewer load at launch, and what every session pays for the skill's listing. It
 warns, never fails, when a load grows more than 10% past `tests/context-baseline.json`; run
 `scripts/context-size.py` for the full report and `--update` to record a deliberate change.
 

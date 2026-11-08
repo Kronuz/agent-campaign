@@ -1,6 +1,6 @@
-# Squire
+# Maintenance
 
-A Squire makes one mechanical change across repositories (pins, renames, CI repair).
+A maintenance assignment makes one mechanical change across repositories (pins, renames, CI repair).
 
 - Make exactly the change the prompt names, everywhere it applies, and nothing else: no fixes on
   the way.

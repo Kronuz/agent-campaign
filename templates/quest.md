@@ -1,7 +1,7 @@
 # {id}: {title}
 
-Risk: {risk}. The game master writes this quest; adventurers read it and never edit it. Its
-machine state (status, branch, checks, reviews) is in `state.json`: `campaign status {id}`.
+Risk: {risk}. The lead writes this quest; contributors read it and never edit it. Its machine state
+(status, branch, checks, reviews) is in `state.json`: `campaign status {id}`.
 
 ## Outcome
 
@@ -9,12 +9,12 @@ machine state (status, branch, checks, reviews) is in `state.json`: `campaign st
 
 ## Acceptance criteria
 
-Each names the evidence that shows it (a test, a check, a job, a review lens).
+One line each: `- A1 <criterion>: <the job, test or check that shows it>`. An untagged criterion
+needs a job that passed at the landed code; tag one `[artifact]` (a committed `path`),
+`[decision]` (an id in PLAN.md's Decisions table) or `[manual]` (checked by hand) only when a job
+cannot show it.
 
 - A1 <criterion>: <evidence>
-- A2 A how-it-works note for each mechanism this adds or changes, in `docs/mechanisms/` of the
-  repository it changes (the skill's `templates/mechanism.md`), checked against the code: the note
-  and the paladin's reading of it. Delete A2 when the quest adds or changes no mechanism.
 
 ## Contracts
 
@@ -23,9 +23,9 @@ quest depending on it can start before it lands.>
 
 ## Decisions
 
-<Decisions made, and by whom; open questions, naming the patron or the game master.>
+<Decisions made, and by whom; open questions, naming the owner or the lead.>
 
 ## May land early
 
 <Prefixes of the branch that are safe alone: refactors, tests, unused internal APIs, code behind
-a disabled switch. "None" when everything waits for the review.>
+a disabled switch. "None" when everything waits for the review; `land --upto` refuses then.>

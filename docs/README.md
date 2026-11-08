@@ -19,3 +19,8 @@ history.
 | F. Validation results | [validation.md](validation.md) |
 | G. Final assessment | [assessment.md](assessment.md) |
 | The first real campaign on 2.0, run in Codex | [codex-trial.md](codex-trial.md) |
+| Preflight review before the week-long trial: findings, efficiency, naming, migration rehearsal, readiness | [preflight.md](preflight.md) |
+| The operator's runbook for the trial | [trial-runbook.md](trial-runbook.md) |
+
+Records dated before 2026-11-08 use the earlier themed names: patron (owner), game master (lead),
+adventurer (contributor), paladin (reviewer), class (assignment), lore (lessons).

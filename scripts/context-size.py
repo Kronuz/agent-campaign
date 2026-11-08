@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """context-size: how much of the skill each agent loads, so its context cost is a number and not a
 guess. It reports the files by group (the core SKILL.md, references, agent types, templates) and
-what each launch reads: the skill and agent descriptions every session lists, the game master's
-SKILL.md, and each role's agent file, prompt and the references its prompt sends it to.
+what each launch reads: the skill and agent descriptions every session lists, the lead's SKILL.md,
+and each role's agent file, prompt and the references its prompt sends it to.
 
 Sizes are reports, never a gate. --check prints one line of the main loads and warns when a load
 grew more than 10% (and 150 words) past the recorded baseline; a deliberate change records the new
@@ -29,21 +29,31 @@ GROUPS = {
 }
 # What a launch reads: a file, a file's front-matter description ("path:description"), or a
 # prompt from references/prompts.md ("prompts.md#Section"). References read on demand (review,
-# measurement, host, harness, lore) are not counted.
+# measurement, host, harness, lessons) are not counted.
 LOADS = {
     "every session (skill and agent lists)": ["SKILL.md:description", "agents/*.md:description"],
-    "game master": ["SKILL.md"],
-    "game master, launching": ["references/prompts.md"],
-    "adventurer": ["agents/adventurer.md", "prompts.md#Adventurer", "templates/journal.md"],
-    "adventurer, as a Sage": [
-        "agents/adventurer.md",
-        "prompts.md#Adventurer",
+    "lead": ["SKILL.md"],
+    "lead, launching": ["references/prompts.md"],
+    "contributor": ["agents/campaign-contributor.md", "prompts.md#Contributor", "templates/journal.md"],
+    "contributor, on a design": [
+        "agents/campaign-contributor.md",
+        "prompts.md#Contributor",
         "templates/journal.md",
-        "references/classes/sage.md",
+        "references/assignments/design.md",
     ],
-    "adventurer, resumed": ["agents/adventurer.md", "prompts.md#Resume", "prompts.md#Adventurer"],
-    "scout": ["agents/adventurer.md", "prompts.md#Scout", "references/measurement.md"],
-    "paladin": ["agents/paladin.md", "prompts.md#Paladin", "references/review.md", "templates/review.md"],
+    "contributor, resumed": ["agents/campaign-contributor.md", "prompts.md#Resume", "prompts.md#Contributor"],
+    "contributor, exploring": [
+        "agents/campaign-contributor.md",
+        "prompts.md#Exploration",
+        "references/assignments/exploration.md",
+        "references/measurement.md",
+    ],
+    "reviewer": [
+        "agents/campaign-reviewer.md",
+        "prompts.md#Reviewer",
+        "references/review.md",
+        "templates/review.md",
+    ],
 }
 GROWTH, FLOOR = 0.10, 150  # warn above 10% and 150 words
 
@@ -124,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(now, indent=2))
         return 0
     if a.check:
-        main_loads = ("game master", "adventurer", "paladin", "every session (skill and agent lists)")
+        main_loads = ("lead", "contributor", "reviewer", "every session (skill and agent lists)")
         print("context (words): " + " · ".join(f"{n.split(' (')[0]} {now[n]['words']:,}" for n in main_loads))
     else:
         print(paint("Context per load (words, ~tokens at 4 characters each; baseline in parentheses)", "bold"))

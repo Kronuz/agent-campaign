@@ -277,7 +277,7 @@ class CampaignCase(unittest.TestCase):
         return self.wt(pid)
 
     def no_criteria(self, home: Path, pid: str) -> None:
-        """Clears the template's criteria from a new quest file, as a game master filling it in would:
+        """Clears the template's criteria from a new quest file, as a lead filling it in would:
         most tests prove only their checks, and the criteria a landing needs have their own tests."""
         for brief in [*home.glob(f".campaign/*/quests/{pid}.md"), *home.glob(f"docs/campaign/quests/{pid}.md")]:
             text = brief.read_text()

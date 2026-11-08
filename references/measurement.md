@@ -36,7 +36,7 @@ tails keep their length by running several 30-minute jobs, never one long one.
 
 ## Who measures what
 
-- An adventurer screens and confirms its own candidates as jobs; nothing waits on the machine.
+- A contributor screens and confirms its own candidates as jobs; nothing waits on the machine.
 - A hot-path change runs one smoke A/B job against its parent before review, so a large regression
   is caught at the change that caused it, not in a bisect later.
 - An optimization has a budget of about five experiments; stop at the target or the third loser in

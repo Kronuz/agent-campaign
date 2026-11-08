@@ -16,7 +16,7 @@ from harness import SKILL, CampaignCase
 
 
 class Scenarios(CampaignCase):
-    def test_a_small_bug_fix_needs_one_adventurer_and_no_paladin(self) -> None:
+    def test_a_small_bug_fix_needs_one_contributor_and_no_reviewer(self) -> None:
         wt = self.started("fix-off-by-one", files="app.py", risk="low")
         self.commit(wt, {"app.py": "print(1 + 1)\n"}, "fix the off-by-one")
         self.verified("fix-off-by-one")
@@ -48,7 +48,7 @@ class Scenarios(CampaignCase):
         self.commit(self.wt("search--index"), {"lib/util.py": "INDEX = {}\n"}, "index")
         self.commit(self.wt("search--query"), {"app.py": "import lib.util\nprint('query')\n"}, "query")
         party = self.wt("search")
-        self.git(party, "merge", "-q", "--no-edit", "quest/demo/search--index")  # the game master integrates the tasks
+        self.git(party, "merge", "-q", "--no-edit", "quest/demo/search--index")  # the lead integrates the tasks
         self.git(party, "merge", "-q", "--no-edit", "quest/demo/search--query")
         self.verified("search")
         self.review("search", "correctness", "APPROVE")
@@ -81,11 +81,11 @@ class Scenarios(CampaignCase):
             "--",
             bench,
         )
-        # the adventurer ends its session here; it writes the job ids in its journal
+        # the contributor ends its session here; it writes the job ids in its journal
         self.commit(wt, {"app.py": "print('next experiment')\n"}, "next idea")
         self.ok(
             self.home, "wait", "--quest", "faster", "--timeout", "120", timeout=150
-        )  # the game master's single blocking wait
+        )  # the lead's single blocking wait
         spec = json.loads((self.root / "jobs" / confirm / "spec.json").read_text())
         self.assertEqual(spec["commit"], candidate)
         self.assertEqual(spec["refs"]["base"]["commit"], base)
@@ -148,7 +148,7 @@ class Scenarios(CampaignCase):
         (wt / "app.py").write_text("print('part two, unsaved')\n")
         jid = self.submit(wt, "--quest", "half", "--retries", "1", "--", "sleep 4")
         self.wait_until(lambda: self.job(jid)["state"] == "running" and "runner" in self.job(jid))
-        # everything dies: the runner, the game master and the adventurer sessions
+        # everything dies: the runner, the lead and the contributor sessions
         os.kill(self.job(jid)["runner"], signal.SIGKILL)
         data = json.loads(self.ok(self.home, "status", "--json").out)
         view = next(v for v in data["quests"] if v["id"] == "half")
@@ -161,8 +161,8 @@ class Scenarios(CampaignCase):
         self.assertEqual(self.job(jid)["attempt"], 2)
         self.assertEqual((wt / "app.py").read_text(), "print('part two, unsaved')\n")
 
-    def test_a_scouting_party_hunts_disjoint_areas_in_parallel(self) -> None:
-        """A scouting party: one quest per target, disjoint areas, timing serialized by jobs."""
+    def test_an_exploration_batch_hunts_disjoint_areas_in_parallel(self) -> None:
+        """An exploration batch: one quest per target, disjoint areas, timing serialized by jobs."""
         self.ok(
             self.home,
             "new",
@@ -278,14 +278,16 @@ class Scenarios(CampaignCase):
             for f in SKILL.rglob("*")
             # the tests and the design record (docs/) name what 1.x had; the skill and tool must not
             if f.is_file()
-            and not {"tests", "docs", ".git"} & set(f.relative_to(SKILL).parts)
+            and not {"tests", "docs", ".git", ".scratch"} & set(f.relative_to(SKILL).parts)
             and pattern.search(f.read_text(errors="ignore"))
         ]
         self.assertEqual(offenders, [])
         self.assertFalse((SKILL / "scripts" / "lease.sh").exists())
         commands = self.ok(self.home, "--help").out
         self.assertNotRegex(commands, r"\b(lease|rent|cloud|provision)\b")
-        self.assertNotIn("lease", (SKILL / "install.sh").read_text())
+        installer = (SKILL / "install.sh").read_text()
+        self.assertNotRegex(installer, r"(?m)^\s*link [^\n]*lease")  # it only checks that lease is gone
+        self.assertIn("command -v lease", installer)
 
 
 if __name__ == "__main__":

@@ -1,50 +1,50 @@
 {
   "group: core": {
-    "words": 3161,
-    "tokens": 4986
+    "words": 3149,
+    "tokens": 4953
   },
   "group: references": {
-    "words": 7639,
-    "tokens": 12066
+    "words": 8708,
+    "tokens": 13653
   },
   "group: agents": {
-    "words": 637,
-    "tokens": 977
+    "words": 715,
+    "tokens": 1092
   },
   "group: templates": {
-    "words": 1019,
-    "tokens": 1571
+    "words": 860,
+    "tokens": 1320
   },
   "every session (skill and agent lists)": {
-    "words": 252,
-    "tokens": 403
+    "words": 235,
+    "tokens": 377
   },
-  "game master": {
-    "words": 3161,
-    "tokens": 4986
+  "lead": {
+    "words": 3149,
+    "tokens": 4953
   },
-  "game master, launching": {
-    "words": 987,
-    "tokens": 1584
+  "lead, launching": {
+    "words": 982,
+    "tokens": 1608
   },
-  "adventurer": {
-    "words": 1005,
-    "tokens": 1537
+  "contributor": {
+    "words": 947,
+    "tokens": 1457
   },
-  "adventurer, as a Sage": {
-    "words": 1251,
-    "tokens": 1920
+  "contributor, on a design": {
+    "words": 1191,
+    "tokens": 1839
   },
-  "adventurer, resumed": {
-    "words": 898,
-    "tokens": 1407
+  "contributor, resumed": {
+    "words": 907,
+    "tokens": 1422
   },
-  "scout": {
-    "words": 1185,
-    "tokens": 1771
+  "contributor, exploring": {
+    "words": 1370,
+    "tokens": 2073
   },
-  "paladin": {
-    "words": 1440,
-    "tokens": 2269
+  "reviewer": {
+    "words": 1508,
+    "tokens": 2373
   }
 }

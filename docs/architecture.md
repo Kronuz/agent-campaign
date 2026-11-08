@@ -1,29 +1,26 @@
 # Campaign 2.0 architecture
 
-> Status: CURRENT (2026-11-05), revised after the independent challenge (`challenge.md`). Decisions and their reasons. The skill itself
+> Status: CURRENT (2026-11-05), revised after the independent challenge (`challenge.md`) and the
+> preflight review (`preflight.md`, 2026-11-08). Decisions and their reasons. The skill itself
 > (`home/.agents/skills/campaign/SKILL.md`) is what agents read; this file is for whoever has to
 > change it. Evidence for the problems it solves: `audit.md`; outside ideas: `research.md`.
 
 ## Vocabulary
 
-The skill names its parts after the tabletop campaign it is named for. This record keeps the
-brief's engineering terms; the shipped skill, tool and agent types use the themed ones.
+This record uses the brief's engineering terms. The skill, the tool and the agent types use the
+same ones (since 2026-11-08; before that they used themed names, `docs/preflight.md`), except two:
 
 | This record | The skill and the tool |
 |---|---|
-| owner | patron |
-| lead | game master |
-| package | quest (`campaign new`, `quest/<id>` branches, `docs/campaign/quests/`) |
-| builder | adventurer (agent type) |
-| reviewer | paladin (agent type); lenses keep their technical names |
-| sweep, explorer | scouting party, scout |
-| work file | journal (`docs/campaign/journal/`) |
-| lessons | lore (`references/lore.md`) |
-| assignment (design, research, performance, docs, mechanical) | adventurer class: Sage, Wizard, Artificer, Scout, Bard, Squire (`references/classes/<class>.md`) |
+| package | quest (`campaign new`, `quest/<campaign>/<id>` branches, `.campaign/<campaign>/quests/`) |
+| work file | journal (`.campaign/<campaign>/journal/`) |
+| builder | contributor (`campaign-contributor`) |
+| sweep, explorer | exploration batch, an exploration assignment |
 
-Classes restore the methods 1.x carried in its architect, designer, researcher, performance
-engineer, explorer, tech writer and maintenance engineer files, without restoring them as roles:
-one agent type, one authority, no handoff between classes, the class and model named per launch.
+Assignments (`references/assignments/<name>.md`) restore the methods 1.x carried in its architect,
+designer, researcher, performance engineer, explorer, tech writer and maintenance engineer files,
+without restoring them as roles: one agent type, one authority, the assignment and model named per
+launch.
 
 ## The idea in one paragraph
 
@@ -362,15 +359,15 @@ waits with `campaign wait` in bounded calls.
    coordinator nobody has asked for.
 7. **A mailbox without receipts.** Campaigns on one machine see each other's overlapping quests,
    changing contracts and `NAME:ID` dependencies in `campaign check`. Any agent on the machine can
-   send a message to a quest of any campaign (`campaign message NAME:ID`) or to its game master
-   (`NAME:`): it waits in that home's `.git`, wakes the game master's `campaign wait`, and a
-   quest's message blocks its landing until a journal names its id or the game master closes it
-   with a reason. Starting a quest tells the game masters of the campaigns on the machine whose
+   send a message to a quest of any campaign (`campaign message NAME:ID`) or to its lead
+   (`NAME:`): it waits in that home's `.git`, wakes the lead's `campaign wait`, and a
+   quest's message blocks its landing until a journal names its id or the lead closes it
+   with a reason. Starting a quest tells the leads of the campaigns on the machine whose
    files or contracts it overlaps. Between machines, a campaign sends to the peers named in
    `campaign config peers` through its outbox, a git ref of its own (`refs/campaign/outbox/NAME`)
    pushed to a remote both reach; the peer's `wait` fetches it every minute and imports each
    message once. No campaign writes another's ref, so there is nothing to merge. Not built: a
-   receipt back to the sender (it learns the answer from the landed journal or the patron),
+   receipt back to the sender (it learns the answer from the landed journal or the owner),
    overlap detection between machines (the tool sends it only on one machine), and delivery
    without a shared remote. Build them when a sender has to act on an answer, or when two
    campaigns on different machines collide without having told each other.

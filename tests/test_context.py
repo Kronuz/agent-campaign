@@ -22,9 +22,9 @@ class Context(unittest.TestCase):
         self.assertEqual(set(json.loads(Path(self.cs.BASELINE).read_text())), set(sizes))
 
     def test_growth_warns_past_ten_percent_and_never_fails(self) -> None:
-        then = {"game master": {"words": 3000}, "paladin": {"words": 1000}}
-        now = {"game master": {"words": 3400}, "paladin": {"words": 1149}}
-        self.assertEqual(self.cs.growth(now, then), ["game master grew +400 words (+13%)"])
+        then = {"lead": {"words": 3000}, "reviewer": {"words": 1000}}
+        now = {"lead": {"words": 3400}, "reviewer": {"words": 1149}}
+        self.assertEqual(self.cs.growth(now, then), ["lead grew +400 words (+13%)"])
         doubled = {name: {"words": size["words"] * 2, "tokens": 0} for name, size in self.cs.measure().items()}
         out, err = io.StringIO(), io.StringIO()
         with (
@@ -33,5 +33,5 @@ class Context(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             self.assertEqual(self.cs.main(["--check"]), 0)  # a report, never a gate
-        self.assertTrue(out.getvalue().startswith("context (words): game master "), out.getvalue())
-        self.assertIn("game master grew +", err.getvalue())
+        self.assertTrue(out.getvalue().startswith("context (words): lead "), out.getvalue())
+        self.assertIn("lead grew +", err.getvalue())

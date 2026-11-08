@@ -54,7 +54,7 @@ class Identity(CampaignCase):
         wt = self.started("fix", files="app.py")
         first = self.commit(wt, {"app.py": "print('first')\n"})
         jid = self.submit(wt, "--what", "slow read", "--", 'sleep 1; python3 app.py > "$JOB_OUT/seen"')
-        self.commit(wt, {"app.py": "print('second')\n"})  # the adventurer keeps working
+        self.commit(wt, {"app.py": "print('second')\n"})  # the contributor keeps working
         (wt / "app.py").write_text("print('uncommitted')\n")
         self.ok(wt, "wait", jid, "--timeout", "60")
         seen = (self.root / "jobs" / jid / "a1" / "out" / "seen").read_text().strip()

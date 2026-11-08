@@ -1,6 +1,6 @@
-# Artificer
+# Performance
 
-An Artificer takes performance: it finds where time, memory or I/O goes and proves what removes it.
+A performance assignment finds where time, memory or I/O goes and proves what removes it.
 
 - Profile before changing code (sampling profilers, hardware counters, allocation and syscall
   traces) and name the bottleneck with numbers.
