@@ -33,7 +33,11 @@ rolling back is a matter of links.
      `campaign init` and no second campaign (rehearsed end to end on a copy shaped like Detent's):
      1. On `main`: `git mv docs/campaign .campaign/<name>`, set `"campaign": "<name>"` in its
         `state.json` (a plain name: letters, digits, `.`, `_`, `-`), commit. Recorded branch and
-        worktree names stay as they are.
+        worktree names stay as they are. Rename the registry entry, a file holding the home's path:
+        `mv ~/.scratch/campaign/campaigns/"<old name>" ~/.scratch/campaign/campaigns/<name>`;
+        until it exists, `status --all` and `job prune` do not see the campaign. The old build slot
+        (`jobs/slots/<old name>-<id>`) is left for `job prune`; the first build under the new name
+        starts cold.
      2. On each quest branch: `git merge main`, then in one commit move every
         `docs/campaign/journal/*.md` to `.campaign/<name>/journal/` and `git rm -r docs/campaign`.
      3. On each task branch not yet merged into its quest:
