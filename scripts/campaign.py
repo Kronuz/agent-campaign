@@ -2421,9 +2421,11 @@ def map_text(c: Campaign, only: str = "") -> str:
         met = sum(1 for x in q["criteria"] if x["met"])
         head = f"- [{'x' if done else ' '}] **{q['id']}**: {q['title']} ({q['risk']} risk, "
         if done:
+            left = [x["id"] for x in q["criteria"] if not x["met"]]
             head += (
-                f"{q['landed']['how']} {q['landed']['at'][:10]} at {q['landed']['repo']}:{q['landed']['commit'][:12]})"
+                f"{q['landed']['how']} {q['landed']['at'][:10]} at {q['landed']['repo']}:{q['landed']['commit'][:12]}"
             )
+            head += f"; left open: {', '.join(left)})" if left else ")"
         else:
             head += f"{q['status']}, {met} of {criteria_count(len(q['criteria']))} met)"
         lines = [head]

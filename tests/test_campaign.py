@@ -1710,6 +1710,7 @@ class Map(CampaignCase):
         self.assertIn("(before the campaign)", self.ok(self.home, "status", "pins").out)
         out = self.ok(self.home, "map").out
         self.assertIn("- [x] **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
+        self.assertIn("; left open: A2)", out)
         self.assertIn("Result: All 12 pins at head; CI green.", out)
         self.assertNotIn("none yet", out)  # reviewed by the process of its time
         plan = self.home / ".campaign/demo/PLAN.md"
