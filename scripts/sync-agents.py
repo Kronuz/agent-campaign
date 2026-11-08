@@ -101,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     raw = argparse.RawDescriptionHelpFormatter
     ap = argparse.ArgumentParser(prog="sync-agents", description=__doc__, epilog=EPILOG, formatter_class=raw)
     ap.add_argument("--check", action="store_true", help="exit 1 when a generated file is missing, stale or orphaned")
-    check = ap.parse_args(argv).check
+    ap.add_argument("--remove", action="store_true", help="remove every file this tool generated (uninstall)")
+    args = ap.parse_args(argv)
+    check = args.check
     src = Path(os.environ.get("AGENTS_SRC") or Path(__file__).resolve().parent.parent / "agents")
     sources = sorted(src.glob("*.md"))
     renderers: list[tuple[Callable[[Path], str], Path | None, str]] = [
@@ -109,6 +111,13 @@ def main(argv: list[str] | None = None) -> int:
         (render_codex, target("AGENTS_CODEX", ".codex"), ".toml"),
     ]
     stale, outputs = False, 0
+    if args.remove:
+        for _, directory, ext in renderers:
+            for out in sorted(directory.glob("*" + ext)) if directory and directory.is_dir() else []:
+                if ours(out):
+                    out.unlink()
+                    print(f"removed {out}")
+        return 0
     for render, directory, ext in renderers:
         if directory is None:
             continue
