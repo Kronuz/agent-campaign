@@ -232,13 +232,15 @@ def append(path: Path, line: str) -> None:
 
 
 def alive(pid: int) -> bool:
+    """Whether PID runs; a zombie (dead, not yet reaped by its parent) does not."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return True
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return not stat.strip().startswith("Z")
 
 
 def live(info: Hold) -> bool:

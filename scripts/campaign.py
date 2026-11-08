@@ -10,6 +10,7 @@ command; the skill's SKILL.md says when to use it.
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import fcntl
 import fnmatch
@@ -129,13 +130,15 @@ def csv(value: str | None) -> list[str]:
 
 
 def alive(pid: int) -> bool:
+    """Whether PID runs; a zombie (dead, not yet reaped by its parent) does not."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    return True
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return not stat.strip().startswith("Z")
 
 
 def template(name: str, **fields: str) -> str:
@@ -306,6 +309,18 @@ def read_object(repo: Path, name: str) -> tuple[str, str, bytes] | None:
     data = proc.stdout.read(int(header[2]))
     proc.stdout.read(1)
     return header[0].decode(), header[1].decode(), data
+
+
+@atexit.register
+def close_readers() -> None:
+    """Ends the `git cat-file` processes this process started."""
+    for pid, proc in _cat.values():
+        if pid == os.getpid():
+            for pipe in (proc.stdin, proc.stdout):
+                if pipe:
+                    pipe.close()
+            proc.wait()
+    _cat.clear()
 
 
 def cat_object(repo: Path, name: str) -> tuple[str, bytes]:
@@ -1510,7 +1525,7 @@ def read_review(text: str) -> Json:
     verdict, reviewed = VERDICT.search(text), REVIEWED.search(text)
     findings: list[Json] = []
     for row in (section(text, "Findings") or text).splitlines():
-        cells = [x.strip().strip("*`") for x in row.strip().strip("|").split("|")] if row.startswith("|") else []
+        cells = [x.strip("*`") for x in table_cells(row)] if row.startswith("|") else []
         if len(cells) < 3 or cells[0].lower() in ("id", "") or set(cells[0]) <= set("-: "):
             continue
         findings.append({"id": cells[0], "blocking": cells[1].lower() == "yes", "kind": cells[2].lower()})
@@ -1922,6 +1937,14 @@ def state_of(journal: str) -> str:
     return m.group(1).strip() if m else "(no State line)" if journal.strip() else "(no journal)"
 
 
+def table_cells(row: str) -> list[str]:
+    """A Markdown table row's cells; `\\|` is a pipe inside a cell, as GitHub writes it."""
+    text = row.strip()
+    text = text[1:] if text.startswith("|") else text
+    text = text[:-1] if text.endswith("|") and not text.endswith("\\|") else text
+    return [x.strip().replace("\\|", "|") for x in re.split(r"(?<!\\)\|", text)]
+
+
 def section(text: str, title: str) -> str:
     m = re.search(rf"^## {title}\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
     return m.group(1) if m else ""
@@ -1947,7 +1970,7 @@ def decisions(c: Campaign) -> set[str]:
     """The ids in PLAN.md's Decisions table: what a [decision] criterion's evidence names."""
     plan = c.home / c.meta / "PLAN.md"
     rows = section(plan.read_text() if plan.exists() else "", "Decisions").splitlines()
-    ids = (r.strip().strip("|").split("|")[0].strip() for r in rows if r.startswith("|"))
+    ids = (table_cells(r)[0] for r in rows if r.startswith("|"))
     return {x for x in ids if x and x.lower() != "id" and not set(x) <= set("-: ")}
 
 
@@ -2018,7 +2041,7 @@ def evidence(
     rows: dict[str, list[Json]] = {x: [] for x in wanted}
     for name, text in journals.items():
         for row in section(text, "Evidence").splitlines():
-            cells = [x.strip() for x in row.strip().strip("|").split("|")]
+            cells = table_cells(row)
             if len(cells) < 2 or cells[0].startswith("<"):
                 continue
             rest = [x for x in cells[1:] if x]
@@ -2303,7 +2326,7 @@ def plan_milestones(c: Campaign) -> list[Json]:
     plan = c.home / c.meta / "PLAN.md"
     rows: list[Json] = []
     for line in section(plan.read_text() if plan.exists() else "", "Milestones").splitlines():
-        cells = [x.strip() for x in line.strip().strip("|").split("|")]
+        cells = table_cells(line)
         if len(cells) < 2 or not cells[0] or cells[0].startswith("<") or set(cells[0]) <= set("-: "):
             continue
         if cells[0].lower() == "milestone":

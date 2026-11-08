@@ -1725,9 +1725,11 @@ class Map(CampaignCase):
         self.assertIn("Result: All 12 pins at head; CI green.", out)
         self.assertNotIn("none yet", out)  # reviewed by the process of its time
         plan = self.home / ".campaign/demo/PLAN.md"
-        plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M9 | | later |"))
+        plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M9 | | grep -E 'a\\|b' x |"))
         self.git(self.home, "commit", "-q", "-am", "an empty milestone")
-        self.assertIn("## ⬜ M9: no quests yet", self.ok(self.home, "map").out)
+        out = self.ok(self.home, "map").out
+        self.assertIn("## ⬜ M9: no quests yet", out)
+        self.assertIn("Validation on main: grep -E 'a|b' x\n", out, "an escaped pipe split the cell")
         (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
         self.assertEqual([x["met"] for x in pins["criteria"]], [True, False], "an unticked criterion reads as met")
 

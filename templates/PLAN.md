@@ -37,6 +37,8 @@ the campaign (handoffs, lead prompts) go to `.campaign/<name>/`: a file anywhere
 |---|---|---|
 | <M1> | <ids> | <command> |
 
+A `|` inside a cell is written `\|`.
+
 ## Decisions
 
 A `[decision]` criterion's evidence names a row's ID here.
