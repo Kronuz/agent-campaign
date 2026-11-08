@@ -139,9 +139,11 @@ class Scheduling(CampaignCase):
 
     def test_priority_orders_the_queue(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
-        blocker = self.submit(self.home, "--", "sleep 2")
+        go = self.root / "go"  # the blocker holds the only slot until both are queued, however slow submits are
+        blocker = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
         low = self.submit(self.home, "--", "echo low")
         high = self.submit(self.home, "--priority", "5", "--", "echo high")
+        go.touch()
         self.ok(self.home, "wait", blocker, low, high, "--timeout", "60")
         self.assertLess(self.job(high)["started"], self.job(low)["started"])
 

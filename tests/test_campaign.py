@@ -599,6 +599,20 @@ class ReviewBinding(CampaignCase):
         self.git(self.home, "commit", "-qam", "the reviewer changed its ruling")
         self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
 
+    def test_an_acceptance_without_review_content_reads_as_void(self) -> None:
+        self.feature()
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "gap"),))
+        state = self.home / ".campaign/demo/state.json"
+        data = json.loads(state.read_text())
+        head = self.git(self.home, "rev-parse", "quest/demo/feat")
+        data["quests"]["feat"]["accepted"] = {"correctness": {"by": "review", "commit": head, "at": "2026-11-06"}}
+        state.write_text(json.dumps(data, indent=2))
+        self.git(self.home, "commit", "-q", "-am", "an earlier tool's acceptance")
+        (view,) = json.loads(self.ok(self.home, "status", "feat", "--json").out)["quests"]
+        for out in (view["reviews"]["correctness"], self.ok(self.home, "map").out):
+            self.assertIn("so it is void: accept again", out)
+            self.assertNotIn("accepted at", out)
+
     def test_an_acceptance_names_the_review_it_read(self) -> None:
         """A review rewritten while `accept` runs is not accepted under the verdict read before it."""
         self.feature()
@@ -1695,6 +1709,11 @@ class Map(CampaignCase):
         out = self.ok(self.home, "map").out
         self.assertIn("- [x] **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
         self.assertIn("Result: All 12 pins at head; CI green.", out)
+        self.assertNotIn("none yet", out)  # reviewed by the process of its time
+        plan = self.home / ".campaign/demo/PLAN.md"
+        plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M9 | | later |"))
+        self.git(self.home, "commit", "-q", "-am", "an empty milestone")
+        self.assertIn("## M9: no quests yet", self.ok(self.home, "map").out)
         (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
         self.assertTrue(pins["criteria"] and all(x["met"] for x in pins["criteria"]), pins["criteria"])
 

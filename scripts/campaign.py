@@ -2210,9 +2210,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["reviews"] = {lens: verdict(c, pid, lens) for lens in p["lenses"]}
         for lens, acc in p.get("accepted", {}).items():
             if lens in view["reviews"]:
-                view["reviews"][lens] = f"accepted at {acc['commit'][:12]}" + (
-                    " (waived)" if acc["by"] == "waived" else ""
-                )
+                view["reviews"][lens] = acceptance(acc, verdict(c, pid, lens))
         work: dict[str, Json] = {}
         view["journal"] = work
         for name, branch, rel, _ in branches(c, pid):
@@ -2247,6 +2245,14 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         if j["state"].get("state") in ("failed", "timeout", "interrupted")
     ]
     return view
+
+
+def acceptance(acc: Json, now: str) -> str:
+    """How an acceptance reads: at its commit, waived, or void when it names no review content (an
+    acceptance by an earlier tool, which `land` refuses), with the review's verdict now."""
+    if acc.get("by") != "waived" and "review" not in acc:
+        return f"{now}; its acceptance names no review content, so it is void: accept again"
+    return f"accepted at {acc['commit'][:12]}" + (" (waived)" if acc.get("by") == "waived" else "")
 
 
 def first_paragraph(text: str, limit: int = 400) -> str:
@@ -2314,7 +2320,7 @@ def quest_map(c: Campaign, pid: str) -> Json:
     reviews = {}
     for lens in p["lenses"]:
         acc = p.get("accepted", {}).get(lens)
-        reviews[lens] = ("waived" if acc["by"] == "waived" else "accepted") if acc else verdict(c, pid, lens)
+        reviews[lens] = acceptance(acc, verdict(c, pid, lens)) if acc else verdict(c, pid, lens)
     blocked = first_paragraph(section(journal, "Blocked on"))
     return {
         "id": pid,
@@ -2428,7 +2434,11 @@ def map_text(c: Campaign, only: str = "") -> str:
             lines.append("  - Result: " + (result.replace("\n", "\n    ") if result else "not written"))
         if q["docs"]:
             lines.append(f"  - Docs: {', '.join(q['docs'])}")
-        reviews = ", ".join(f"{lens} {v}" for lens, v in q["reviews"].items())
+        # a landing before the campaign was reviewed by its own process, which its Result names
+        shown = {
+            k: v for k, v in q["reviews"].items() if not (done and q["landed"]["how"] != "landed" and v == "none yet")
+        }
+        reviews = ", ".join(f"{lens} {v}" for lens, v in shown.items())
         if reviews:
             lines.append(f"  - Reviews: {reviews}")
         if q["needs"]:
@@ -2447,7 +2457,8 @@ def map_text(c: Campaign, only: str = "") -> str:
     for g in m["milestones"]:
         n = len(g["quests"])
         k = sum(1 for q in g["quests"] if q["status"] == "landed")
-        out += [f"## {g['name']}: {'done' if n and k == n else f'{k} of {n} landed'}", ""]
+        state = "no quests yet" if not n else "done" if k == n else f"{k} of {n} landed"
+        out += [f"## {g['name']}: {state}", ""]
         if g["validation"] and not g["validation"].startswith("<"):
             out += [f"Validation on main: {g['validation']}", ""]
         for q in g["quests"]:
