@@ -28,7 +28,8 @@ that also fails on `main` is the lead's: show it with a job at `main`'s commit a
 "Blocked on". Read the skill's references/review.md before writing tests for a claim and
 references/measurement.md before timing. Record decisions inside the quest under "Rulings I
 made"; a question for the owner or one that changes the quest file goes under "Blocked on". Never
-push or land. Done means every criterion has evidence and State says "ready for review".
+push or land. Done means every criterion has evidence, the journal's Result says what changed with
+its numbers and the docs it wrote in the repository it changed, and State says "ready for review".
 Commit the journal before your final message, under 250 words: State, criteria met with their
 evidence, Blocked on.
 ```

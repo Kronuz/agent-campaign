@@ -717,6 +717,7 @@ def landing_record(repo: Path, main: str, intent: Json) -> Json | None:
         "final": intent["final"],
         "reason": intent.get("reason", ""),
         "evidence": intent.get("evidence", []),
+        **({"from": intent["from"]} if intent.get("from") else {}),
         **({"ci_skipped": intent["ci_skipped"]} if intent.get("ci_skipped") else {}),
     }
 
@@ -1650,28 +1651,40 @@ def cmd_land(a: argparse.Namespace) -> int:
             final = rev(repo, p["branch"]) == target if p.get("branch") else True
             # the reviews as they stood against the code the branch started from
             reviewed_from = p.get("base") or target
-            unverified = check_evidence(c, p, target)[0] + (
-                review_gaps(c, a.id, target, reviewed_from) if final else []
-            )
+            unverified: list[str] = []  # with --earlier: verified by the process of its time, as the reason says
+            if not a.earlier:
+                unverified = check_evidence(c, p, target)[0] + (
+                    review_gaps(c, a.id, target, reviewed_from) if final else []
+                )
             p["landed"].append(
                 {
                     "commit": target,
                     "tested": target,
-                    "at": stamp(),
+                    "at": stamp(float(git(repo, "log", "-1", "--format=%ct", target))),
+                    "recorded": stamp(),
                     "final": final,
-                    "reason": f"recorded after the fact: {a.reason}",
+                    "reason": f"{'landed before the campaign' if a.earlier else 'recorded after the fact'}: {a.reason}",
+                    **({"earlier": True} if a.earlier else {}),
                     "evidence": check_evidence(c, p, target)[1],
                     "unverified": unverified,
                 }
             )
             if final:
                 p["status"] = "landed"
+            kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
             p["updated"] = stamp()
-            c.save(f"campaign: record {a.id} landed at {target[:12]}" + (" (unverified)" if unverified else ""))
+            c.save(
+                f"campaign: record {a.id} landed at {target[:12]}" + (" (unverified)" if unverified else ""),
+                extra=refresh_map(c),
+            )
             print(
                 f"{a.id}: recorded {target[:12]}" + (f"; never verified: {'; '.join(unverified)}" if unverified else "")
             )
+            for item in kept:
+                print(f"kept {item} (`campaign clean {a.id}` once resolved)")
             return 0
+        if a.earlier:
+            die("--earlier describes a landing --record records")
         if p["status"] not in ("active", "review"):
             die(f"{a.id} is {p['status']}")
         final = a.upto is None
@@ -1708,6 +1721,7 @@ def cmd_land(a: argparse.Namespace) -> int:
             "reason": a.reason or "",
             "evidence": evidence,
             "mode": mode,
+            "from": main_head,
             "at": stamp(),
             **({"ci_skipped": a.no_ci} if a.no_ci and c.state.get("ci") else {}),
         }
@@ -1746,8 +1760,9 @@ def cmd_land(a: argparse.Namespace) -> int:
                     record["later"] = submit_checks(c, a.id, deferred(p), landed, priority=-1)
                 except CampaignError as e:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
+        kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
         p["updated"] = stamp()
-        c.save(message + f" at {landed[:12]}")
+        c.save(message + f" at {landed[:12]}", extra=refresh_map(c))
         for m in filed:
             (mailbox(c, a.id) / f"{m['id']}.json").unlink(missing_ok=True)
         notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
@@ -1762,7 +1777,70 @@ def cmd_land(a: argparse.Namespace) -> int:
                     die(f"landed locally, but the push from {where} failed: {pushed.stderr.strip()}")
     via = "" if landed == target else f" (merge {landed[:12]})"
     print(f"{a.id}: landed {target[:12]} on {main}{via}" + ("" if final else " (increment)"))
+    for item in kept:
+        print(f"kept {item} (`campaign clean {a.id}` once resolved)")
     return 0
+
+
+def readers_of(path: Path) -> list[str]:
+    """Jobs whose command, directory or environment names a path inside PATH: inputs that live in a
+    worktree outside any job's identity, which removing the worktree would lose."""
+    roots = {str(path), str(path.resolve())}
+    found: list[str] = []
+    for j in all_jobs():
+        spec = j["spec"]
+        text = " ".join([str(spec.get("cmd", "")), str(spec.get("cwd", "")), *map(str, spec.get("env", {}).values())])
+        if any(root in text for root in roots):
+            found.append(j["id"])
+    return found
+
+
+def clean_quest(c: Campaign, pid: str, *, force: bool = False, keep: bool = False) -> list[str]:
+    """Removes a landed or dropped quest's worktrees, merged branches and build slot, and returns what
+    it kept and why. A worktree with uncommitted or untracked files, or that a job reads from, stops it,
+    or with keep is kept; so is an unmerged branch, and a slot its pending jobs use."""
+    p = c.quests[pid]
+    repo = c.repo(p)
+    kept: list[str] = []
+    busy = [
+        j["id"]
+        for j in all_jobs()
+        if j["spec"].get("quest") == pid
+        and j["spec"].get("campaign", c.ident) in (c.ident, "")
+        and j["state"].get("state") not in TERMINAL
+    ]
+    if busy and not keep:
+        die(f"jobs still pending for {pid}: {', '.join(busy)}")
+    for name, branch, rel, _ in branches(c, pid):
+        wt = (c.home / rel).resolve() if rel else None
+        if wt and wt.exists():
+            dirty = git(wt, "status", "--porcelain")
+            readers = readers_of(c.home / rel)
+            why = (
+                "uncommitted or untracked files"
+                if dirty
+                else f"job {', '.join(readers)} reads from it"
+                if readers
+                else ""
+            )
+            if why and not force:
+                if not keep:
+                    die(f"{wt} has {why} (commit, move or remove them, or --force)" + (f":\n{dirty}" if dirty else ""))
+                kept.append(f"{wt}: {why}")
+                continue
+            git(repo, "worktree", "remove", *(["--force"] if force else []), str(wt))
+        task = name.partition("--")[2]
+        (p["tasks"][task] if task else p)["worktree"] = ""
+        if has_ref(repo, branch):
+            if force or ancestor(repo, branch, main_branch(repo)):
+                git(repo, "branch", "-q", "-D" if force else "-d", branch)
+            else:
+                kept.append(f"{branch}: not merged")
+    if busy:
+        kept.append(f"its build slot: jobs {', '.join(busy)} use it")
+    else:
+        worktree_remove(str(repo), jobs_dir() / "slots" / f"{c.state['campaign']}-{pid}")
+    return kept
 
 
 def cmd_clean(a: argparse.Namespace) -> int:
@@ -1770,32 +1848,11 @@ def cmd_clean(a: argparse.Namespace) -> int:
         p = c.quest(a.id)
         if p["status"] not in ("landed", "dropped"):
             die(f"{a.id} is {p['status']}: clean only landed or dropped quests")
-        repo = c.repo(p)
-        busy = [
-            j["id"] for j in all_jobs() if j["spec"].get("quest") == a.id and j["state"].get("state") not in TERMINAL
-        ]
-        if busy:
-            die(f"jobs still pending for {a.id}: {', '.join(busy)}")
-        for name, branch, rel, _ in branches(c, a.id):
-            wt = (c.home / rel).resolve() if rel else None
-            if wt and wt.exists():
-                dirty = git(wt, "status", "--porcelain")
-                if dirty and not a.force:
-                    die(f"{wt} has uncommitted or untracked files (commit or remove them, or --force):\n{dirty}")
-                git(repo, "worktree", "remove", *(["--force"] if a.force else []), str(wt))
-            if has_ref(repo, branch):
-                merged = ancestor(repo, branch, main_branch(repo))
-                if merged or a.force:
-                    git(repo, "branch", "-q", "-D" if a.force else "-d", branch)
-                else:
-                    print(f"kept {branch}: not merged (--force deletes it)")
-            print(f"{name}: cleaned")
-        worktree_remove(str(repo), jobs_dir() / "slots" / f"{c.state['campaign']}-{a.id}")
-        p["worktree"] = ""
-        for t in p.get("tasks", {}).values():
-            t["worktree"] = ""
+        for item in clean_quest(c, a.id, force=a.force):
+            print(f"kept {item} (--force removes it)")
         p["updated"] = stamp()
         c.save(f"campaign: clean {a.id}")
+    print(f"{a.id}: cleaned")
     return 0
 
 
@@ -2121,6 +2178,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
     view["landed"] = [
         x["commit"][:12]
         + ("" if x.get("final") else " (increment)")
+        + (" (before the campaign)" if x.get("earlier") else "")
         + (f" (unverified: {'; '.join(x['unverified'])})" if x.get("unverified") else "")
         + (f" (CI skipped: {x['ci_skipped']})" if x.get("ci_skipped") else "")
         for x in p["landed"]
@@ -2189,6 +2247,246 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         if j["state"].get("state") in ("failed", "timeout", "interrupted")
     ]
     return view
+
+
+def first_paragraph(text: str, limit: int = 400) -> str:
+    """A section's first paragraph on one line, without the template's <placeholders>."""
+    for para in re.split(r"\n\s*\n", text.strip()):
+        line = " ".join(para.split())
+        if line and not line.startswith("<"):
+            return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+    return ""
+
+
+def plan_milestones(c: Campaign) -> list[Json]:
+    """PLAN.md's Milestones table in order: each milestone's name, quests and validation."""
+    plan = c.home / c.meta / "PLAN.md"
+    rows: list[Json] = []
+    for line in section(plan.read_text() if plan.exists() else "", "Milestones").splitlines():
+        cells = [x.strip() for x in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0] or cells[0].startswith("<") or set(cells[0]) <= set("-: "):
+            continue
+        if cells[0].lower() == "milestone":
+            continue
+        ids = [x for x in re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", cells[1]) if x in c.quests]
+        rows.append({"name": cells[0], "quests": ids, "validation": cells[2] if len(cells) > 2 else ""})
+    return rows
+
+
+def quest_map(c: Campaign, pid: str) -> Json:
+    """A quest as the map shows it: its intent (the quest file's Outcome), its result (the journal's
+    Result), the documents its landing added to its repository, its criteria and reviews."""
+    p = c.quests[pid]
+    repo = c.repo(p)
+    wanted = criteria(c, pid)
+    final = [x for x in p["landed"] if x.get("final")]
+    journals: dict[str, str] = {}
+    main = main_branch(repo)
+    if final:
+        journals = (
+            journals_at(c, repo, main, pid)
+            or journals_at(c, c.home, main_branch(c.home), pid)
+            or journals_at(c, repo, final[-1]["commit"], pid)
+        )
+    for name, branch, rel, _ in branches(c, pid):
+        journals.setdefault(name, journal_text(c, name, branch, rel))
+    journal = journals.get(pid, "")
+    if final and not final[-1].get("unverified"):
+        met = set(wanted)  # landing required every criterion
+    elif final:  # recorded after the fact: what its journal's evidence still proves
+        rows = evidence(journals, wanted, proof(c, repo, [final[-1]["commit"], rev(repo, main)]))
+        met = {x for x, r in rows.items() if any(e["met"] for e in r)}
+    elif p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
+        tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
+        rows = evidence(journals, wanted, proof(c, repo, tips))
+        met = {x for x, r in rows.items() if any(e["met"] for e in r)}
+    else:
+        met = set()
+    docs: list[str] = []
+    if final:
+        start = final[-1].get("from") or p.get("base", "")
+        if start:
+            changed = git(
+                repo, "diff", "--name-only", "--diff-filter=AM", start, final[-1]["commit"], "--", "docs", check=False
+            )
+            prefix = "" if repo == c.home.resolve() else f"{repo.name}:"
+            docs = [prefix + x for x in changed.splitlines()]
+    reviews = {}
+    for lens in p["lenses"]:
+        acc = p.get("accepted", {}).get(lens)
+        reviews[lens] = ("waived" if acc["by"] == "waived" else "accepted") if acc else verdict(c, pid, lens)
+    blocked = first_paragraph(section(journal, "Blocked on"))
+    return {
+        "id": pid,
+        "title": p["title"],
+        "risk": p["risk"],
+        "status": p["status"],
+        "reason": p.get("reason", ""),
+        "milestone": p.get("milestone", ""),
+        "needs": [d for d in p["needs"] if not c.landed(d)],
+        "landed": {
+            "at": final[-1]["at"],
+            "commit": final[-1]["commit"],
+            "repo": repo.name,
+            "how": "landed before the campaign"
+            if final[-1].get("earlier")
+            else "recorded as landed"
+            if final[-1].get("recorded")
+            else "landed",
+        }
+        if final
+        else None,
+        "outcome": first_paragraph(section(c.quest_file(pid), "Outcome")),
+        "result": "\n".join(x for x in section(journal, "Result").strip().splitlines() if not x.startswith("<")),
+        "docs": docs,
+        "criteria": [{"id": x, "text": w["text"], "met": x in met} for x, w in wanted.items()],
+        "reviews": reviews,
+        "next": "" if final else next_step(journal),
+        "blocked": "" if final or re.match(r"nothing\b", blocked, re.I) else blocked,
+    }
+
+
+def map_data(c: Campaign, only: str = "") -> Json:
+    """The campaign as a map: its goals, its milestones in PLAN.md's order with their quests, the
+    quests in no milestone, and the dropped ones."""
+    if only:
+        c.quest(only)
+    quests = {pid: quest_map(c, pid) for pid in c.quests if not only or pid == only}
+    plan = c.home / c.meta / "PLAN.md"
+    goals = [
+        x.strip()[2:]
+        for x in section(plan.read_text() if plan.exists() else "", "Goals").splitlines()
+        if x.strip().startswith(("- ", "* ")) and not x.strip()[2:].startswith("<")
+    ]
+    rank = {"landed": 0, "review": 1, "active": 2, "blocked": 3, "planned": 4}
+    placed: set[str] = set()
+    groups: list[Json] = []
+    named = plan_milestones(c)
+    names = [m["name"] for m in named] + sorted(
+        {q["milestone"] for q in quests.values() if q["milestone"]} - {m["name"] for m in named}
+    )
+    for name in names:
+        none: Json = {"quests": [], "validation": ""}
+        row = next((m for m in named if m["name"] == name), none)
+        ids = [x for x in row["quests"] if x in quests] + sorted(
+            (x for x, q in quests.items() if q["milestone"] == name and x not in row["quests"]),
+            key=lambda x: (rank.get(quests[x]["status"], 5), x),
+        )
+        ids = [x for x in dict.fromkeys(ids) if quests[x]["status"] != "dropped"]
+        placed.update(ids)
+        if ids or not only:
+            groups.append({"name": name, "validation": row["validation"], "quests": [quests[x] for x in ids]})
+    rest = sorted(
+        (x for x, q in quests.items() if x not in placed and q["status"] != "dropped"),
+        key=lambda x: (rank.get(quests[x]["status"], 5), x),
+    )
+    live = [q for q in quests.values() if q["status"] != "dropped"]
+    return {
+        "campaign": c.state["campaign"],
+        "goals": goals,
+        "landed": sum(1 for q in live if q["status"] == "landed"),
+        "quests": len(live),
+        "criteria": sum(len(q["criteria"]) for q in live),
+        "met": sum(1 for q in live for x in q["criteria"] if x["met"]),
+        "milestones": groups,
+        "other": [quests[x] for x in rest],
+        "dropped": [q for q in quests.values() if q["status"] == "dropped"],
+    }
+
+
+def map_text(c: Campaign, only: str = "") -> str:
+    """The map as Markdown: a checkbox per quest, with its intent, result, documents and criteria."""
+    m = map_data(c, only)
+    out = [f"# {m['campaign']}: map", ""]
+
+    def criteria_count(n: int) -> str:
+        return f"{n} criterion" if n == 1 else f"{n} criteria"
+
+    if not only:
+        out += [f"- {g}" for g in m["goals"]] + ([""] if m["goals"] else [])
+        out += [
+            f"{m['landed']} of {plural(m['quests'], 'quest')} landed, {m['met']} of {criteria_count(m['criteria'])} "
+            f"met. Generated by `campaign map` on {stamp()[:10]}; edit the quest files and journals, not this.",
+            "",
+        ]
+
+    def quest(q: Json, full: bool) -> list[str]:
+        done = q["status"] == "landed"
+        met = sum(1 for x in q["criteria"] if x["met"])
+        head = f"- [{'x' if done else ' '}] **{q['id']}**: {q['title']} ({q['risk']} risk, "
+        if done:
+            head += (
+                f"{q['landed']['how']} {q['landed']['at'][:10]} at {q['landed']['repo']}:{q['landed']['commit'][:12]})"
+            )
+        else:
+            head += f"{q['status']}, {met} of {criteria_count(len(q['criteria']))} met)"
+        lines = [head]
+        if q["outcome"]:
+            lines.append(f"  - Outcome: {q['outcome']}")
+        if done or q["result"]:
+            result = q["result"] if full else first_paragraph(q["result"])
+            lines.append("  - Result: " + (result.replace("\n", "\n    ") if result else "not written"))
+        if q["docs"]:
+            lines.append(f"  - Docs: {', '.join(q['docs'])}")
+        reviews = ", ".join(f"{lens} {v}" for lens, v in q["reviews"].items())
+        if reviews:
+            lines.append(f"  - Reviews: {reviews}")
+        if q["needs"]:
+            lines.append(f"  - Needs: {', '.join(q['needs'])}")
+        for label, key in (("Blocked on", "blocked"), ("Next", "next")):
+            if q[key]:
+                lines.append(f"  - {label}: {q[key]}")
+        if q["status"] == "blocked" and q["reason"]:
+            lines.append(f"  - Blocked: {q['reason']}")
+        if full or q["status"] in ("active", "review"):
+            for x in q["criteria"]:
+                text = x["text"] if full else x["text"].split(": ", 1)[0][:100]
+                lines.append(f"  - [{'x' if x['met'] else ' '}] {x['id']} {text}")
+        return lines
+
+    for g in m["milestones"]:
+        n = len(g["quests"])
+        k = sum(1 for q in g["quests"] if q["status"] == "landed")
+        out += [f"## {g['name']}: {'done' if n and k == n else f'{k} of {n} landed'}", ""]
+        if g["validation"] and not g["validation"].startswith("<"):
+            out += [f"Validation on main: {g['validation']}", ""]
+        for q in g["quests"]:
+            out += quest(q, bool(only))
+        out.append("")
+    if m["other"]:
+        out += (
+            (["## Not in a milestone", ""] if m["milestones"] else [])
+            + [line for q in m["other"] for line in quest(q, bool(only))]
+            + [""]
+        )
+    if m["dropped"]:
+        out += ["## Dropped", ""] + [f"- ~~{q['id']}~~: {q['title']} ({q['reason']})" for q in m["dropped"]] + [""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def refresh_map(c: Campaign) -> tuple[str, ...]:
+    """Rewrites MAP.md when the campaign keeps one; the paths to commit with the state."""
+    path = c.home / c.meta / "MAP.md"
+    if not path.exists():
+        return ()
+    atomic_write(path, map_text(c))
+    return (f"{c.meta}/MAP.md",)
+
+
+def cmd_map(a: argparse.Namespace) -> int:
+    if a.write:
+        with writing() as c:
+            path = c.home / c.meta / "MAP.md"
+            atomic_write(path, map_text(c))
+            c.save("campaign: map", extra=(f"{c.meta}/MAP.md",))
+        print(f"wrote {path}; `land` keeps it current")
+        return 0
+    c = find_campaign(Path.cwd())
+    if a.json:
+        print(json.dumps(map_data(c, a.id or ""), indent=2))
+    else:
+        print(map_text(c, a.id or ""), end="")
+    return 0
 
 
 def review_rows(c: Campaign) -> list[Json]:
@@ -3038,12 +3336,48 @@ def cmd_check(a: argparse.Namespace) -> int:
     if errors:
         return 1
     reap()
-    found = problems(Campaign(home))
-    for severity, message in found:
+    c = Campaign(home)
+    found = problems(c)
+    notes = housekeeping(c)
+    for severity, message in [*found, *notes]:
         print_problem(severity, message)
-    if not found:
+    if not any(s != "note" for s, _ in [*found, *notes]):
         print(f"{mark('✅')}{paint('ok', 'green')}")
     return 1 if any(s == "error" for s, _ in found) else 0
+
+
+def housekeeping(c: Campaign) -> list[tuple[str, str]]:
+    """What the campaign and the job store leave behind: landed or dropped quests with worktrees or
+    branches, what `job prune` would do, jobs of campaigns this machine does not know, and free disk
+    under CAMPAIGN_DISK_MIN_GB (default 20)."""
+    out: list[tuple[str, str]] = []
+    left = [
+        pid
+        for pid, p in c.quests.items()
+        if p["status"] in ("landed", "dropped")
+        and any((rel and (c.home / rel).exists()) or has_ref(c.repo(p), b) for _, b, rel, _ in branches(c, pid))
+    ]
+    if left:
+        out.append(("note", f"still have worktrees or branches: {', '.join(left)} (`campaign clean ID`)"))
+    plan = prune_plan(14)
+    if plan["delete"] or plan["slim"] or plan["slots"]:
+        jobs, slim, slots = (
+            plural(len(plan[k]), "slot" if k == "slots" else "job") for k in ("delete", "slim", "slots")
+        )
+        out.append(("note", f"`campaign job prune` would delete {jobs}, slim {slim} and remove {slots}"))
+    for owner, n in sorted(plan["unknown"].items()):
+        out.append(("note", f"{plural(n, 'job')} of {owner}, a campaign this machine does not know: prune keeps them"))
+    floor = float(os.environ.get("CAMPAIGN_DISK_MIN_GB", "20"))
+    disk = shutil.disk_usage(c.home)
+    if disk.free < floor * 2**30:
+        out.append(
+            (
+                "warning",
+                f"{disk.free / 2**30:.0f} GiB free ({disk.free / disk.total:.0%}) on {c.home}'s disk: `campaign job "
+                "prune`, `campaign clean` landed quests, and delete build directories nothing uses",
+            )
+        )
+    return out
 
 
 def submit_checks(
@@ -3214,7 +3548,8 @@ def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
     link = jd / "keys" / (f"{key}-{order}" if order else key)
     if key and not force and link.is_symlink():
         old = load_job(jd / os.readlink(link))
-        if old["state"].get("state") in ("queued", "running", "done"):
+        # a slimmed job is a record of its result, not its outputs: asking again runs it again
+        if old["state"].get("state") in ("queued", "running", "done") and not old["state"].get("slimmed"):
             return old["id"], True
     jid = time.strftime("%y%m%d-%H%M%S-") + secrets.token_hex(3)
     d = jd / jid
@@ -3609,6 +3944,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
             )
             running = [j for j in jobs if states[j["id"]] == "running"]
             if not queued and not running:
+                if daily_prune((home / "heartbeat").touch):
+                    continue  # whatever arrived while it pruned
                 return 0
             heavy = any(j["spec"].get("level") in HEAVY for j in running)
             light = sum(1 for j in running if j["spec"].get("level") not in HEAVY)
@@ -3974,86 +4311,170 @@ def cmd_job_cancel(a: argparse.Namespace) -> int:
     return 0
 
 
-def needed_jobs() -> tuple[set[str], set[tuple[str, str]], set[str]]:
-    """What the campaigns on this machine still need: jobs their open quests' journals and reviews
-    name, or their landings and acceptances record; (campaign, quest) of every quest not landed or
-    dropped, whose jobs are all kept; and the build slots of those quests."""
-    named: set[str] = set()
+SLIM_BYTES = 1 << 20  # a slimmed job keeps its record, its log and its output files up to this size
+
+
+def job_needs() -> Json:
+    """What the campaigns on this machine need from the job store. whole: the jobs an open quest uses
+    (its journals, reviews, gate evidence, confirmations). record: the jobs only landed or dropped
+    quests name (landings, acceptances, journals, reviews): evidence kept as a record, their bulk not.
+    open: the (campaign, quest) of each open quest; slots: their build slots; known: every campaign."""
+    whole: set[str] = set()
+    record: set[str] = set()
     open_quests: set[tuple[str, str]] = set()
     slots: set[str] = set()
+    known: set[str] = set()
     for name, o in campaigns().items():
         c = Campaign(Path(o["home"]), name)
+        known.add(c.ident)
+        closed = {pid for pid, p in c.quests.items() if p["status"] in ("landed", "dropped")}
         folder = c.home / c.meta / "reviews"
-        for f in folder.glob("*.md") if folder.is_dir() else []:
-            named.update(JOB_ID.findall(f.read_text()))
+        for f in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+            (record if f.stem.rsplit("-", 1)[0] in closed else whole).update(JOB_ID.findall(f.read_text()))
         for pid, p in c.quests.items():
-            for record in p.get("landed", []):
-                named.update(record.get("later", []))
+            named = record if pid in closed else whole
+            repo = c.repo(p)
+            for landing in p.get("landed", []):
+                named.update(landing.get("later", []))
+                named.update(e["job"] for e in landing.get("evidence", []) if e.get("job"))
+                for text in journals_at(c, repo, landing["commit"], pid).values():
+                    named.update(JOB_ID.findall(text))
             for acc in p.get("accepted", {}).values():
                 named.update(j["job"] for f in acc.get("findings", {}).values() for j in f.get("jobs", []))
-            if p["status"] in ("landed", "dropped"):
+            for jname, branch, rel, _ in branches(c, pid):
+                named.update(JOB_ID.findall(journal_text(c, jname, branch, rel)))
+            if pid in closed:
                 continue
             open_quests.add((c.ident, pid))
             slots.add(f"{name}-{pid}")
-            repo = c.repo(p)
-            for jname, branch, rel, _ in branches(c, pid):
-                named.update(JOB_ID.findall(journal_text(c, jname, branch, rel)))
-                if has_ref(repo, branch):  # its gates' evidence, whichever quest's job it was
+            for _, branch, _, _ in branches(c, pid):
+                if has_ref(repo, branch):
                     head = rev(repo, branch)
-                    named.update(j["id"] for j in (job_for_check(repo, head, x) for x in gates(p)) if j)
-    return named, open_quests, slots
+                    whole.update(j["id"] for j in (job_for_check(repo, head, x) for x in gates(p)) if j)
+    return {"whole": whole, "record": record - whole, "open": open_quests, "slots": slots, "known": known}
 
 
-def cmd_job_prune(a: argparse.Namespace) -> int:
-    """Deletes finished jobs older than --days that no open quest, landing or acceptance needs, their
-    kept checkouts, the identity links to them, and build slots no open quest uses."""
+def bulky(j: Json) -> bool:
+    """Whether a job holds more than its record: a kept checkout, or an output file over SLIM_BYTES."""
+    if (j["dir"] / "src").exists() or any(j["dir"].glob("ref-*")):
+        return True
+    return any(
+        f.is_file() and not f.is_symlink() and f.stat().st_size > SLIM_BYTES
+        for out in j["dir"].glob("a*/out")
+        for f in out.rglob("*")
+    )
+
+
+def prune_plan(days: float) -> Json:
+    """What `job prune` does to finished jobs older than DAYS: deletes those nothing names, slims those
+    only landed or dropped quests name, and removes idle build slots. Jobs of open quests, and of
+    campaigns this machine does not know ("unknown", counted per campaign), are kept whole."""
     reap()
-    cutoff = time.time() - a.days * 86400
-    named, open_quests, slots = needed_jobs()
-    old: list[Json] = []
+    cutoff = time.time() - days * 86400
+    needs = job_needs()
+    plan: Json = {"delete": [], "slim": [], "slots": [], "unknown": {}}
     for j in all_jobs():
         st, spec = j["state"], j["spec"]
+        owner = spec.get("campaign", "")
+        if owner and owner not in needs["known"]:
+            plan["unknown"][owner] = plan["unknown"].get(owner, 0) + 1
+            continue
         ended = st.get("ended") or mtime(j["dir"] / "state.json") or time.time()
-        if st.get("state") not in TERMINAL or ended > cutoff or j["id"] in named:
+        if st.get("state") not in TERMINAL or ended > cutoff or j["id"] in needs["whole"]:
             continue
-        if (spec.get("campaign"), spec.get("quest")) in open_quests:
+        if (owner, spec.get("quest")) in needs["open"]:
             continue
-        old.append(j)
+        if j["id"] in needs["record"]:
+            if not st.get("slimmed") and bulky(j):
+                plan["slim"].append(j)
+            continue
+        plan["delete"].append(j)
     root = jobs_dir() / "slots"
-    idle = [
+    plan["slots"] = [
         x
         for x in (sorted(root.iterdir()) if root.is_dir() else [])
         if x.is_dir()
         and not x.name.endswith(".lock")
-        and x.name not in slots
+        and x.name not in needs["slots"]
         and not x.with_name(x.name + ".lock").exists()
         and (mtime(x) or 0) < cutoff
     ]
-    for j in old:
-        print(f"{j['id']}  {j['state'].get('state')}  {j['spec'].get('what', '')}")
-    for x in idle:
+    return plan
+
+
+def drop_checkouts(j: Json) -> None:
+    spec = j["spec"]
+    if spec.get("repo"):
+        worktree_remove(spec["repo"], j["dir"] / "src")
+    for ref in spec.get("refs", {}).values():
+        for d in j["dir"].glob("ref-*"):
+            worktree_remove(ref["repo"], d)
+
+
+def prune(days: float, dry_run: bool = False, beat: Callable[[], None] = lambda: None) -> None:
+    """Carries out prune_plan, logging each deletion and slimming in the job store's prune.log."""
+    plan = prune_plan(days)
+    for j in plan["delete"]:
+        print(f"delete {j['id']}  {j['state'].get('state')}  {j['spec'].get('what', '')}")
+    for j in plan["slim"]:
+        print(f"slim {j['id']}  {j['spec'].get('what', '')}")
+    for x in plan["slots"]:
         print(f"slot {x.name}")
-    if a.dry_run:
-        print(f"would delete {plural(len(old), 'job')} and {plural(len(idle), 'slot')} (older than {a.days:g} days)")
-        return 0
-    for j in old:
-        spec = j["spec"]
-        if spec.get("repo"):
-            worktree_remove(spec["repo"], j["dir"] / "src")
-        for ref in spec.get("refs", {}).values():
-            for d in j["dir"].glob("ref-*"):
-                worktree_remove(ref["repo"], d)
-        shutil.rmtree(j["dir"], ignore_errors=True)
-    for x in idle:
-        common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-        shutil.rmtree(x, ignore_errors=True)
-        if common:
-            git(Path(common).parent, "worktree", "prune", check=False)
+    for owner, n in sorted(plan["unknown"].items()):
+        print(f"kept {plural(n, 'job')} of {owner}: no campaign on this machine is there")
+    jobs, slim, slots = (plural(len(plan[k]), "slot" if k == "slots" else "job") for k in ("delete", "slim", "slots"))
+    if dry_run:
+        print(f"would delete {jobs}, slim {slim} and remove {slots} (older than {days:g} days)")
+        return
+    with open(jobs_dir() / "prune.log", "a") as log:
+        for j in plan["delete"]:
+            drop_checkouts(j)
+            shutil.rmtree(j["dir"], ignore_errors=True)
+            log.write(f"{stamp()} deleted {j['id']} {j['spec'].get('what', '')}\n")
+            beat()
+        for j in plan["slim"]:
+            drop_checkouts(j)
+            for out in j["dir"].glob("a*/out"):
+                for f in list(out.rglob("*")):
+                    if f.is_file() and not f.is_symlink() and f.stat().st_size > SLIM_BYTES:
+                        f.unlink()
+            state = read_json(j["dir"] / "state.json") or {}
+            write_json(j["dir"] / "state.json", {**state, "slimmed": stamp()})
+            log.write(f"{stamp()} slimmed {j['id']} {j['spec'].get('what', '')}\n")
+            beat()
+        for x in plan["slots"]:
+            common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+            shutil.rmtree(x, ignore_errors=True)
+            if common:
+                git(Path(common).parent, "worktree", "prune", check=False)
+            log.write(f"{stamp()} removed slot {x.name}\n")
+            beat()
     keys = jobs_dir() / "keys"
     for link in keys.iterdir() if keys.is_dir() else []:
         if link.is_symlink() and not (jobs_dir() / os.readlink(link)).exists():
             link.unlink()
-    print(f"deleted {plural(len(old), 'job')} and {plural(len(idle), 'slot')} (older than {a.days:g} days)")
+    print(f"deleted {jobs}, slimmed {slim} and removed {slots} (older than {days:g} days)")
+
+
+def daily_prune(beat: Callable[[], None]) -> bool:
+    """The worker's housekeeping once its queue empties: `job prune` with its defaults, at most once a
+    day (CAMPAIGN_AUTO_PRUNE=0 turns it off). True when it ran."""
+    if os.environ.get("CAMPAIGN_AUTO_PRUNE") == "0":
+        return False
+    mark = jobs_dir() / ".pruned"
+    last = mtime(mark)
+    if last is not None and time.time() - last < 86400:
+        return False
+    mark.touch()
+    try:
+        prune(14, beat=beat)
+    except (CampaignError, OSError) as e:
+        print(f"campaign: the daily prune failed: {e}", file=sys.stderr)
+    return True
+
+
+def cmd_job_prune(a: argparse.Namespace) -> int:
+    prune(a.days, a.dry_run)
     return 0
 
 
@@ -4363,10 +4784,25 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_usage)
 
     p = command(
+        "map",
+        "the campaign's milestones and quests, with intent, result and criteria",
+        "The campaign as a map, in Markdown: its goals, then each milestone of PLAN.md with a checkbox per "
+        "quest, its intent (the quest file's Outcome), its result (the journal's Result), the documents its "
+        "landing added to its repository's docs/, its reviews, and the open quests' criteria as checkboxes. "
+        "With ID, that quest in full. --write keeps it as .campaign/NAME/MAP.md, which each landing refreshes.",
+    )
+    p.add_argument("id", metavar="ID", nargs="?", help="only this quest, in full")
+    p.add_argument("--json", action="store_true", help="the same as JSON")
+    p.add_argument("--write", action="store_true", help="write and commit .campaign/NAME/MAP.md")
+    p.set_defaults(fn=cmd_map)
+
+    p = command(
         "check",
         "contradictions between state, git, worktrees and jobs",
         "Reports errors and warnings where state.json, git, the worktrees and the job records disagree, and "
-        "what other campaigns on this machine overlap; exits 1 on an error. It changes nothing.",
+        "what other campaigns on this machine overlap; exits 1 on an error. Notes report what is left behind: "
+        "landed quests not cleaned, what `job prune` would do, jobs of campaigns this machine does not know; a "
+        "warning, free disk under CAMPAIGN_DISK_MIN_GB (default 20). It changes nothing.",
     )
     p.set_defaults(fn=cmd_check)
 
@@ -4422,8 +4858,10 @@ def parser() -> argparse.ArgumentParser:
         "land a quest on main",
         "Lands the quest when nothing `campaign brief` lists is left: dependencies, rebase, file set, tasks, "
         "criteria, messages, checks, reviews and CI. It fast-forwards main (or merges when only campaign files "
-        "differ), checks that the landed code is the tested code and records the landing. --upto lands a "
-        "prefix that is safe alone as an increment; --record records a landing that already happened.",
+        "differ), checks that the landed code is the tested code and records the landing. A final landing then "
+        "cleans the quest as `clean` does, keeping and naming what cannot go safely (--keep keeps it all), and "
+        "refreshes MAP.md when the campaign keeps one. --upto lands a prefix that is safe alone as an increment; "
+        "--record records a landing that already happened.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--upto", metavar="REF", help="land the branch up to this commit, as an increment")
@@ -4433,6 +4871,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--record", metavar="REF", help="record a landing that already happened (with --reason; unchecked gates kept)"
     )
+    p.add_argument(
+        "--earlier",
+        action="store_true",
+        help="with --record: it landed before this campaign, reviewed and verified by the process of its time, "
+        "which --reason names (its ledger, review and CI); no gate is listed as unverified",
+    )
+    p.add_argument("--keep", action="store_true", help="keep the quest's worktrees, branches and build slot")
     p.set_defaults(fn=cmd_land)
 
     p = command(
@@ -4462,8 +4907,10 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "clean",
         "remove a landed or dropped quest's worktrees and branches",
-        "Removes a landed or dropped quest's worktrees, its merged branches and its build slot. A worktree with "
-        "uncommitted files and an unmerged branch are kept unless --force.",
+        "Removes a landed or dropped quest's worktrees, its merged branches and its build slot (a final `land` "
+        "does this itself). A worktree with uncommitted or untracked files, or that a job's command, directory or "
+        "environment names, stops it unless --force; an unmerged branch is kept unless --force. Committed "
+        "files, journals, reviews and job records stay.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--force", action="store_true", help="remove them anyway")
@@ -4577,12 +5024,14 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_job_rerun)
     p = job_command(
         "prune",
-        "delete old finished jobs nothing needs",
-        "Deletes finished jobs that ended more than --days ago, except those of quests not landed or dropped "
-        "(in any campaign on this machine), the jobs that are an open quest's gate evidence, and those a journal, "
-        "review, deferred check or acceptance names; their kept checkouts and identity links go with them, and so "
-        "do build slots no open quest uses. A landed quest's gate jobs may go: its landing record in state.json "
-        "keeps their summary (job, commit, command, result).",
+        "delete old finished jobs nothing needs; slim the ones evidence names",
+        "For finished jobs that ended more than --days ago: deletes those nothing names, with their kept "
+        "checkouts and identity links; slims those only landed or dropped quests name (a landing, acceptance, "
+        "deferred check, journal or review): their kept checkouts and output files over 1 MiB go, their spec, "
+        "state, log and smaller outputs stay, and they are never reused by identity again. Jobs of quests not "
+        "landed or dropped, and of campaigns this machine does not know, are kept whole. Build slots no open "
+        "quest uses go too. Each deletion is logged in the job store's prune.log. The worker runs this with its "
+        "defaults once a day when its queue empties (CAMPAIGN_AUTO_PRUNE=0 turns that off).",
     )
     p.add_argument(
         "--days", type=float, default=14, metavar="N", help="keep jobs that ended within N days (default 14)"

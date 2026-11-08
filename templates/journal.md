@@ -29,6 +29,12 @@ you examined, failures included, and answer each message by its id (msg-N).
 |---|---|
 | <A1> | <job id at the current code> |
 
+## Result
+
+<When ready for review: what changed, its measured effect with numbers and the jobs behind them,
+and what it leaves open. Results and how it works go in the docs of the repository it changed
+(docs/perf/, docs/mechanisms/, a library's own); name them here. `campaign map` shows this.>
+
 ## Rulings I made
 
 <Decisions inside the quest's scope, so the reviewer can check them.>

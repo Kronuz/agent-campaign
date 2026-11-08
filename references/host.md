@@ -81,12 +81,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 Retries are off by default because a command may not be safe to run twice; checks queued by
 `campaign verify` retry once.
 
-`campaign job prune [--days N] [--dry-run]` deletes finished jobs that ended more than N days ago
-(14), with their kept checkouts and identity links, and build slots no open quest uses. It keeps
-every job of a quest not landed or dropped, in any campaign on the machine, every job that is an
-open quest's gate evidence (whichever quest submitted it), and every job a journal, review,
-deferred check or acceptance names. A landed quest's gate jobs may go; its landing record in
-`state.json` keeps their summary.
+`campaign job prune [--days N] [--dry-run]` acts on finished jobs that ended more than N days ago
+(14). It keeps whole every job of a quest not landed or dropped and every job such a quest's
+journals, reviews, gates or confirmations name, in any campaign on the machine, and every job of a
+campaign the machine does not know (a home moved by hand). It slims a job only landed or dropped
+quests name (a landing, acceptance, deferred check, journal or review): its kept checkouts and
+output files over 1 MiB go, its spec, state, log and smaller outputs stay, and it is never reused
+by identity again. It deletes the rest, with their checkouts and identity links, and removes build
+slots no open quest uses. Every deletion and slimming is logged in the job store's `prune.log`.
+The worker runs it with these defaults once a day when its queue empties; `CAMPAIGN_AUTO_PRUNE=0`
+turns that off.
 
 ## quiet: host holds
 

@@ -322,6 +322,49 @@ class Prune(CampaignCase):
         self.assertNotIn("no job", self.ok(self.home, "brief", "b").out)
         self.assertNotIn("reused", self.ok(self.home, "job", "submit", "--sync", "--", "true 3").text)
 
+    def test_prune_slims_the_evidence_a_landing_names_and_never_reuses_it(self) -> None:
+        check = "unit=python3 app.py && head -c 2000000 /dev/zero > $JOB_OUT/big.bin && echo ok > $JOB_OUT/small.txt"
+        wt = self.started("a", files="app.py", check=check)
+        head = self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("a")
+        self.ok(self.home, "land", "a")
+        (gate,) = [j["job"] for j in self.quest("a")["landed"][0]["evidence"]]
+        self.age(gate, 30)
+        self.assertIn("slimmed 1 job", self.ok(self.home, "job", "prune", "--days", "14").out)
+        out = self.root / "jobs" / gate / "a1" / "out"
+        self.assertTrue((self.root / "jobs" / gate / "spec.json").exists(), "the landing's evidence was deleted")
+        self.assertFalse((out / "big.bin").exists())
+        self.assertTrue((out / "small.txt").exists())
+        self.assertTrue(self.job(gate).get("slimmed"))
+        self.assertIn(f"slimmed {gate}", (self.root / "jobs" / "prune.log").read_text())
+        self.assertNotIn("reused", self.ok(self.home, "verify", "a", "--commit", head).out)
+
+    def test_prune_keeps_the_jobs_of_a_campaign_this_machine_does_not_know(self) -> None:
+        wt = self.started("open", files="app.py")
+        tagged = self.submit(wt, "--quest", "open", "--sync", "--", "true 1")
+        self.age(tagged, 30)
+        (self.root / "campaigns" / "demo").unlink()  # moved by hand, its registry entry not renamed
+        out = self.ok(self.home, "job", "prune", "--days", "14").out
+        self.assertTrue((self.root / "jobs" / tagged).exists(), "prune deleted an unknown campaign's job")
+        self.assertIn("no campaign on this machine is there", out)
+
+    def test_the_worker_prunes_once_a_day_when_its_queue_empties(self) -> None:
+        self.env["CAMPAIGN_AUTO_PRUNE"] = "1"
+        mark = self.root / "jobs" / ".pruned"
+        mark.parent.mkdir(exist_ok=True)
+        mark.touch()  # pruned today: the first run leaves the store alone
+        old = self.submit(self.home, "--sync", "--", "true old")  # --sync runs it here, without the worker
+        self.age(old, 30)
+        os.utime(mark, (time.time() - 2 * 86400,) * 2)
+        self.ok(self.home, "wait", self.submit(self.home, "--", "true next"))  # the worker runs this one
+        self.wait_until(lambda: not (self.root / "jobs" / old).exists())
+        self.assertIn(f"deleted {old}", (self.root / "jobs" / "prune.log").read_text())
+        again = self.submit(self.home, "--sync", "--", "true again")
+        self.age(again, 30)
+        self.ok(self.home, "wait", self.submit(self.home, "--", "true last"))
+        time.sleep(1)  # the worker empties its queue and exits
+        self.assertTrue((self.root / "jobs" / again).exists(), "the worker pruned twice in a day")
+
 
 class Contention(CampaignCase):
     alone = True  # times builds against an exclusive benchmark

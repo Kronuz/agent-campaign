@@ -312,10 +312,11 @@ class Evidence(CampaignCase):
         self.commit(wt, {"app.py": "print(3)\n"})  # the evidence is now for an older commit
         self.fails(self.home, "land", "fix", match="not green")
         self.verified("fix")
+        head = self.git(wt, "rev-parse", "HEAD")
         self.ok(self.home, "land", "fix")
         self.assertEqual(self.quest("fix")["status"], "landed")
         record = self.quest("fix")["landed"][0]
-        self.assertEqual(record["tested"], self.git(wt, "rev-parse", "HEAD"))
+        self.assertEqual(record["tested"], head)
         self.assertEqual(record["evidence"][0]["state"], "done")
 
     def test_status_counts_failures_only_at_the_code_the_quest_has_now(self) -> None:
@@ -1569,7 +1570,8 @@ class Recovery(CampaignCase):
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        self.ok(self.home, "land", "fix")
+        self.ok(self.home, "land", "fix", "--keep")
+        self.assertTrue(wt.exists(), "--keep removed the worktree")
         (wt / "probe.txt").write_text("unsaved probe\n")
         self.fails(self.home, "clean", "fix", match="untracked")
         (wt / "probe.txt").unlink()
@@ -1577,6 +1579,124 @@ class Recovery(CampaignCase):
         self.assertFalse(wt.exists())
         self.assertNotIn("quest/demo/fix", self.git(self.home, "branch", "--list"))
         self.assertNotIn("slots", self.git(self.home, "worktree", "list"))
+
+    def test_landing_cleans_what_is_safe_and_keeps_the_rest(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.ok(self.home, "land", "fix")
+        self.assertFalse(wt.exists(), "the landing left the worktree")
+        self.assertNotIn("quest/demo/fix", self.git(self.home, "branch", "--list"))
+        self.assertNotIn("slots", self.git(self.home, "worktree", "list"))
+        self.assertEqual(self.quest("fix")["worktree"], "")
+        dirty = self.started("dirty", files="lib/util.py")
+        self.commit(dirty, {"lib/util.py": "X = 2\n"})
+        self.verified("dirty")
+        (dirty / "notes.txt").write_text("not committed\n")
+        out = self.ok(self.home, "land", "dirty").out
+        self.assertIn("kept", out)
+        self.assertTrue((dirty / "notes.txt").exists(), "the landing deleted an untracked file")
+        self.assertEqual(self.quest("dirty")["status"], "landed")
+        (dirty / "notes.txt").unlink()
+        self.ok(self.home, "clean", "dirty")
+        self.assertFalse(dirty.exists())
+
+    def test_landing_keeps_a_worktree_a_job_reads_from(self) -> None:
+        wt = self.started("data", files="README.md,.gitignore")
+        self.commit(wt, {".gitignore": "corpus.bin\n", "README.md": "app 2\n"})
+        (wt / "corpus.bin").write_text("input\n")  # ignored: git calls the worktree clean
+        self.ok(wt, "job", "submit", "--sync", "--", f"cat {wt / 'corpus.bin'}")
+        self.verified("data")
+        out = self.ok(self.home, "land", "data").out
+        self.assertIn("reads from it", out)
+        self.assertTrue((wt / "corpus.bin").exists(), "the landing deleted an input a job reads")
+
+    def test_check_reports_housekeeping_without_failing(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.ok(self.home, "land", "fix", "--keep")
+        loose = self.submit(self.home, "--sync", "--", "true loose")
+        state = self.root / "jobs" / loose / "state.json"
+        data = json.loads(state.read_text())
+        data["ended"] = time.time() - 30 * 86400
+        state.write_text(json.dumps(data))
+        out = self.ok(self.home, "check").out
+        self.assertIn("still have worktrees or branches: fix", out)
+        self.assertIn("would delete 1 job", out)
+        self.env["CAMPAIGN_DISK_MIN_GB"] = str(10**9)
+        out = self.ok(self.home, "check").out
+        self.assertIn("GiB free", out)
+
+
+class Map(CampaignCase):
+    def test_the_map_shows_intent_result_documents_and_progress(self) -> None:
+        plan = self.home / ".campaign/demo/PLAN.md"
+        text = plan.read_text().replace("- <what success means, measurably>", "- Totals print right")
+        text = text.replace("| <M1> | <ids> | <command> |", "| M1 | fix, open | python3 app.py |")
+        plan.write_text(text)
+        self.git(self.home, "commit", "-q", "-am", "plan")
+        wt = self.started("fix", files="app.py,docs/**", milestone="M1")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("## Outcome\n", "## Outcome\n\nPrints two instead of one.\n", 1))
+        self.git(self.home, "commit", "-q", "-am", "fix outcome")
+        journal = ".campaign/demo/journal/fix.md"
+        result = (
+            (wt / journal)
+            .read_text()
+            .replace(
+                "## Result\n", "## Result\n\nPrints 2; 1.0 ms per call (job x). How: docs/mechanisms/print.md.\n", 1
+            )
+        )
+        self.commit(wt, {"app.py": "print(2)\n", "docs/mechanisms/print.md": "# Print\n", journal: result})
+        self.verified("fix")
+        self.ok(self.home, "map", "--write")
+        self.ok(self.home, "new", "open", "--title", "Open work", "--files", "README.md", "--milestone", "M1")
+        self.ok(self.home, "land", "fix")
+        written = (self.home / ".campaign/demo/MAP.md").read_text()
+        self.assertIn("- [x] **fix**", written, "the landing did not refresh MAP.md")
+        out = self.ok(self.home, "map").out
+        self.assertIn("- Totals print right", out)
+        self.assertIn("## M1: 1 of 2 landed", out)
+        self.assertIn("- [x] **fix**: fix", out)
+        self.assertIn("Outcome: Prints two instead of one.", out)
+        self.assertIn("Result: Prints 2; 1.0 ms per call", out)
+        self.assertIn("Docs: docs/mechanisms/print.md", out)
+        self.assertIn("- [ ] **open**: Open work", out)
+        self.assertNotIn("**open**", self.ok(self.home, "map", "fix").out)
+        data = json.loads(self.ok(self.home, "map", "--json").out)
+        self.assertEqual([q["id"] for q in data["milestones"][0]["quests"]], ["fix", "open"])
+
+    def test_work_done_before_the_campaign_is_recorded_on_the_map(self) -> None:
+        self.env.update(GIT_AUTHOR_DATE="2026-10-01T12:00:00", GIT_COMMITTER_DATE="2026-10-01T12:00:00")
+        old = self.commit(self.home, {"docs/status/pins.md": "1. [x] K1 pins at head\n"}, message="Pins at head")
+        for key in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):
+            self.env.pop(key)
+        self.ok(self.home, "new", "pins", "--title", "Pins at head", "--risk", "normal")
+        (self.home / ".campaign/demo/quests/pins.md").write_text(
+            "# pins: Pins at head\n\n## Outcome\n\nEvery library at its head.\n\n## Acceptance criteria\n\n"
+            "- A1 [artifact] Pins at head: `docs/status/pins.md`\n"
+        )
+        journal = self.home / ".campaign/demo/journal/pins.md"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(
+            "# pins: journal\n\nState: landed\n\n## Evidence\n\n| Criterion | Evidence |\n|---|---|\n"
+            "| A1 | `docs/status/pins.md` |\n\n## Result\n\nAll 12 pins at head; CI green.\n"
+        )
+        self.git(self.home, "add", ".campaign")
+        self.git(self.home, "commit", "-q", "-m", "history: pins")
+        self.fails(self.home, "land", "pins", "--earlier", match="--record")
+        reason = "docs/status/pins.md; reviewed in docs/reviews/pins.md, APPROVE; CI run 1"
+        self.ok(self.home, "land", "pins", "--record", old, "--earlier", "--reason", reason)
+        record = self.quest("pins")["landed"][0]
+        self.assertTrue(record["at"].startswith("2026-10-01"), record)
+        self.assertEqual(record["unverified"], [], "work verified before the campaign is listed as unverified")
+        self.assertIn("(before the campaign)", self.ok(self.home, "status", "pins").out)
+        out = self.ok(self.home, "map").out
+        self.assertIn("- [x] **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
+        self.assertIn("Result: All 12 pins at head; CI green.", out)
+        (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
+        self.assertTrue(pins["criteria"] and all(x["met"] for x in pins["criteria"]), pins["criteria"])
 
 
 if __name__ == "__main__":

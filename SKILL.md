@@ -133,8 +133,8 @@ model for durability) is always a gate. Slow CI workflows can be made non-gating
    reviewers the risk requires; each writes `.campaign/<campaign>/reviews/ID-LENS.md`. The lead
    relays blocking findings to the contributor by id.
 5. `campaign accept ID LENS` once a review approves, or after CHANGES with the confirming jobs
-   (Risk and review); it commits the review file with the acceptance. Then `campaign land ID` and
-   `campaign clean ID`.
+   (Risk and review); it commits the review file with the acceptance. Then `campaign land ID`, which
+   also removes the quest's worktrees, merged branches and build slot, and names what it kept.
 
 ## Exploration batches
 
@@ -211,7 +211,8 @@ A result is reused for identical code (without `.campaign/`), command, directory
 host and toolchain: name a mutable input (a dataset version) with `--env`, and rerun with
 `--force` what depends on more. A strict or exclusive job lasts at most 30 minutes and is stopped at
 its deadline. Every process a job starts dies with it. A worker starts by itself and exits when
-the queue is empty; `campaign job prune` deletes old finished jobs nothing needs. Mechanics:
+the queue is empty, pruning once a day: jobs nothing names go after 14 days, and jobs evidence
+names keep their record and lose only bulky outputs (`campaign job prune`). Mechanics:
 `references/host.md`.
 
 ## Integration
@@ -252,16 +253,17 @@ on" and ask.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
 - Report to the owner on events (a landing, a blocker, a decision); any periodic report is built
-  from `campaign status`, never by waking agents.
+  from `campaign status` and `campaign map`, never by waking agents.
 
 ## Writing
 
 Operational records (journals, reviews, decision rows, messages) are terse and factual: the state,
 the next step, the evidence, the decision and why. Engineering documents (designs, results,
 runbooks) are plain technical prose that points at code and job ids. A personal writing-style skill
-is for public-facing writing the owner asks to have in that voice, never for records. A
-how-it-works note (`templates/mechanism.md`) is optional: write one when a mechanism is not obvious
-from its code and will outlive the quest.
+is for public-facing writing the owner asks to have in that voice, never for records. Results and
+how-it-works notes (`templates/mechanism.md`, when a mechanism is not obvious from its code) go in
+the docs of the repository the quest changed, a library's own included; the journal's Result names
+them, and `campaign map` shows it.
 
 ## The owner's authority
 

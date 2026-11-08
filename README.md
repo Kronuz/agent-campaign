@@ -99,13 +99,14 @@ The lead drives the tool; these are the commands it reaches for most.
 | `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |
 | `campaign accept ID LENS` | records a review as accepted for the commit it saw; after CHANGES, `--confirm FINDING=JOB` per blocking finding |
-| `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code |
+| `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code, then removes its worktrees, merged branches and build slot |
 | `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
+| `campaign map [ID]` | the campaign's milestones and quests as checkboxes: each quest's intent, result, the docs its landing added, its reviews and criteria; `--write` keeps it as `MAP.md` |
 | `campaign brief [--json]` | the same for agents: one line (or JSON field) per thing to act on; in a quest's worktree, that quest |
 | `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's lead) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and assignment |
-| `campaign job prune` | deletes old finished jobs that no open quest, landing or acceptance needs |
+| `campaign job prune` | deletes old finished jobs nothing names and slims those evidence names to their record; the worker runs it once a day |
 | `campaign help COMMAND` | each command's description and options (`quiet help`, `report help` too) |
 
 [`SKILL.md`](SKILL.md) is what agents read; [`references/`](references) holds the prompts, the
@@ -115,7 +116,7 @@ review and measurement rules, the host tools and the per-harness notes.
 
 State lives in `.campaign/<name>/` of the home repository and only the tool writes it, from the main
 checkout, under a lock. Every change is a commit that says what happened (`campaign: start`, `accept`,
-`land ... at <commit>`), so `git log -- .campaign/<name>` is the campaign's ledger; each quest's
+`land ... at <commit>`), so `git log -- .campaign/<name>` is the campaign's ledger and `campaign map` its map; each quest's
 journal is its contributor's, and `PLAN.md`'s Decisions table is the lead's. Agents submit work
 as jobs and end their turn; one worker per machine runs the queue in priority order under `quiet`,
 and the lead waits on results with one background command. A check result is keyed by the
