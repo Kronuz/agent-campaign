@@ -160,19 +160,24 @@ acceptance reported void; cited jobs rerun; security re-confirmed per finding (r
 `--fix-scope` named the task's file); landed. Found: merging `main` does not carry the journals, and
 a plain task merge stops on a file-location conflict; both steps are in the checklist.
 
-**On the laptop.** Everything of the trial was there: all seven task branches existed only on the
-laptop, `performance` (4 commits) and `real-deltas` (7) not merged; `dense-pages-first-read` (3
-commits) unpushed; `Detent-wt/dense-s2` mid-merge of `namespace/s1-s2` with 22 changes and a
-conflict, snapshotted to `wip/dense-s2-parked` without touching the worktree; 12 GB of job records;
-reviews naming `Commit: Detent:<sha>`, which `accept` could not read (fixed, `c1f3ef7`).
+**On the laptop.** Everything of the trial was there: the six task branches and
+`dense-pages-grouped-sync` existed only on the laptop, `performance` (4 commits) and `real-deltas`
+(7) not merged; `dense-pages-first-read` (3 commits) unpushed; `Detent-wt/dense-s2` mid-merge of
+`namespace/s1-s2` with 22 changes and a conflict, snapshotted to `wip/dense-s2-parked` without
+touching the worktree; 12 GB of job records; reviews naming `Commit: Detent:<sha>`, which `accept`
+could not read (fixed, `c1f3ef7`). Every branch is now on GitHub, checked ref by ref, local `main` as
+`wip/main-parked-2026-11-08` (pushed from a bundle: the laptop's `gh` token is invalid). Checking
+the move against the laptop found that a campaign moved by hand is unregistered until its first
+state write, invisible to `status --all` and `job prune`; the checklist renames the entry
+(`f7afa61`).
 
 ## Readiness
 
 **Go, for a controlled week on Detent**, under these conditions:
 
-1. Land this branch and run the full suite on the host that will run the campaign.
-2. Run the move on the laptop, where the work and the job records are; push its branches first, so
-   none exists only there.
+1. Land this branch, and run the full suite on the host that will run the campaign. Done: on `main`;
+   on the laptop (macOS x86_64, Python 3.15.2), 148 tests OK, 2 skipped, in 198 s.
+2. Run the move on the laptop, where the work and the job records are; its branches are on GitHub.
 3. One contributor at a time at first; the runbook's daily records and stop conditions apply.
 
 Open, none blocking: no end-to-end token comparison yet; Linux, Claude Code and real GitHub CI were
