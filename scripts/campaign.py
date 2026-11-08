@@ -2613,6 +2613,7 @@ def launch(prompt: str) -> Json | None:
             kind = "adventurer" if role["resume"] else role["role"]
             return {
                 "role": kind,
+                "resume": bool(role["resume"]),
                 "lens": role["lens"] or "" if kind == "paladin" else "",
                 "quest": quest["id"] if quest else "-",
                 "class": cls[1] if cls else "",
@@ -2620,6 +2621,16 @@ def launch(prompt: str) -> Json | None:
                 "home": named["home"] or "",
             }
     return None
+
+
+# (usage field, Copilot's name): inputTokens includes the cached reads, as Codex's input_tokens does
+COPILOT_TOKENS = (
+    ("cached_input_tokens", "cacheReadTokens"),
+    ("cache_write_tokens", "cacheWriteTokens"),
+    ("output_tokens", "outputTokens"),
+    ("reasoning_tokens", "reasoningTokens"),
+)
+BREAKDOWN = ("cached_input_tokens", "cache_write_tokens", "output_tokens", "reasoning_tokens", "requests")
 
 
 def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
@@ -2632,7 +2643,13 @@ def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
             continue
         prompts: dict[str, str] = {}
         agents: dict[str, Json] = {}
-        lead: Json = {"harness": "copilot", "session": log.parent.name, "cost": 0.0, "tokens": 0}
+        lead: Json = {
+            "harness": "copilot",
+            "session": log.parent.name,
+            "cost": 0.0,
+            "tokens": 0,
+            "cost_available": True,
+        }
         with log.open(errors="replace") as f:
             for line in f:
                 try:
@@ -2650,6 +2667,9 @@ def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
                     who["tokens"] = (
                         who.get("tokens", 0) + int(u.get("inputTokens") or 0) + int(u.get("outputTokens") or 0)
                     )
+                    for field, key in COPILOT_TOKENS:
+                        who[field] = who.get(field, 0) + int(u.get(key) or 0)
+                    who["requests"] = who.get("requests", 0) + 1
                     continue
                 if not t.startswith("subagent.") or not e.get("agentId"):
                     continue
@@ -2675,7 +2695,8 @@ def copilot_runs(since: float) -> tuple[list[Json], list[Json]]:
                     "agent": aid,
                     **what,
                     **{k: a.get(k, d) for k, d in (("type", ""), ("model", ""), ("effort", ""), ("began", ""))},
-                    **{k: a.get(k, 0) for k in ("tokens", "cost", "seconds", "tool_calls")},
+                    **{k: a.get(k, 0) for k in ("tokens", "cost", "seconds", "tool_calls", *BREAKDOWN)},
+                    "cost_available": True,
                 }
             )
         if mine:
@@ -2790,13 +2811,17 @@ def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
         for record in records.values():
             config = turns.get(record["turn"], record)
             key = (config["model"], config["effort"])
-            g = groups.setdefault(key, {"tokens": 0, "cached_input_tokens": 0, "output_tokens": 0})
+            g = groups.setdefault(
+                key, {"tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0}
+            )
             u = record["usage"]
             g["tokens"] += int(
                 u.get("total_tokens", int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)) or 0
             )
             for field in ("cached_input_tokens", "output_tokens"):
                 g[field] += int(u.get(field) or 0)
+            g["reasoning_tokens"] += int(u.get("reasoning_output_tokens") or 0)
+            g["requests"] = g.get("requests", 0) + 1
         if not records:
             groups[(model, effort)] = {
                 "tokens": int(
@@ -2808,6 +2833,7 @@ def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
                 ),
                 "cached_input_tokens": int(cumulative.get("cached_input_tokens") or 0),
                 "output_tokens": int(cumulative.get("output_tokens") or 0),
+                "reasoning_tokens": int(cumulative.get("reasoning_output_tokens") or 0),
             }
         for turn, start in starts.items():
             config = turns.get(turn, {"model": model, "effort": effort})
@@ -2958,6 +2984,18 @@ def span(seconds: float) -> str:
     return f"{m // 60}h{m % 60:02d}m" if m >= 60 else f"{m}m"
 
 
+def cost_of(rows: list[Json]) -> str:
+    """The rows' cost in their harness's unit; "n/a" for what a harness does not report, never 0."""
+    known = [r for r in rows if r.get("cost_available", True)]
+    text = amount(sum(r["cost"] for r in known)) if known else ""
+    return text + ("+n/a" if text and len(known) < len(rows) else "" if text else "n/a")
+
+
+def cached_share(rows: list[Json]) -> str:
+    tokens = sum(r["tokens"] for r in rows)
+    return f"{round(100 * sum(r.get('cached_input_tokens', 0) for r in rows) / tokens)}%" if tokens else "-"
+
+
 def cmd_usage(a: argparse.Namespace) -> int:
     u = usage(find_campaign(Path.cwd()))
     if a.json:
@@ -2970,20 +3008,19 @@ def cmd_usage(a: argparse.Namespace) -> int:
         for r in runs:
             groups.setdefault(key(r), []).append(r)
         width = max(len(title), *map(len, groups))
-        print("\n" + paint(f"{title:<{width}} runs  tokens    cost  agent time", "bold"))
-        for k, rs in sorted(
-            groups.items(), key=lambda x: (-sum(r["cost"] for r in x[1]), -sum(r["tokens"] for r in x[1]))
-        ):
-            tokens, cost = sum(r["tokens"] for r in rs), sum(r["cost"] for r in rs)
+        print("\n" + paint(f"{title:<{width}} runs  tokens cached  output    cost  agent time", "bold"))
+        for k, rs in sorted(groups.items(), key=lambda x: (-sum(r["tokens"] for r in x[1]), x[0])):
+            tokens, out = sum(r["tokens"] for r in rs), sum(r.get("output_tokens", 0) for r in rs)
             print(
-                f"{k:<{width}} {len(rs):>4} {amount(tokens):>7} {amount(cost):>7}  {span(sum(r['seconds'] for r in rs)):>10}"
+                f"{k:<{width}} {len(rs):>4} {amount(tokens):>7} {cached_share(rs):>6} {amount(out):>7} "
+                f"{cost_of(rs):>7}  {span(sum(r['seconds'] for r in rs)):>10}"
             )
 
     when = time.strftime("%Y-%m-%d", time.localtime(u["since"]))
     print(
-        f"{mark('📊')}{paint('campaign ' + u['campaign'], 'bold')} since {when}: {len(runs)} agent runs, {amount(sum(r['tokens'] for r in runs))} tokens, "
-        f"cost {amount(sum(r['cost'] for r in runs))}; {len(jobs)} jobs ran {span(sum(j['ran'] for j in jobs))} "
-        f"and waited {span(sum(j['waited'] for j in jobs))}"
+        f"{mark('📊')}{paint('campaign ' + u['campaign'], 'bold')} since {when}: {len(runs)} agent runs, "
+        f"{amount(sum(r['tokens'] for r in runs))} tokens ({cached_share(runs)} cached input), cost {cost_of(runs)}; "
+        f"{len(jobs)} jobs ran {span(sum(j['ran'] for j in jobs))} and waited {span(sum(j['waited'] for j in jobs))}"
     )
     if runs:
         table("by quest", lambda r: "(unattributed)" if r["quest"] == "-" else r["quest"])
@@ -2993,6 +3030,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
                 x
                 for x in (
                     r["role"],
+                    "resume" if r.get("resume") else "",
                     r["lens"],
                     r["class"],
                     r["task"] if r["role"] == "unattributed" else "",
@@ -3002,6 +3040,11 @@ def cmd_usage(a: argparse.Namespace) -> int:
                 if x
             ),
         )
+        resumed = [r for r in runs if r.get("resume")]
+        if resumed:
+            print(
+                f"\nrecovery: {plural(len(resumed), 'fresh resume')}, {amount(sum(r['tokens'] for r in resumed))} tokens"
+            )
     if jobs:
         quests = sorted({j["quest"] for j in jobs})
         labels = {q: "(no quest)" if q == "-" else q for q in quests}
@@ -3014,13 +3057,15 @@ def cmd_usage(a: argparse.Namespace) -> int:
             )
     for s in u["game_master"]:
         print(
-            f"\n{mark('🧙')}game master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens, cost {amount(s['cost'])} "
-            "(the whole session, which may include other work)"
+            f"\n{mark('🧙')}game master session {s['harness']} {s['session'][:8]}: {amount(s['tokens'])} tokens "
+            f"({cached_share([s])} cached input), cost {cost_of([s])} (the whole session, which may include other work)"
         )
     print(
         "\n"
         + paint(
-            f"read: {', '.join(USAGE_READERS)}; tokens are cumulative (context rereads included), cost in each harness's own unit; Codex cost unavailable (reported as 0)",
+            f"read: {', '.join(USAGE_READERS)}. Tokens are cumulative per request (input, cached reads included, plus "
+            "output): a measure of work, not of billing. Cost is in each harness's own unit; Codex cost unavailable "
+            "(n/a, never 0).",
             "dim",
         )
     )

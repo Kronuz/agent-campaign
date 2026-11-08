@@ -995,7 +995,10 @@ class Usage(CampaignCase):
         self.assertEqual(
             (lead["tokens"], lead["seconds"], lead["model"], lead["effort"]), (550, 180, "gpt-6.1-sol", "medium")
         )
-        self.assertIn("Codex cost unavailable", self.ok(self.home, "usage").out)
+        out = self.ok(self.home, "usage").out
+        self.assertIn("Codex cost unavailable", out)
+        self.assertIn("cost n/a;", out)  # unavailable, never reported as zero
+        self.assertNotIn("cost 0", out)
 
     def test_codex_encrypted_launch_is_unattributed_and_unrelated_leads_are_excluded(self) -> None:
         self.codex_log("agent", "opaque")
@@ -1113,7 +1116,15 @@ class Usage(CampaignCase):
                 {
                     "type": "session.usage_record",
                     "agentId": aid,
-                    "data": {"usage": {"cost": cost, "inputTokens": 1000, "outputTokens": 200}},
+                    "data": {
+                        "usage": {
+                            "cost": cost,
+                            "inputTokens": 1000,
+                            "outputTokens": 200,
+                            "cacheReadTokens": 900,
+                            "reasoningTokens": 50,
+                        }
+                    },
                 },
                 {
                     "type": "subagent.completed",
@@ -1176,7 +1187,12 @@ class Usage(CampaignCase):
         (job,) = u["jobs"]
         self.assertEqual((job["id"], job["quest"], job["state"]), (jid, "fix", "done"))
         self.assertGreaterEqual(job["ran"], 1)
+        self.assertEqual(
+            (first["cached_input_tokens"], first["output_tokens"], first["reasoning_tokens"]), (900, 200, 50)
+        )
+        self.assertEqual([r["agent"] for r in u["runs"] if r["resume"]], ["a2"])
         text = self.ok(self.home, "usage").out
+        self.assertIn("recovery: 1 fresh resume, 1,200 tokens", text)
         self.assertIn("adventurer Artificer claude-opus-5.5 high", text)
         self.assertIn("paladin correctness claude-opus-5.5 high", text)
 
