@@ -27,7 +27,7 @@ job queue and `quiet` directory.
 | `test_quiet` | deadline stop and exit code 124, waiting requests in `quiet list`, exit codes passing through, the 30-minute cap, the hold outliving a command that ignores TERM, a starving build served before a queued measurement, bounded commands under a CPU burner per core, a TERM to `quiet` stopping its command's group and freeing the hold, `QUIET_PAUSE` stopping light work and resuming it; on Linux, strict and light holds on disjoint cores and qemu vCPU threads moved and restored (fake VMs with `CPU n/KVM` threads) |
 | `test_scenarios` | Scenarios A-F, H, I from the brief and a scouting party, end to end |
 | `test_campaign.Campaigns` | several campaigns on one machine: unique names, re-registration on the next write, overlap and contract warnings both ways, `status --all`, a `NAME:ID` dependency enforced at landing, and a landing into a shared repository waiting for its lock (5 of 5 mutants failed) |
-| `test_campaign.Usage`, `test_budget` | `campaign usage` on Copilot's event shapes: runs attributed by the launch prompt (adventurer, resume, paladin), other campaigns and unrelated agents left out, logs older than the campaign skipped, game master sessions counted only when they ran its agents, jobs' run and wait time; the instructions' word budget |
+| `test_campaign.Usage`, `test_context` | `campaign usage` on Copilot's event shapes: runs attributed by the launch prompt (adventurer, resume, paladin), other campaigns and unrelated agents left out, logs older than the campaign skipped, game master sessions counted only when they ran its agents, jobs' run and wait time; the context report resolving every load it counts, and warning, never failing, on growth |
 | `test_campaign.SharedHome`, `test_campaign.Migration`, `test_agents` | two campaigns in one home: the main checkout asks which, a quest's worktree knows, the same quest ID gets `quest/demo/fix` and `quest/perf/fix` (fails with branches named `quest/ID`), each game master's wait sees only its own campaign's commits (fails with one wait record per home); a campaign in the older `docs/campaign/` layout running in place, `campaign migrate` refused while a quest is in flight and then moving it in one commit, evidence from before the move reused after it (fails with `code_tree` excluding only `.campaign`); generated agent files keep the effort, files from the shell `sync-agents` are replaced, hand-written ones kept (fails without the old marks) |
 | `test_campaign.DirectPath`, `test_jobs.Scheduling` | deferred checks: landing waits only for gates, `land` queues the rest on the landed code at priority -1, a red one is an error until `verify --deferred` reruns it green, the 10-minute cap on deferred measurements, non-gating CI workflows, deferred work never taking every light slot |
 
@@ -355,6 +355,57 @@ The first Linux run, from an empty scratch directory, failed both `test_agents` 
 `$CAMPAIGN_TEST_TMP` without creating it, and the parallel runner started them before any harness
 test had. One helper now creates it for every suite; the tests fail without it from a base that
 does not exist.
+
+## Instruction audit: what the word budget cut
+
+A test held the instructions agents read (SKILL.md, references, agent types) to a word budget:
+10,800 when it was set (`dotfiles:b142467`), 10,900 a few hours later (`dotfiles:a85a352`). From
+`agent-campaign:e65eb87` on, the total sat between 10,877 and 10,900 words for 20 commits while
+features kept arriving, so most later edits to the instructions traded words. Every deletion in
+SKILL.md, `references/`, `agents/` and `templates/` since the budget was set was compared with
+the text that replaced it. The dotfiles commits under the budget only added text; renames of
+paths, the retired `blockers` tool and help wording are left out of the table (no action needed).
+
+| Commit and file | Compressed or removed | Lost | Risk | Action | Verification |
+|---|---|---|---|---|---|
+| `agent-campaign:3f69136` harness.md | "This session uses the type body in a general prompt", the only definition of "the body fallback" | yes | a Codex lead can't follow its own launch rule | ambiguity corrected: the fallback is defined where agent types are, and a class is not a type | scenario 4 |
+| `agent-campaign:460877c` harness.md | why a file's effort forces the fallback; "preserve `max` in generation" became "when requested" | yes | a Scout launched at medium runs at the file's high | ambiguity corrected: model inherited, effort overridden, therefore the fallback; `sync-agents` keeps `max` (`test_agents`) | scenario 4 |
+| `agent-campaign:6b0f37d` host.md | `pace` "can report a window spent that credits still cover" | yes | the game master stops work a purchased credit covers | ambiguity corrected: ask the patron before stopping | scenario 6 |
+| `agent-campaign:bb586d1` to `40952b4` harness.md | Codex: keep the exec session and await it with `write_stdin`, no sampling between calls | yes | a polling or doubled wait rereads the lead's context | missing safeguard restored | scenario 3 |
+| `agent-campaign:2884316` SKILL.md, Recovery | "a job whose runner died is requeued (if it allows retries) or marked interrupted"; the Resume prompt said never to rerun | yes | interrupted evidence never rerun, or a deploy rerun blindly | missing safeguard restored and sharpened: requeued or interrupted, resubmitting never duplicates, rerun only what is safe to repeat; Resume prompt aligned | `test_jobs` resubmission (fails when `submit` reuses an interrupted job); scenario 2 |
+| `agent-campaign:2884316` host.md | runner supervision (own session, helpers killed) and three failure rows: result recorded after the runner died, stale runner fenced, duplicate submit | yes | recovery reads as guesswork | missing safeguard restored; each row has its test in `test_jobs` | existing tests |
+| `agent-campaign:2884316` SKILL.md, Cost | "Idle capacity is not waste" | no | none: "no minimum number of agents, no utilization target" stays | safe simplification | |
+| `agent-campaign:e8a54ea` SKILL.md | the scouting evidence (20 of 33 runs landed) | no | none: `lore.md` keeps it | safe simplification | |
+| `agent-campaign:a8d2766` host.md | what the sidebar shows and what notifies | yes | duplicate notifications; pills nobody can read | ambiguity corrected, checked against `sidebar()` and `notify()` | code read |
+| `agent-campaign:74ce9d3` host.md | a hold outlives its stop by 15 s | yes | a lingering hold taken for a hang | missing safeguard restored (`grace()` in `quiet.py`) | code read |
+| `agent-campaign:a8d2766`, `2884316` SKILL.md, Integration | the landing list said "evidence in a journal's Evidence table", without the job rule or the messages gate | yes | a stale cited job or open message read as an unexplained refusal | ambiguity corrected: rows at the target, jobs at its code, `campaign job rerun`, task drops, messages | scenario 5 |
+| `agent-campaign:487e261` SKILL.md, adventurer.md | messages written to fit: a game master's message read as blocking, no close syntax, no answer rule for adventurers | yes | a landing held for nothing; messages never answered | ambiguity corrected | test: a quest lands while a game master's message is open (fails when those gate landing); scenarios 1 and 7 |
+| `agent-campaign:487e261` host.md | the mailbox, peers and outbox, left to `--help` | yes | cross-machine messages undocumented | missing context restored: host.md, Messages | `SharedHomeMessages`, `Messages` |
+| `dotfiles:a85a352` SKILL.md | "tell their game master (`campaign status --all`)", stale once messages existed | yes | no way to tell | ambiguity corrected: `campaign message NAME:` | |
+
+The scenarios are seven questions put to fresh agents (a lightweight model, no project context)
+that could read only a copy of the instruction files. With the text before the audit, two answers
+were right and certain. Three were wrong: the game master's message blocks landing; never rerun an
+interrupted job; no `write_stdin`. The rest were guesses. With the corrected text, five were right
+and certain. Three answers still showed gaps: how to close a game master's message, a rerun said
+to be safe that was only safe for builds and tests, and a "Scout type file". After those fixes, a
+third fresh agent answered all three right and certain, and held a deploy job back for a check.
+
+The budget test is gone. `scripts/context-size.py` reports what each launch reads (the skill and
+agent descriptions every session lists, the game master's SKILL.md, each role's agent file, prompt
+and the references it is sent to), `tests/run.py` prints one line of it after every run, and it
+warns, never fails, when a load grows more than 10% and 150 words past
+`tests/context-baseline.json`. Classes moved to one file each (`references/classes/<class>.md`):
+an adventurer reads its own class instead of all six and their table, which SKILL.md already has.
+
+| Load (words) | Before | After |
+|---|---|---|
+| Every session (skill and agent descriptions) | 252 | 252 |
+| Game master (SKILL.md) | 2,943 | 3,161 |
+| Adventurer, no class | 946 | 1,005 |
+| Adventurer, as a Sage (largest class) | 1,894 | 1,251 |
+| Adventurer, resumed | 802 | 898 |
+| Paladin | 1,440 | 1,440 |
 
 ## Not run
 
