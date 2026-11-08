@@ -95,8 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"\nRan {len(results)} test{'' if len(results) == 1 else 's'} in {time.time() - start:.1f}s ({a.jobs} at once, {len(apart)} alone): "
         + (f"FAILED ({bad})" if bad else "OK")
-        + (f", {skipped} skipped" if skipped else "")
+        + (f", {skipped} skipped" if skipped else ""),
+        flush=True,
     )
+    subprocess.run([sys.executable, str(HERE.parent / "scripts" / "context-size.py"), "--check"], check=False)
     return 1 if bad else 0
 
 

@@ -138,6 +138,11 @@ ruff check scripts tests && pyrefly check
 Run the suite inside a `quiet light` hold when other agents share the machine. `run.py -j 1`
 runs one test at a time, and `python3 -m unittest` still works.
 
+`run.py` ends with one line from `scripts/context-size.py`: the words the game master, an
+adventurer and a paladin load at launch, and what every session pays for the skill's listing. It
+warns, never fails, when a load grows more than 10% past `tests/context-baseline.json`; run
+`scripts/context-size.py` for the full report and `--update` to record a deliberate change.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Ideas from [Superpowers](https://github.com/obra/superpowers),

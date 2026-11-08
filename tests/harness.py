@@ -32,13 +32,18 @@ def scratch() -> str | None:
     return base
 
 
-def campaign_module() -> ModuleType:
-    """campaign.py loaded as a module, for tests of its functions."""
-    spec = importlib.util.spec_from_file_location("campaign_module", CAMPAIGN)
+def script_module(path: Path) -> ModuleType:
+    """A tool script loaded as a module, for tests of its functions."""
+    spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_") + "_module", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def campaign_module() -> ModuleType:
+    """campaign.py loaded as a module, for tests of its functions."""
+    return script_module(CAMPAIGN)
 
 
 def alone(test: Callable[..., None]) -> Callable[..., None]:
