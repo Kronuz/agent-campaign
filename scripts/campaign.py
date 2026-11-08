@@ -62,7 +62,7 @@ SET_STATUS: dict[str, tuple[str, ...]] = {  # what `campaign set status=` may mo
     "dropped": ("planned",),
     "landed": (),
 }
-TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped")
+TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped", "corrupt")
 HEAVY = ("strict", "exclusive")
 DEFERRED_HEAVY_MAX = 10  # minutes: a gate job never waits longer behind a deferred measurement
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
@@ -3220,7 +3220,7 @@ def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
     jid = time.strftime("%y%m%d-%H%M%S-") + secrets.token_hex(3)
     d = jd / jid
     d.mkdir()
-    spec.update(key=key, submitted=time.time(), fingerprint=fingerprint())
+    spec.update(key=key, submitted=time.time(), fingerprint=fingerprint(), path=os.environ.get("PATH", ""))
     write_json(d / "spec.json", spec)
     write_json(d / "state.json", {"state": "queued", "attempt": 1})
     if key:
@@ -3273,6 +3273,14 @@ def session_pids(sid: int) -> list[int]:
             if os.getsid(pid) == sid:
                 pids.append(pid)
     return pids
+
+
+def runs(pid: int, what: str) -> bool:
+    """Whether process PID is alive and its command line names WHAT (a job runner names its directory):
+    a pid alone may have been reused by an unrelated process."""
+    if not alive(pid):
+        return False
+    return what in sh(["ps", "-o", "command=", "-p", str(pid)], check=False)
 
 
 def sweep(sid: int, beat: Path | None = None) -> None:
@@ -3341,7 +3349,7 @@ def slot_lock(slot: Path, beat: Path) -> None:
                 holder = int((lock / "pid").read_text())
             except (FileNotFoundError, ValueError):
                 holder = 0
-            if holder and not alive(holder):
+            if holder and not runs(holder, " _run "):
                 shutil.rmtree(lock, ignore_errors=True)
                 continue
             beat.touch()
@@ -3437,6 +3445,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     env.pop("CMUX_WORKSPACE_ID", None)  # the worker may have started in another workspace
     if spec.get("cmux"):
         env["CMUX_WORKSPACE_ID"] = spec["cmux"]  # quiet's pill and notice go to the submitter's
+    if spec.get("path"):
+        env["PATH"] = spec["path"]  # the toolchain its fingerprint was taken with, whoever started the worker
     env.update(spec["env"])
     env.update(
         JOB_ID=d.name,
@@ -3522,8 +3532,10 @@ def reap() -> None:
             if load_job(d)["state"] != st:
                 continue
             same_boot = st.get("boot") == boot_id()
-            if st.get("sid") and same_boot:
-                sweep(int(st["sid"]))
+            sid = int(st.get("sid") or 0)
+            # the runner leads its session; a live leader that is not this job's runner reused its id
+            if sid and same_boot and (not alive(sid) or runs(sid, f"_run {d}")):
+                sweep(sid)
             exit_file = attempt_dir(job) / "exit"
             if exit_file.exists() and same_boot:
                 code = int(exit_file.read_text().strip() or "1")
@@ -3960,6 +3972,85 @@ def cmd_job_cancel(a: argparse.Namespace) -> int:
     else:
         (j["dir"] / "cancel").touch()
     print(f"{a.job}: cancelling")
+    return 0
+
+
+def needed_jobs() -> tuple[set[str], set[tuple[str, str]], set[str]]:
+    """What the campaigns on this machine still need: jobs their open quests' journals and reviews
+    name, or their landings and acceptances record; (campaign, quest) of every quest not landed or
+    dropped, whose jobs are all kept; and the build slots of those quests."""
+    named: set[str] = set()
+    open_quests: set[tuple[str, str]] = set()
+    slots: set[str] = set()
+    for name, o in campaigns().items():
+        c = Campaign(Path(o["home"]), name)
+        folder = c.home / c.meta / "reviews"
+        for f in folder.glob("*.md") if folder.is_dir() else []:
+            named.update(JOB_ID.findall(f.read_text()))
+        for pid, p in c.quests.items():
+            for record in p.get("landed", []):
+                named.update(record.get("later", []))
+            for acc in p.get("accepted", {}).values():
+                named.update(j["job"] for f in acc.get("findings", {}).values() for j in f.get("jobs", []))
+            if p["status"] in ("landed", "dropped"):
+                continue
+            open_quests.add((c.ident, pid))
+            slots.add(f"{name}-{pid}")
+            for jname, branch, rel, _ in branches(c, pid):
+                named.update(JOB_ID.findall(journal_text(c, jname, branch, rel)))
+    return named, open_quests, slots
+
+
+def cmd_job_prune(a: argparse.Namespace) -> int:
+    """Deletes finished jobs older than --days that no open quest, landing or acceptance needs, their
+    kept checkouts, the identity links to them, and build slots no open quest uses."""
+    reap()
+    cutoff = time.time() - a.days * 86400
+    named, open_quests, slots = needed_jobs()
+    old: list[Json] = []
+    for j in all_jobs():
+        st, spec = j["state"], j["spec"]
+        ended = st.get("ended") or mtime(j["dir"] / "state.json") or time.time()
+        if st.get("state") not in TERMINAL or ended > cutoff or j["id"] in named:
+            continue
+        if (spec.get("campaign"), spec.get("quest")) in open_quests:
+            continue
+        old.append(j)
+    root = jobs_dir() / "slots"
+    idle = [
+        x
+        for x in (sorted(root.iterdir()) if root.is_dir() else [])
+        if x.is_dir()
+        and not x.name.endswith(".lock")
+        and x.name not in slots
+        and not x.with_name(x.name + ".lock").exists()
+        and (mtime(x) or 0) < cutoff
+    ]
+    for j in old:
+        print(f"{j['id']}  {j['state'].get('state')}  {j['spec'].get('what', '')}")
+    for x in idle:
+        print(f"slot {x.name}")
+    if a.dry_run:
+        print(f"would delete {plural(len(old), 'job')} and {plural(len(idle), 'slot')} (older than {a.days:g} days)")
+        return 0
+    for j in old:
+        spec = j["spec"]
+        if spec.get("repo"):
+            worktree_remove(spec["repo"], j["dir"] / "src")
+        for ref in spec.get("refs", {}).values():
+            for d in j["dir"].glob("ref-*"):
+                worktree_remove(ref["repo"], d)
+        shutil.rmtree(j["dir"], ignore_errors=True)
+    for x in idle:
+        common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+        shutil.rmtree(x, ignore_errors=True)
+        if common:
+            git(Path(common).parent, "worktree", "prune", check=False)
+    keys = jobs_dir() / "keys"
+    for link in keys.iterdir() if keys.is_dir() else []:
+        if link.is_symlink() and not (jobs_dir() / os.readlink(link)).exists():
+            link.unlink()
+    print(f"deleted {plural(len(old), 'job')} and {plural(len(idle), 'slot')} (older than {a.days:g} days)")
     return 0
 
 
@@ -4490,6 +4581,19 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: the quest's branch, else HEAD)")
     p.set_defaults(fn=cmd_job_rerun)
+    p = job_command(
+        "prune",
+        "delete old finished jobs nothing needs",
+        "Deletes finished jobs that ended more than --days ago, except those of quests not landed or dropped "
+        "(in any campaign on this machine) and those a journal, review, landing or acceptance names; their kept "
+        "checkouts and identity links go with them, and so do build slots no open quest uses. Landing records "
+        "in state.json keep a summary of the evidence they relied on.",
+    )
+    p.add_argument(
+        "--days", type=float, default=14, metavar="N", help="keep jobs that ended within N days (default 14)"
+    )
+    p.add_argument("--dry-run", action="store_true", help="list what would be deleted")
+    p.set_defaults(fn=cmd_job_prune)
     p = job_command("cancel", "cancel a queued or running job", "Cancels a queued job, or stops a running one.")
     p.add_argument("job", metavar="JOB", help="the job's id")
     p.set_defaults(fn=cmd_job_cancel)

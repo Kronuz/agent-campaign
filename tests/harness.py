@@ -131,7 +131,10 @@ class CampaignCase(unittest.TestCase):
     def tearDown(self) -> None:
         sids = set()
         for d in (self.root / "jobs").glob("*/state.json"):
-            state = json.loads(d.read_text())
+            try:
+                state = json.loads(d.read_text())
+            except ValueError:
+                continue
             if state.get("sid"):
                 sids.add(int(state["sid"]))
         for pid in session_members(sids):

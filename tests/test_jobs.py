@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import tempfile
 import time
 import unittest
@@ -100,6 +101,19 @@ class Identity(CampaignCase):
         self.assertIn("hi", (self.root / "jobs" / jid / "a1" / "log").read_text())
         failing = self.run_cli(self.home, "job", "submit", "--sync", "--", "exit 4")
         self.assertEqual(failing.code, 1)
+
+    def test_a_job_runs_with_its_submitters_path(self) -> None:
+        """The worker may have been started by another session; the job runs with the PATH its toolchain
+        fingerprint was taken with, the submitter's."""
+        first = self.submit(self.home, "--", "sleep 4")  # starts a worker with this PATH
+        tools = self.root / "tools"
+        tools.mkdir()
+        (tools / "greet").write_text("#!/bin/sh\necho hi\n")
+        (tools / "greet").chmod(0o755)
+        self.env["PATH"] = f"{tools}:{self.env['PATH']}"
+        second = self.submit(self.home, "--", "greet")
+        self.ok(self.home, "wait", first, second, "--timeout", "60")
+        self.assertEqual(self.job(second)["state"], "done")
 
 
 class Scheduling(CampaignCase):
@@ -232,6 +246,68 @@ class Crashes(CampaignCase):
         self.wait_until(lambda: not alive(state["runner"]), timeout=30)
         self.assertEqual(self.job(jid)["attempt"], 7)
         self.assertNotEqual(self.job(jid)["state"], "done")
+
+    def test_the_reaper_spares_a_session_that_reused_a_dead_runners_id(self) -> None:
+        bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)  # its pid is its session's id
+        try:
+            d = self.root / "jobs" / "261108-000000-abcdef"
+            d.mkdir(parents=True)
+            spec: dict[str, object] = {"cmd": "true", "level": "none", "minutes": 1, "repo": "", "commit": ""}
+            (d / "spec.json").write_text(
+                json.dumps({**spec, "refs": {}, "env": {}, "cwd": str(self.root), "retries": 0})
+            )
+            boot = campaign_module().boot_id()
+            state = {"state": "running", "attempt": 1, "sid": bystander.pid, "boot": boot, "runner": bystander.pid}
+            (d / "state.json").write_text(json.dumps(state))
+            (d / "heartbeat").touch()
+            os.utime(d / "heartbeat", (0, 0))
+            self.ok(self.home, "job", "list", "--all")  # reaps
+            self.assertEqual(self.job(d.name)["state"], "interrupted")
+            self.assertIsNone(bystander.poll(), "the reaper killed a session that is not the job's")
+        finally:
+            bystander.kill()
+            bystander.wait()
+
+    def test_waiting_on_a_corrupt_job_ends(self) -> None:
+        jid = self.submit(self.home, "--sync", "--", "true")
+        (self.root / "jobs" / jid / "state.json").write_text("{not json")
+        r = self.run_cli(self.home, "wait", jid, "--timeout", "20")
+        self.assertEqual(r.code, 1)
+        self.assertIn("corrupt", r.out)
+
+
+class Prune(CampaignCase):
+    def age(self, jid: str, days: float) -> None:
+        state = self.root / "jobs" / jid / "state.json"
+        data = json.loads(state.read_text())
+        data["ended"] = time.time() - days * 86400
+        state.write_text(json.dumps(data))
+
+    def test_prune_keeps_what_open_quests_and_landings_need(self) -> None:
+        wt = self.started("open", files="app.py", check="unit=true")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        tagged = self.submit(wt, "--quest", "open", "--sync", "--", "true 1")
+        cited = self.submit(self.home, "--sync", "--", "true 2")  # untagged, but a journal cites it
+        self.commit(wt, {".campaign/demo/journal/open.md": f"## Evidence\n\n| A1 | {cited} |\n"})
+        loose = self.submit(self.home, "--sync", "--", "true 3")
+        recent = self.submit(self.home, "--sync", "--", "true 4")
+        kept = self.submit(self.home, "--keep", "--sync", "--", "true 5")
+        for jid in (tagged, cited, loose, kept):
+            self.age(jid, 30)
+        dry = self.ok(self.home, "job", "prune", "--days", "14", "--dry-run").out
+        self.assertIn(loose, dry)
+        self.assertTrue((self.root / "jobs" / loose).exists())
+        out = self.ok(self.home, "job", "prune", "--days", "14").out
+        self.assertIn("2 jobs", out)
+        gone = {j for j in (tagged, cited, loose, recent, kept) if not (self.root / "jobs" / j).exists()}
+        self.assertEqual(gone, {loose, kept})
+        self.assertNotIn(str(self.root / "jobs"), self.git(self.home, "worktree", "list"))  # kept checkouts too
+        keys = self.root / "jobs" / "keys"
+        self.assertTrue(
+            all((keys.parent / os.readlink(k)).exists() for k in keys.iterdir()), "a key names a pruned job"
+        )
+        self.assertIn("reused", self.ok(self.home, "job", "submit", "--", "true 4").text)
+        self.assertNotIn("reused", self.ok(self.home, "job", "submit", "--sync", "--", "true 3").text)
 
 
 class Contention(CampaignCase):
