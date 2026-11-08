@@ -1,6 +1,6 @@
 # {id} review: {lens}
 
-Commit: <the full commit reviewed>
+Commit: <the full commit reviewed, or repo:commit>
 Verdict: <APPROVE | CHANGES | REJECT>
 Date: <YYYY-MM-DD>
 

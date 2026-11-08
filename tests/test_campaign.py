@@ -568,6 +568,12 @@ class ReviewBinding(CampaignCase):
         self.ok(self.home, "accept", "feat", "correctness", "--commit", reviewed)
         self.fails(self.home, "land", "feat", match="changed since")
 
+    def test_a_review_may_name_its_commit_with_the_repository(self) -> None:
+        _, reviewed = self.feature()
+        self.review("feat", "correctness", "APPROVE", commit=f"app:{reviewed}")
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["reviewed"], reviewed)
+
     def test_metadata_commits_after_a_review_keep_it(self) -> None:
         wt, _ = self.feature()
         self.review("feat", "correctness", "APPROVE")

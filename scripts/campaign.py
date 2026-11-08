@@ -1463,7 +1463,7 @@ def plural(n: int, word: str) -> str:
 
 # the whole verdict is one word: "APPROVE WITH CONDITIONS" is no APPROVE
 VERDICT = re.compile(r"^Verdict:\s*\**\s*(\S[^\n]*?)[\s*.]*$", re.M)
-REVIEWED = re.compile(r"^Commit:\s*\**\s*`?([0-9a-f]{7,64})\b", re.M)
+REVIEWED = re.compile(r"^Commit:\s*\**\s*`?(?:[\w.-]+:)?([0-9a-f]{7,64})\b", re.M)  # sha or repo:sha
 
 
 def review_path(c: Campaign, pid: str, lens: str) -> Path:
