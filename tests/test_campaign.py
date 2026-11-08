@@ -1690,12 +1690,14 @@ class Map(CampaignCase):
         (self.home / ".campaign/demo/quests/pins.md").write_text(
             "# pins: Pins at head\n\n## Outcome\n\nEvery library at its head.\n\n## Acceptance criteria\n\n"
             "- A1 [artifact] Pins at head: `docs/status/pins.md`\n"
+            "- A2 [artifact] Pins checked in CI: `docs/status/pins.md`\n"
         )
         journal = self.home / ".campaign/demo/journal/pins.md"
         journal.parent.mkdir(parents=True, exist_ok=True)
         journal.write_text(
             "# pins: journal\n\nState: landed\n\n## Evidence\n\n| Criterion | Evidence |\n|---|---|\n"
-            "| A1 | `docs/status/pins.md` |\n\n## Result\n\nAll 12 pins at head; CI green.\n"
+            "| A1 | `docs/status/pins.md` |\n| A2 | open: left unticked in `docs/status/pins.md` |\n\n"
+            "## Result\n\nAll 12 pins at head; CI green.\n"
         )
         self.git(self.home, "add", ".campaign")
         self.git(self.home, "commit", "-q", "-m", "history: pins")
@@ -1715,7 +1717,7 @@ class Map(CampaignCase):
         self.git(self.home, "commit", "-q", "-am", "an empty milestone")
         self.assertIn("## M9: no quests yet", self.ok(self.home, "map").out)
         (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
-        self.assertTrue(pins["criteria"] and all(x["met"] for x in pins["criteria"]), pins["criteria"])
+        self.assertEqual([x["met"] for x in pins["criteria"]], [True, False], "an unticked criterion reads as met")
 
 
 if __name__ == "__main__":

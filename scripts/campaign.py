@@ -2297,9 +2297,9 @@ def quest_map(c: Campaign, pid: str) -> Json:
     for name, branch, rel, _ in branches(c, pid):
         journals.setdefault(name, journal_text(c, name, branch, rel))
     journal = journals.get(pid, "")
-    if final and not final[-1].get("unverified"):
+    if final and not final[-1].get("unverified") and not final[-1].get("earlier"):
         met = set(wanted)  # landing required every criterion
-    elif final:  # recorded after the fact: what its journal's evidence still proves
+    elif final:  # recorded after the fact, or before the campaign: what its journal's evidence proves
         rows = evidence(journals, wanted, proof(c, repo, [final[-1]["commit"], rev(repo, main)]))
         met = {x for x, r in rows.items() if any(e["met"] for e in r)}
     elif p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
