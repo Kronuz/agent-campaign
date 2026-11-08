@@ -28,18 +28,22 @@ rolling back is a matter of links.
      criterion that is a review ("the landing reviews clear") is the quest's lenses instead; an open
      decision: an open question in the quest file naming who decides;
    - evidence in logs: rerun as jobs, or `[artifact]` for a committed result file;
+   - completed work (a ledger whose work is on `main`, reviewed and verified then): a quest with the
+     ledger's criteria as `[artifact]` rows citing the ledger, its journal written on `main` in the
+     home with Evidence and a Result (what landed, its numbers, its review, its docs), then
+     `campaign land ID --record COMMIT --earlier --reason "LEDGER; REVIEW; CI"`;
    - another repository: its own quest (`--repo`), ordered with `--after`;
    - a pre-release campaign in `docs/campaign/` with quests in flight: move it in place, no
      `campaign init` and no second campaign (rehearsed end to end on a copy shaped like Detent's):
-     1. On `main`: `git mv docs/campaign .campaign/<name>`, set `"campaign": "<name>"` in its
+     1. On `main`: `mkdir -p .campaign && git mv docs/campaign .campaign/<name>`, set `"campaign": "<name>"` in its
         `state.json` (a plain name: letters, digits, `.`, `_`, `-`), commit. Recorded branch and
         worktree names stay as they are. Rename the registry entry, a file holding the home's path:
         `mv ~/.scratch/campaign/campaigns/"<old name>" ~/.scratch/campaign/campaigns/<name>`;
         until it exists, `status --all` and `job prune` do not see the campaign. The old build slot
         (`jobs/slots/<old name>-<id>`) is left for `job prune`; the first build under the new name
         starts cold.
-     2. On each quest branch: `git merge main`, then in one commit move every
-        `docs/campaign/journal/*.md` to `.campaign/<name>/journal/` and `git rm -r docs/campaign`.
+     2. On each quest branch: `git merge main`, then in one commit `mkdir -p .campaign/<name>/journal`,
+        move every `docs/campaign/journal/*.md` there and `git rm -r docs/campaign`.
      3. On each task branch not yet merged into its quest:
         `git -c merge.directoryRenames=true merge <quest branch>` (git carries the task's journal to
         the new place), then the same move for anything left under `docs/campaign`.

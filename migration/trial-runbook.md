@@ -24,6 +24,7 @@ Collect, from the home checkout, into a dated file outside the repository:
 ```sh
 campaign usage --json > usage-$(date +%F).json   # tokens by role, cached share, resumes, job time
 campaign status --reviews                        # verdicts and blocking defects per review
+campaign map > map-$(date +%F).md               # milestones and quests: intent, result, criteria
 campaign check                                   # must stay without errors
 du -sh ~/.scratch/campaign/jobs                  # job records; `campaign job prune --dry-run` shows what could go
 git log --oneline --since=yesterday -- .campaign # what the lead did: starts, accepts, lands, weakenings
@@ -48,7 +49,8 @@ What the week should answer, from those files:
 - More than two fresh resumes of one quest, or the lead's tokens exceeding all contributors'
   together for a day: the lead is re-deriving state instead of reading `campaign brief`.
 - Gate checks waiting more than an hour for the machine, or `interrupted` jobs in `campaign check`.
-- The job directory passes a few GB: `campaign job prune --dry-run`, then prune.
+- The job directory passes a few GB although the worker prunes daily: `campaign job prune --dry-run`
+  and `campaign check`'s notes show what holds it (open quests, a campaign the machine does not know).
 - Anything that would create a cloud or billable resource: stop the agent.
 
 ## Roll back
