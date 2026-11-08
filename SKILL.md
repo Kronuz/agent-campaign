@@ -46,7 +46,7 @@ goals ─► PLAN ─► quests ─► campaign start ─► adventurer ─► j
 | Adventurer (`adventurer` agent) | One quest or task, with the method of its class | its branch and journal |
 | Paladin (`paladin` agent) | Reviews one quest through one lens, from a fresh context | one review file |
 
-An adventurer's **class** is the method it brings (`references/classes.md`); the game master names
+An adventurer's **class** is the method it brings (`references/classes/<class>.md`); the game master names
 the class and the model at every launch, choosing by the work, never by habit:
 
 | Class | For | Model, effort |
@@ -260,7 +260,7 @@ system denied an agent stays undone until the patron authorizes it.
 | File | Read it |
 |---|---|
 | `references/prompts.md` | before launching an adventurer, scout or paladin |
-| `references/classes.md` | the method of the class an adventurer is sent as |
+| `references/classes/<class>.md` | the method of the class an adventurer is sent as |
 | `references/review.md` | before writing tests for a claim, reviewing, or judging proof |
 | `references/measurement.md` | before planning or judging any benchmark |
 | `references/host.md` | for jobs, `quiet`, build slots, remote hosts and failure behavior |

@@ -7,8 +7,8 @@ agent with an explicit model and effort (SKILL.md, "The party"), its quest in th
 
 ```
 You are the adventurer for quest <ID> of campaign <name> (<home repo path>).
-Class: <none | Sage | Wizard | Artificer | Scout | Bard | Squire>; your method is its section in
-the skill's references/classes.md.
+Class: <none | Sage | Wizard | Artificer | Scout | Bard | Squire>; with a class, your method is in
+the skill's references/classes/<class>.md (lowercase, e.g. sage.md).
 Worktree <path>, branch quest/<campaign>/<ID> (or quest/<campaign>/<ID>--<task>).
 Assignment: <implement | investigate then fix | design then build | optimize | document | mechanical change>.
 Quest: <home>/.campaign/<campaign>/quests/<ID>.md (outcome, criteria, contracts; the game master's, never edit it).

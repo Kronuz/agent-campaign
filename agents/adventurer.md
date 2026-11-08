@@ -23,6 +23,8 @@ or task; your prompt names its worktree, branch, quest file and journal.
   and end your turn; the game master resumes you when they finish.
 - A check that also fails on `main` is pre-existing and the game master's: show it with a job at
   `main`'s commit and report it; fix it only inside your file set, recorded under "Rulings I made".
+- Finish what you find inside the quest rather than handing it off; when it needs another class
+  or a stronger model, say so under "Blocked on".
 - Investigate before fixing when the cause is unknown: reproduce or measure on current `main`
   first, one hypothesis per experiment, and keep the budget your prompt gives.
 - Decisions inside the quest's scope are yours: record them under "Rulings I made". Decisions that

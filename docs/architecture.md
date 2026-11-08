@@ -19,7 +19,7 @@ brief's engineering terms; the shipped skill, tool and agent types use the theme
 | sweep, explorer | scouting party, scout |
 | work file | journal (`docs/campaign/journal/`) |
 | lessons | lore (`references/lore.md`) |
-| assignment (design, research, performance, docs, mechanical) | adventurer class: Sage, Wizard, Artificer, Scout, Bard, Squire (`references/classes.md`) |
+| assignment (design, research, performance, docs, mechanical) | adventurer class: Sage, Wizard, Artificer, Scout, Bard, Squire (`references/classes/<class>.md`) |
 
 Classes restore the methods 1.x carried in its architect, designer, researcher, performance
 engineer, explorer, tech writer and maintenance engineer files, without restoring them as roles:
