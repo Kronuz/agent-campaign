@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -1646,7 +1647,9 @@ class Recovery(CampaignCase):
 class Map(CampaignCase):
     def test_the_map_shows_intent_result_documents_and_progress(self) -> None:
         plan = self.home / ".campaign/demo/PLAN.md"
-        text = plan.read_text().replace("- <what success means, measurably>", "- Totals print right")
+        text = plan.read_text().replace(
+            "- <what success means, measurably>", "- Totals print right,\n  in every locale"
+        )
         text = text.replace("| <M1> | <ids> | <command> |", "| M1 | fix, open | python3 app.py |")
         plan.write_text(text)
         self.git(self.home, "commit", "-q", "-am", "plan")
@@ -1668,18 +1671,24 @@ class Map(CampaignCase):
         self.ok(self.home, "new", "open", "--title", "Open work", "--files", "README.md", "--milestone", "M1")
         self.ok(self.home, "land", "fix")
         written = (self.home / ".campaign/demo/MAP.md").read_text()
-        self.assertIn("- [x] **fix**", written, "the landing did not refresh MAP.md")
+        self.assertIn("- [x] 🏁 **fix**", written, "the landing did not refresh MAP.md")
         out = self.ok(self.home, "map").out
-        self.assertIn("- Totals print right", out)
-        self.assertIn("## M1: 1 of 2 landed", out)
-        self.assertIn("- [x] **fix**: fix", out)
+        self.assertIn("- 🎯 Totals print right, in every locale\n", out)
+        self.assertIn("## 🔨 M1: 1 of 2 landed", out)
+        self.assertIn("- [x] 🏁 **fix**: fix", out)
         self.assertIn("Outcome: Prints two instead of one.", out)
         self.assertIn("Result: Prints 2; 1.0 ms per call", out)
         self.assertIn("Docs: docs/mechanisms/print.md", out)
-        self.assertIn("- [ ] **open**: Open work", out)
+        self.assertIn("- [ ] 📋 **open**: Open work", out)
         self.assertNotIn("**open**", self.ok(self.home, "map", "fix").out)
         data = json.loads(self.ok(self.home, "map", "--json").out)
         self.assertEqual([q["id"] for q in data["milestones"][0]["quests"]], ["fix", "open"])
+        self.env["FORCE_COLOR"] = "1"
+        colored = self.ok(self.home, "map").out
+        self.assertIn("\033[", colored)
+        self.assertEqual(re.sub(r"\033\[[0-9;]*m", "", colored), out, "color changed the map's text")
+        self.ok(self.home, "map", "--write")
+        self.assertNotIn("\033", (self.home / ".campaign/demo/MAP.md").read_text(), "MAP.md holds color codes")
 
     def test_work_done_before_the_campaign_is_recorded_on_the_map(self) -> None:
         self.env.update(GIT_AUTHOR_DATE="2026-10-01T12:00:00", GIT_COMMITTER_DATE="2026-10-01T12:00:00")
@@ -1709,14 +1718,16 @@ class Map(CampaignCase):
         self.assertEqual(record["unverified"], [], "work verified before the campaign is listed as unverified")
         self.assertIn("(before the campaign)", self.ok(self.home, "status", "pins").out)
         out = self.ok(self.home, "map").out
-        self.assertIn("- [x] **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
+        self.assertIn(
+            "- [x] 🏁 **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out
+        )
         self.assertIn("; left open: A2)", out)
         self.assertIn("Result: All 12 pins at head; CI green.", out)
         self.assertNotIn("none yet", out)  # reviewed by the process of its time
         plan = self.home / ".campaign/demo/PLAN.md"
         plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M9 | | later |"))
         self.git(self.home, "commit", "-q", "-am", "an empty milestone")
-        self.assertIn("## M9: no quests yet", self.ok(self.home, "map").out)
+        self.assertIn("## ⬜ M9: no quests yet", self.ok(self.home, "map").out)
         (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
         self.assertEqual([x["met"] for x in pins["criteria"]], [True, False], "an unticked criterion reads as met")
 

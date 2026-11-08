@@ -180,9 +180,15 @@ def main_checkout(repo: Path) -> Path:
 
 def main_branch(repo: Path) -> str:
     for name in (os.environ.get("CAMPAIGN_MAIN", ""), "main", "master"):
-        if name and git_ok(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}"):
+        if name and has_branch(repo, name):
             return name
     die(f"{repo}: no main or master branch (set CAMPAIGN_MAIN)")
+
+
+def has_branch(repo: Path, name: str) -> bool:
+    if _heads:
+        return branch_head(repo, name) is not None
+    return git_ok(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}")
 
 
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -198,7 +204,7 @@ def frozen_heads() -> Generator[None, None, None]:
     try:
         yield
     finally:
-        _heads.clear()
+        _heads.pop()
 
 
 def branch_head(repo: Path, ref: str) -> str | None:
@@ -275,24 +281,52 @@ _cat: dict[str, tuple[int, subprocess.Popen[bytes]]] = {}
 _trees: dict[tuple[str, str], str] = {}
 
 
-def cat_object(repo: Path, name: str) -> tuple[str, bytes]:
-    """An object's id and raw content, through one `git cat-file --batch` per repository."""
+def read_object(repo: Path, name: str) -> tuple[str, str, bytes] | None:
+    """An object's id, type and raw content (`REF:path`, `COMMIT^{tree}`), or None when it does not
+    exist, through one `git cat-file --batch` per repository."""
     held = _cat.get(str(repo))
     if not held or held[0] != os.getpid():
         proc = subprocess.Popen(
-            ["git", "-C", str(repo), "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+            ["git", "-C", str(repo), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
         held = _cat[str(repo)] = (os.getpid(), proc)
     proc = held[1]
     assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(name.encode() + b"\n")
-    proc.stdin.flush()
+    try:
+        proc.stdin.write(name.encode() + b"\n")
+        proc.stdin.flush()
+    except OSError:  # not a repository: git has exited
+        return None
     header = proc.stdout.readline().split()
-    if len(header) != 3:
-        die(f"{repo}: no object {name}")
+    if len(header) != 3 or header[-1] in (b"missing", b"ambiguous"):
+        return None
     data = proc.stdout.read(int(header[2]))
     proc.stdout.read(1)
-    return header[0].decode(), data
+    return header[0].decode(), header[1].decode(), data
+
+
+def cat_object(repo: Path, name: str) -> tuple[str, bytes]:
+    found = read_object(repo, name)
+    if found is None:
+        die(f"{repo}: no object {name}")
+    return found[0], found[2]
+
+
+def file_at(repo: Path, ref: str, path: str) -> str:
+    """A file's text at a commit or branch; "" when it has none."""
+    found = read_object(repo, f"{ref}:{path}")
+    return found[2].decode(errors="replace") if found and found[1] == "blob" else ""
+
+
+def names_at(repo: Path, ref: str, folder: str) -> list[str]:
+    """The names in a folder at a commit or branch; none when it has no such folder."""
+    found = read_object(repo, f"{ref}:{folder}")
+    if not found or found[1] != "tree":
+        return []
+    return [name.decode() for name, _ in tree_entries(found[2], len(found[0]) // 2)]
 
 
 def tree_entries(data: bytes, width: int) -> list[tuple[bytes, bytes]]:
@@ -1867,16 +1901,16 @@ def journal_text(c: Campaign, name: str, branch: str, rel: str) -> str:
         return (wt / path).read_text()
     if branch:
         p = c.quests[name.split("--", maxsplit=1)[0]]
-        return git(c.repo(p), "show", f"{branch}:{path}", check=False)
+        return file_at(c.repo(p), branch, path)
     return ""
 
 
 def journals_at(c: Campaign, repo: Path, commit: str, pid: str) -> dict[str, str]:
     """The quest's and its tasks' journals in a commit: what a landing would carry."""
     folder = f"{c.meta}/journal"
-    names = git(repo, "ls-tree", "--name-only", f"{commit}:{folder}", check=False).splitlines()
+    names = names_at(repo, commit, folder)
     mine = sorted(n for n in names if n == f"{pid}.md" or (n.startswith(f"{pid}--") and n.endswith(".md")))
-    return {n[:-3]: git(repo, "show", f"{commit}:{folder}/{n}", check=False) for n in mine}
+    return {n[:-3]: file_at(repo, commit, f"{folder}/{n}") for n in mine}
 
 
 def journal_state(c: Campaign, name: str, branch: str, rel: str) -> str:
@@ -1932,7 +1966,7 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
             why.append("names no job (a job criterion needs a job id; tag it [manual] or [artifact] otherwise)")
         elif kind == "artifact":
             paths = re.findall(r"`([^`\s]+)`", text)
-            missing = [x for x in paths if not any(git_ok(repo, "cat-file", "-e", f"{k}:{x}") for k in commits)]
+            missing = [x for x in paths if not any(read_object(repo, f"{k}:{x}") for k in commits)]
             why += [f"{x} is not in {commits[0][:12]}" for x in missing] if commits else []
             if not paths:
                 why.append("names no file (an artifact criterion names a `path` in the repository)")
@@ -2357,13 +2391,17 @@ def map_data(c: Campaign, only: str = "") -> Json:
     quests in no milestone, and the dropped ones."""
     if only:
         c.quest(only)
-    quests = {pid: quest_map(c, pid) for pid in c.quests if not only or pid == only}
+    with frozen_heads():
+        quests = {pid: quest_map(c, pid) for pid in c.quests if not only or pid == only}
     plan = c.home / c.meta / "PLAN.md"
-    goals = [
-        x.strip()[2:]
-        for x in section(plan.read_text() if plan.exists() else "", "Goals").splitlines()
-        if x.strip().startswith(("- ", "* ")) and not x.strip()[2:].startswith("<")
-    ]
+    goals: list[str] = []
+    for line in section(plan.read_text() if plan.exists() else "", "Goals").splitlines():
+        text = line.strip()
+        if text.startswith(("- ", "* ")):
+            goals.append(text[2:])
+        elif text and line[:1].isspace() and goals:  # a wrapped goal's next line
+            goals[-1] += " " + text
+    goals = [g for g in goals if not g.startswith("<")]
     rank = {"landed": 0, "review": 1, "active": 2, "blocked": 3, "planned": 4}
     placed: set[str] = set()
     groups: list[Json] = []
@@ -2400,16 +2438,33 @@ def map_data(c: Campaign, only: str = "") -> Json:
     }
 
 
-def map_text(c: Campaign, only: str = "") -> str:
-    """The map as Markdown: a checkbox per quest, with its intent, result, documents and criteria."""
+def milestone_mark(quests: list[Json]) -> tuple[str, str]:
+    """A milestone's emoji and color: done, under way, waiting only on blocked quests, or planned."""
+    statuses = {q["status"] for q in quests}
+    if not statuses:
+        return "⬜", "dim"
+    if statuses == {"landed"}:
+        return "✅", "green"
+    if statuses & {"landed", "active", "review"}:
+        return "🔨", "cyan"
+    return ("🚧", "red") if statuses == {"blocked"} else ("📋", "dim")
+
+
+def map_text(c: Campaign, only: str = "", color: bool = False) -> str:
+    """The map as Markdown: a checkbox per quest, with its intent, result, documents and criteria. Its
+    emoji are part of the document (MAP.md shows them); color only with `color`, for a terminal."""
     m = map_data(c, only)
-    out = [f"# {m['campaign']}: map", ""]
+
+    def p(text: str, *styles: str) -> str:
+        return paint(text, *styles) if color else text
+
+    out = [p(f"# {m['campaign']}: map", "bold"), ""]
 
     def criteria_count(n: int) -> str:
         return f"{n} criterion" if n == 1 else f"{n} criteria"
 
     if not only:
-        out += [f"- {g}" for g in m["goals"]] + ([""] if m["goals"] else [])
+        out += [f"- 🎯 {g}" for g in m["goals"]] + ([""] if m["goals"] else [])
         out += [
             f"{m['landed']} of {plural(m['quests'], 'quest')} landed, {m['met']} of {criteria_count(m['criteria'])} "
             f"met. Generated by `campaign map` on {stamp()[:10]}; edit the quest files and journals, not this.",
@@ -2419,61 +2474,72 @@ def map_text(c: Campaign, only: str = "") -> str:
     def quest(q: Json, full: bool) -> list[str]:
         done = q["status"] == "landed"
         met = sum(1 for x in q["criteria"] if x["met"])
-        head = f"- [{'x' if done else ' '}] **{q['id']}**: {q['title']} ({q['risk']} risk, "
+        tint, emoji = STAGES.get(q["status"], ("dim", "❔"))
+        name = p("**" + q["id"] + "**", "bold", tint)
+        head = f"- {p('[x]' if done else '[ ]', tint)} {emoji} {name}: {q['title']} "
         if done:
             left = [x["id"] for x in q["criteria"] if not x["met"]]
-            head += (
-                f"{q['landed']['how']} {q['landed']['at'][:10]} at {q['landed']['repo']}:{q['landed']['commit'][:12]}"
+            landed = q["landed"]
+            head += p(
+                f"({q['risk']} risk, {landed['how']} {landed['at'][:10]} at {landed['repo']}:{landed['commit'][:12]}",
+                "dim",
             )
-            head += f"; left open: {', '.join(left)})" if left else ")"
+            head += (p("; ", "dim") + p(f"left open: {', '.join(left)}", "yellow") if left else "") + p(")", "dim")
         else:
-            head += f"{q['status']}, {met} of {criteria_count(len(q['criteria']))} met)"
+            head += p(f"({q['risk']} risk, {q['status']}, {met} of {criteria_count(len(q['criteria']))} met)", "dim")
         lines = [head]
+
+        def note(label: str, text: str, style: str = "dim") -> None:
+            lines.append(f"  - {p(label + ':', style)} {text}")
+
         if q["outcome"]:
-            lines.append(f"  - Outcome: {q['outcome']}")
+            note("Outcome", q["outcome"])
         if done or q["result"]:
             result = q["result"] if full else first_paragraph(q["result"])
-            lines.append("  - Result: " + (result.replace("\n", "\n    ") if result else "not written"))
+            note("Result", result.replace("\n", "\n    ") if result else "not written")
         if q["docs"]:
-            lines.append(f"  - Docs: {', '.join(q['docs'])}")
+            note("Docs", ", ".join(q["docs"]))
         # a landing before the campaign was reviewed by its own process, which its Result names
         shown = {
             k: v for k, v in q["reviews"].items() if not (done and q["landed"]["how"] != "landed" and v == "none yet")
         }
-        reviews = ", ".join(f"{lens} {v}" for lens, v in shown.items())
-        if reviews:
-            lines.append(f"  - Reviews: {reviews}")
+        if shown:
+            note("Reviews", ", ".join(f"{lens} {v}" for lens, v in shown.items()))
         if q["needs"]:
-            lines.append(f"  - Needs: {', '.join(q['needs'])}")
-        for label, key in (("Blocked on", "blocked"), ("Next", "next")):
-            if q[key]:
-                lines.append(f"  - {label}: {q[key]}")
+            note("Needs", ", ".join(q["needs"]))
+        if q["blocked"]:
+            note("Blocked on", q["blocked"], "red")
+        if q["next"]:
+            note("Next", q["next"], "cyan")
         if q["status"] == "blocked" and q["reason"]:
-            lines.append(f"  - Blocked: {q['reason']}")
+            note("Blocked", q["reason"], "red")
         if full or q["status"] in ("active", "review"):
             for x in q["criteria"]:
                 text = x["text"] if full else x["text"].split(": ", 1)[0][:100]
-                lines.append(f"  - [{'x' if x['met'] else ' '}] {x['id']} {text}")
+                box = p("[x]", "green") if x["met"] else p("[ ]", "yellow")
+                lines.append(f"  - {box} {x['id']} {text}")
         return lines
 
     for g in m["milestones"]:
         n = len(g["quests"])
         k = sum(1 for q in g["quests"] if q["status"] == "landed")
         state = "no quests yet" if not n else "done" if k == n else f"{k} of {n} landed"
-        out += [f"## {g['name']}: {state}", ""]
+        emoji, tint = milestone_mark(g["quests"])
+        out += [p(f"## {emoji} {g['name']}: ", "bold") + p(state, "bold", tint), ""]
         if g["validation"] and not g["validation"].startswith("<"):
-            out += [f"Validation on main: {g['validation']}", ""]
+            out += [f"{p('Validation on main:', 'dim')} {g['validation']}", ""]
         for q in g["quests"]:
             out += quest(q, bool(only))
         out.append("")
     if m["other"]:
         out += (
-            (["## Not in a milestone", ""] if m["milestones"] else [])
+            ([p("## Not in a milestone", "bold"), ""] if m["milestones"] else [])
             + [line for q in m["other"] for line in quest(q, bool(only))]
             + [""]
         )
     if m["dropped"]:
-        out += ["## Dropped", ""] + [f"- ~~{q['id']}~~: {q['title']} ({q['reason']})" for q in m["dropped"]] + [""]
+        out += [p("## Dropped", "bold"), ""]
+        out += [f"- 🚫 {p('~~' + q['id'] + '~~', 'dim')}: {q['title']} ({q['reason']})" for q in m["dropped"]] + [""]
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -2498,7 +2564,7 @@ def cmd_map(a: argparse.Namespace) -> int:
     if a.json:
         print(json.dumps(map_data(c, a.id or ""), indent=2))
     else:
-        print(map_text(c, a.id or ""), end="")
+        print(map_text(c, a.id or "", color=styled()), end="")
     return 0
 
 
@@ -4802,7 +4868,9 @@ def parser() -> argparse.ArgumentParser:
         "The campaign as a map, in Markdown: its goals, then each milestone of PLAN.md with a checkbox per "
         "quest, its intent (the quest file's Outcome), its result (the journal's Result), the documents its "
         "landing added to its repository's docs/, its reviews, and the open quests' criteria as checkboxes. "
-        "With ID, that quest in full. --write keeps it as .campaign/NAME/MAP.md, which each landing refreshes.",
+        "With ID, that quest in full. --write keeps it as .campaign/NAME/MAP.md, which each landing refreshes. "
+        "Its emoji mark each quest's and milestone's state in the file too; color only on a terminal "
+        "(NO_COLOR turns it off).",
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest, in full")
     p.add_argument("--json", action="store_true", help="the same as JSON")

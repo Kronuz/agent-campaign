@@ -101,7 +101,7 @@ The lead drives the tool; these are the commands it reaches for most.
 | `campaign accept ID LENS` | records a review as accepted for the commit it saw; after CHANGES, `--confirm FINDING=JOB` per blocking finding |
 | `campaign land ID` | lands the quest when every criterion, task, check and review holds for the exact code, then removes its worktrees, merged branches and build slot |
 | `campaign status`, `check` | each quest and what it still needs (what `land` would refuse on), and the contradictions between state, git and jobs |
-| `campaign map [ID]` | the campaign's milestones and quests as checkboxes: each quest's intent, result, the docs its landing added, its reviews and criteria; `--write` keeps it as `MAP.md` |
+| `campaign map [ID]` | the campaign's milestones and quests as checkboxes: each quest's intent, result, the docs its landing added, its reviews and criteria; `--write` keeps it as `MAP.md`; emoji mark each state, color only on a terminal |
 | `campaign brief [--json]` | the same for agents: one line (or JSON field) per thing to act on; in a quest's worktree, that quest |
 | `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's lead) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
