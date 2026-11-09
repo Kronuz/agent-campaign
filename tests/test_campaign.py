@@ -276,6 +276,30 @@ class Evidence(CampaignCase):
         self.assertEqual((trees[1], trees[3], trees[4]), (trees[0], trees[2], trees[0]))  # campaign files never count
         self.assertNotEqual(trees[0], trees[2])  # docs/guide.md does, and .campaignx is code
 
+    def test_evidence_outlives_documentation_only_commits_its_command_does_not_name(self) -> None:
+        wt = self.started("fix", files="app.py,README.md,docs/**")
+        tested = self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.commit(wt, {"README.md": "app, documented\n"})
+        self.commit(wt, {"docs/perf.md": "the numbers\n"})
+        jobs = len(list((self.root / "jobs").glob("2*")))
+        out = self.ok(self.home, "verify", "fix").out
+        self.assertIn(f"(reused: passed at {tested[:12]}; ignores docs-only README.md, docs/perf.md)", out)
+        self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs, "verify reran a check for docs")
+        brief = self.ok(self.home, "brief", "fix").out
+        self.assertIn(f"passed at {tested[:12]}; ignores docs-only README.md, docs/perf.md", brief)
+        self.assertNotIn("check unit is not green", brief)
+        self.ok(self.home, "land", "fix")
+        (landing,) = self.quest("fix")["landed"]
+        self.assertEqual(landing["evidence"][0]["docs"], ["README.md", "docs/perf.md"])
+        named = self.started("named", files="app.py,README.md", check="unit=python3 app.py && cat README.md")
+        self.commit(named, {"app.py": "print(3)\n"})
+        self.verified("named")
+        self.commit(named, {"README.md": "what the check reads\n"})
+        self.assertIn("check unit is not green", self.ok(self.home, "brief", "named").out)  # its command names it
+        self.commit(named, {"app.py": "print(4)\n", "docs/later.md": "x\n"})
+        self.assertIn("check unit is not green", self.ok(self.home, "brief", "named").out)
+
     def test_each_criterion_needs_the_kind_of_evidence_it_names(self) -> None:
         wt = self.started("fix", files="app.py,docs/**")
         brief = self.home / ".campaign/demo/quests/fix.md"
@@ -458,7 +482,7 @@ class Evidence(CampaignCase):
         b = self.started("other", files="README.md")
         self.commit(b, {"README.md": "x\n"})
         self.verified("other")
-        self.commit(b, {"docs/other.md": "outside the campaign's files counts as code\n"})
+        self.commit(b, {"other.txt": "outside the campaign's files and the docs counts as code\n"})
         self.assertNotIn("reused", self.ok(self.home, "verify", "other").out)
 
     def test_failing_check_blocks_landing(self) -> None:

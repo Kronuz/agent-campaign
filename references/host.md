@@ -49,6 +49,13 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   Upgrading `campaign` can change how keys are computed; run `campaign verify` again after an
   upgrade. A journal's Evidence row naming a job counts only while that job, or the same job rerun,
   passed at the quest's current code.
+- **Documentation-only commits.** Evidence that passed at a commit still counts at a later one
+  when every path that differs between them (outside `.campaign/`) is documentation (`DOC_PATHS`:
+  `docs/**`, `*.md`) that the job's command does not name, itself or by a `docs/` folder. Gates,
+  criteria, confirmations, `verify` (which reuses such a job instead of rerunning it), `land` and
+  `status` accept it; the brief names each such job and the documentation paths it ignores, and
+  the landing records them. The search follows first parents back at most 20 commits and stops at
+  the first commit that changes code.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (untracked build outputs stay, which is
   the point), and one job uses it at a time: the worker starts no job whose slot a running job

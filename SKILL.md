@@ -237,7 +237,8 @@ Performance claims follow `references/measurement.md`: before and after at named
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
 host and toolchain: name a mutable input (a dataset version) with `--env`, and rerun with
-`--force` what depends on more. A strict or exclusive job lasts at most 30 minutes and is stopped at
+`--force` what depends on more. Evidence also outlives later commits that change only
+documentation (`docs/**`, `*.md`) its command does not name; the brief lists what it ignored. A strict or exclusive job lasts at most 30 minutes and is stopped at
 its deadline. Every process a job starts dies with it. A worker starts by itself and exits when
 the queue is empty, pruning once a day: jobs nothing names go after 14 days, and jobs evidence
 names keep their record and lose only bulky outputs (`campaign job prune`). The same prune deletes

@@ -1603,7 +1603,7 @@ def confirmations(repo: Path, commit: str, reviewed: str, *, table: list[Json], 
 
 def passed_at(job: Json, commit: str) -> Json:
     """The run of this job's command that passed at COMMIT's code: the job itself, or its rerun."""
-    twin = job_with_key({**job["spec"], "commit": commit})
+    twin = job_at(job["spec"], commit)
     return twin if twin is not None else job
 
 
@@ -2395,7 +2395,7 @@ def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
             return f"{jid} ran in {job['spec']['repo']}, not the quest's repository"
         for commit in commits:
             with contextlib.suppress(CampaignError, KeyError):
-                twin = job_with_key({**job["spec"], "commit": commit})
+                twin = job_at(job["spec"], commit)
                 if twin and twin["state"].get("state") == "done":
                     return ""
         return f"{jid} ran other code"
@@ -2628,6 +2628,11 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
         view["missing"] = landing_gaps(c, pid, head, final=True, ci=False)
+        view["docs_only"] = [
+            f"{x['name']}: {j['id']} {docs_note(j)}"
+            for x in gates(p)
+            if not x["cmd"].startswith(CI_CHECK) and (j := job_for_check(repo, head, x)) and j.get("docs")
+        ]
         if brief:
             for name, branch, _, _ in branches(c, pid):
                 texts[name] = journal_text(c, name, branch)
@@ -2638,7 +2643,8 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["later"] = [x["name"] for x in deferred(p)]
         for check in gates(p):
             job = job_for_check(repo, head, check)
-            checks[check["name"]] = job["state"].get("state", "?") if job else "not run at head"
+            note = f" ({docs_note(job)})" if job and job.get("docs") else ""
+            checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
             if job:
                 checked.add(job["id"])
         view["reviews"] = {lens: verdict(c, pid, lens) for lens in p["lenses"]}
@@ -3258,6 +3264,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
             else ""
         )
         q["to_land"] = v["missing"]
+        q["docs_only"] = v.get("docs_only", [])
         q["messages"] = [
             {k: m[k] for k in ("id", "by", "at", "text")} for m in v.get("messages", []) if not m["answered"]
         ]
@@ -3288,6 +3295,8 @@ def print_brief(b: Json) -> None:
             print(f"  ready to {q['next'].split()[1]}: `{q['next']}`")
         for gap in q["to_land"]:
             print(f"  - {gap}")
+        for note in q["docs_only"]:
+            print(f"  evidence across docs-only commits: {note}")
         for m in q["messages"]:
             print(f"  - {m['id']} from {m['by']}: {m['text']}")
         for f in q["failed"]:
@@ -4109,6 +4118,11 @@ def submit_checks(
             "priority": priority,
             "retries": 1,
         }
+        earlier = None if force else job_at(spec, commit)
+        if earlier is not None and earlier.get("docs"):
+            print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
+            ids.append(earlier["id"])
+            continue
         jid, reused = submit(spec, force=force)
         print(f"{check['name']}: {jid}" + (" (reused)" if reused else ""))
         ids.append(jid)
@@ -4203,7 +4217,59 @@ def job_for_check(repo: Path, commit: str, check: Json) -> Json | None:
         "level": check["level"],
         "env": nothing,
     }
-    return job_with_key(spec)
+    return job_at(spec, commit)
+
+
+DOC_PATHS = ("docs/**", "*.md")  # documentation: evidence outlives commits that change only these
+DOCS_DEPTH = 20  # how many commits back evidence is looked for across documentation-only commits
+
+
+def doc_path(path: str, cmd: str) -> bool:
+    """Whether PATH is documentation that the command CMD does not name, itself or by a folder."""
+    folders = [path[: i + 1] for i, ch in enumerate(path) if ch == "/"]
+    named = path in cmd or any(f in cmd for f in folders if f.startswith("docs/"))
+    return not named and any(fnmatch.fnmatchcase(path, g) for g in DOC_PATHS)
+
+
+def docs_only_ancestors(repo: Path, commit: str, cmd: str) -> list[tuple[str, list[str]]]:
+    """COMMIT's first-parent ancestors whose code differs from COMMIT's only in documentation CMD does
+    not name, nearest first, each with the paths that differ."""
+    out: list[tuple[str, list[str]]] = []
+    ignored: set[str] = set()
+    newer = commit
+    line = on_commits(
+        ("first-parents", str(repo), commit),
+        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={DOCS_DEPTH + 1}", commit).split(),
+    )
+    for older in line[1:]:
+        paths = [x for x in changed(repo, older, newer) if not is_meta(x)]
+        if not all(doc_path(x, cmd) for x in paths):
+            break
+        ignored.update(paths)
+        out.append((older, sorted(ignored)))
+        newer = older
+    return out
+
+
+def job_at(spec: Json, commit: str) -> Json | None:
+    """The job with SPEC's identity at COMMIT's code; when none passed there, the one that passed at
+    the nearest ancestor whose code differs only in documentation the command does not name, with
+    "at" (that commit) and "docs" (the paths it ignores)."""
+    exact = job_with_key({**spec, "commit": commit})
+    if exact is not None and exact["state"].get("state") == "done":
+        return exact
+    for older, paths in docs_only_ancestors(Path(spec["repo"]), commit, spec["cmd"]):
+        twin = job_with_key({**spec, "commit": older})
+        if twin is not None and twin["state"].get("state") == "done":
+            return {**twin, "at": older, "docs": paths}
+    return exact
+
+
+def docs_note(job: Json) -> str:
+    """How a job found across documentation-only commits counts: "" for one at the exact code."""
+    if not job.get("docs"):
+        return ""
+    return f"passed at {job['at'][:12]}; ignores docs-only {', '.join(job['docs'])}"
 
 
 def job_with_key(spec: Json) -> Json | None:
@@ -4231,6 +4297,7 @@ def job_summary(job: Json) -> Json:
         "state": st.get("state"),
         "exit": st.get("exit"),
         "seconds": round(st["ended"] - st["began"], 1) if st.get("ended") and st.get("began") else None,
+        **({"docs": job["docs"]} if job.get("docs") else {}),
     }
 
 
