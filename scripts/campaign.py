@@ -809,12 +809,10 @@ def sidebar(c: Campaign) -> None:
     with frozen_heads():  # one branch listing per repository, not two git calls per branch
         failing_by = {pid: unexplained_failures(c, pid, jobs) for pid, p in c.quests.items() if p["status"] in FLIGHT}
     for pid, p in c.quests.items():
-        if p["status"] in FLIGHT:
+        if p["status"] in ("active", "review"):  # blocked quests count in the campaign's pill only
             failing = failing_by[pid]
-            want[f"status:campaign-{c.name}-{pid}"] = (
-                f"{pid}: {p['status']}"
-                + (f" ({p.get('reason', '')})" if p["status"] == "blocked" else "")
-                + (f" · 🔥 {plural(len(failing), 'failed job')}" if failing else "")
+            want[f"status:campaign-{c.name}-{pid}"] = f"{pid}: {p['status']}" + (
+                f" · 🔥 {plural(len(failing), 'failed job')}" if failing else ""
             )
     if m is not None:
         label = f"{name}{' ' + m['name'] if m['name'] else ''}: {m['landed']} of {m['quests']} quests landed" + (
@@ -4168,12 +4166,16 @@ def job_for_check(repo: Path, commit: str, check: Json) -> Json | None:
 
 
 def job_with_key(spec: Json) -> Json | None:
-    """The job with this spec's identity (code, command, toolchain), if one was submitted."""
-    link = jobs_dir() / "keys" / job_key(spec)
-    if not link.is_symlink():
-        return None
-    d = jobs_dir() / os.readlink(link)
-    return load_job(d) if (d / "spec.json").exists() else None
+    """The job with this spec's identity (code, command, toolchain), if one was submitted: alone,
+    or queued after others (filed as KEY-ORDER), the one that passed first."""
+    keys = jobs_dir() / "keys"
+    key = job_key(spec)
+    found = []
+    for link in [keys / key, *keys.glob(f"{key}-*")]:
+        d = jobs_dir() / os.readlink(link) if link.is_symlink() else None
+        if d is not None and (d / "spec.json").exists():
+            found.append(load_job(d))
+    return next((j for j in found if j["state"].get("state") == "done"), found[0] if found else None)
 
 
 def job_summary(job: Json) -> Json:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -63,6 +65,28 @@ class CommandLine(unittest.TestCase):
                 "commands:",
                 subprocess.run([sys.executable, str(SCRIPTS / script), "help"], capture_output=True, text=True).stdout,
             )
+
+
+class Pills(unittest.TestCase):
+    def test_a_hand_set_pill_expires_at_the_next_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            fake = Path(tmp) / "cmux"
+            fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
+            fake.chmod(0o755)
+            env = {**os.environ, "CMUX_WORKSPACE_ID": "ws", "REPORT_STATE": tmp, "PATH": f"{tmp}:{os.environ['PATH']}"}
+
+            def run(*args: str) -> None:
+                subprocess.run([sys.executable, str(SCRIPTS / "report.py"), *args], env=env, check=True)
+
+            run("status", "short", "gone soon", "--ttl", "0")
+            run("status", "long", "stays")
+            run("set", "1/2", "anything")  # any report command expires what is due
+            log = calls.read_text()
+            self.assertIn("clear-status|short|", log)
+            self.assertNotIn("clear-status|long|", log)
+            run("unstatus", "long")
+            self.assertEqual(json.loads((Path(tmp) / "ws.json").read_text()), {})
 
 
 if __name__ == "__main__":

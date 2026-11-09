@@ -7,16 +7,22 @@ else print "progress: 60% phase 2 gates" on stderr; `notify` uses the desktop (o
 notify-send on Linux) or stderr; status pills are skipped. Every command with valid arguments
 exits 0, so a failing display never fails the work it reports on. `campaign` and `quiet` import
 this module rather than running it.
+
+A pill set from the command line expires (`--ttl`, default 120 minutes): every `report` command
+clears its workspace's expired pills, so a pill nobody refreshes or removes cannot outlive its work.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 from style import add_help, show_help
 
@@ -76,6 +82,43 @@ def unstatus(key: str, workspace: str | None = None) -> None:
     cmux(["clear-status", key], workspace)
 
 
+def ledger() -> Path | None:
+    """Where this workspace's hand-set pills and their expiries are kept; None outside cmux."""
+    ws = os.environ.get("CMUX_WORKSPACE_ID", "")
+    if not ws:
+        return None
+    root = Path(os.environ.get("REPORT_STATE") or Path.home() / ".scratch" / "report")
+    return root / f"{ws}.json"
+
+
+def pills() -> dict[str, float]:
+    path = ledger()
+    with contextlib.suppress(OSError, ValueError, TypeError):
+        return {str(k): float(v) for k, v in json.loads(path.read_text()).items()} if path else {}
+    return {}
+
+
+def keep(kept: dict[str, float]) -> None:
+    path = ledger()
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(kept))
+        tmp.replace(path)
+
+
+def expire() -> None:
+    """Clears the hand-set pills whose time is up."""
+    kept = pills()
+    now = time.time()
+    for key in [k for k, until in kept.items() if until <= now]:
+        unstatus(key)
+        del kept[key]
+    keep(kept)
+
+
 def notify(title: str, body: str = "") -> None:
     if cmux(["notify", "--title", title, *(["--body", body] if body else [])]):
         return
@@ -118,6 +161,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("key", metavar="KEY")
     p.add_argument("value", metavar="VALUE")
     p.add_argument("icon", metavar="ICON", nargs="?", default="")
+    p.add_argument("--ttl", type=float, default=120, metavar="MINUTES", help="clear it after this long (default 120)")
     p = sub.add_parser("unstatus", help="remove a sidebar pill", description="Removes the sidebar pill KEY.")
     p.add_argument("key", metavar="KEY")
     p = sub.add_parser(
@@ -136,14 +180,17 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.command == "help":
         return show_help(ap, a.topic)
+    expire()
     if a.command == "set":
         progress(a.value, a.label)
     elif a.command == "clear":
         clear()
     elif a.command == "status":
         status(a.key, a.value, a.icon)
+        keep({**pills(), a.key: time.time() + 60 * a.ttl})
     elif a.command == "unstatus":
         unstatus(a.key)
+        keep({k: v for k, v in pills().items() if k != a.key})
     else:
         notify(a.title, a.body)
     return 0

@@ -311,6 +311,18 @@ class Evidence(CampaignCase):
         self.ok(self.home, "wait", rerun)
         self.ok(self.home, "land", "fix")  # the row still names the probe; its rerun at this code counts
 
+    def test_a_cited_job_that_ran_after_another_counts(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        build = self.submit(wt, "--quest", "fix", "--", "true")
+        probe = self.submit(wt, "--quest", "fix", "--after", build, "--", "python3 app.py | grep -q 2")
+        self.ok(self.home, "wait", probe)
+        self.commit(wt, {".campaign/demo/journal/fix.md": f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.assertIn("    A1  met      prints two: a probe\n", self.ok(self.home, "status", "fix").out)
+
     def test_land_needs_green_checks_at_the_exact_head(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
@@ -1788,6 +1800,10 @@ class Sidebar(CampaignCase):
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         self.ok(self.home, "status")
         self.assertIn("set-status|campaign-demo-a|a: active · 🔥 1 failed job|", calls.read_text())
+        calls.write_text("")
+        self.ok(self.home, "set", "a", "status=blocked", "reason=owner")
+        self.assertIn("clear-status|campaign-demo-a|", calls.read_text(), "a blocked quest keeps no pill")
+        self.ok(self.home, "set", "a", "status=active")
         self.commit(self.wt("a"), {"app.py": "print(2)\n"})
         self.verified("a")
         self.ok(self.home, "land", "a")
