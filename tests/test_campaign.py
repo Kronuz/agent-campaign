@@ -478,6 +478,24 @@ class Evidence(CampaignCase):
         later = self.run_cli(self.home, "land", "san")
         self.assertNotIn("check asan", later.out + later.err)
 
+    def test_ci_at_the_same_code_speaks_for_a_journal_commit(self) -> None:
+        tested = self.root / "ci-commit"
+        jobs = '{"jobs": [{"name": "AddressSanitizer + UBSan", "status": "completed", "conclusion": "success"}]}'
+        fake = self.root / "bin" / "gh"
+        listed = f'case "$*" in *"$(cat {tested})"*) echo \'[{{"databaseId": 7}}]\';; *) echo \'[]\';; esac'
+        fake.write_text(f"#!/bin/sh\nif [ \"$2\" = list ]; then {listed}; else printf '%s' '{jobs}'; fi\n")
+        fake.chmod(0o755)
+        wt = self.started("san", check="asan=ci:AddressSanitizer")
+        tested.write_text(self.git(wt, "rev-parse", "HEAD"))
+        journal = next((wt / ".campaign").rglob("san.md"))
+        journal.write_text(journal.read_text() + "\nA note.\n")
+        self.git(wt, "commit", "-qam", "journal")
+        self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
+        (wt / "more.py").write_text("print(2)\n")
+        self.git(wt, "add", "more.py")
+        self.git(wt, "commit", "-qm", "code")
+        self.assertIn("no CI job named", self.run_cli(self.home, "brief", "san").out)
+
 
 class Reviews(CampaignCase):
     def normal(self) -> str:

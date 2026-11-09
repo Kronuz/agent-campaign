@@ -1564,9 +1564,33 @@ def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> 
     return out + [x for x in rest if at_main[x] != accepted[x]]
 
 
+def ci_commit(repo: Path, commit: str) -> str:
+    """The commit whose CI speaks for COMMIT: itself, or its nearest first-parent ancestor with the
+    same code (only campaign files differ), since a journal commit changes nothing CI tests."""
+    tree = code_tree(repo, commit)
+    log = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--first-parent", "--max-count=20", commit],
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    for k in log:
+        if code_tree(repo, k) != tree:
+            break
+        p = subprocess.run(
+            ["gh", "run", "list", "--commit", k, "--json", "databaseId", "--limit", "1"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if p.returncode == 0 and json.loads(p.stdout or "[]"):
+            return k
+    return commit
+
+
 def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
+    commit = ci_commit(repo, commit)
     p = subprocess.run(
         ["gh", "run", "list", "--commit", commit, "--json", "status,conclusion,name", "--limit", "50"],
         cwd=repo,
@@ -1601,6 +1625,7 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
         return _ci_jobs[key]
     if not shutil.which("gh"):
         return "gh is not installed"
+    commit = ci_commit(repo, commit)
     p = subprocess.run(
         ["gh", "run", "list", "--commit", commit, "--json", "databaseId", "--limit", "50"],
         cwd=repo,
