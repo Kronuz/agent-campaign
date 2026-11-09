@@ -5090,8 +5090,8 @@ def cmd_message(a: argparse.Namespace) -> int:
 
 def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
-    by default the head of their quest's branch, else of their repository."""
-    branch = ""
+    by default the head of their quest's branch, in whichever of the job's repositories holds it
+    (its own or a `--ref`'s), else of their repository."""
     specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, a.jobs)}
     order: list[str] = []
 
@@ -5109,10 +5109,21 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         spec = specs[jid]
         if not spec.get("commit"):
             die(f"{jid} is unversioned: submit it again")
+        branch, home = "", None
         if not a.commit and spec.get("quest"):
             with contextlib.suppress(CampaignError):
-                branch = find_campaign(Path.cwd()).quest(spec["quest"]).get("branch", "")
-        commit = rev(Path(spec["repo"]), a.commit or branch or "HEAD")
+                c = find_campaign(Path.cwd())
+                quest = c.quest(spec["quest"])
+                branch, home = quest.get("branch", ""), c.repo(quest)
+        commit = ""
+        if branch and home is not None and not same_repo(Path(spec["repo"]), home):
+            refs = {k: dict(r) for k, r in spec.get("refs", {}).items()}
+            for r in refs.values():
+                if same_repo(Path(r["repo"]), home):  # the quest's code is a ref: move it, keep the job's commit
+                    r["commit"], commit = rev(Path(r["repo"]), branch), spec["commit"]
+            spec["refs"] = refs
+            branch = ""  # the job's own repository does not hold the quest's branch
+        commit = commit or rev(Path(spec["repo"]), a.commit or branch or "HEAD")
         what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
         spec.update(
             commit=commit,
@@ -5122,7 +5133,12 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         )
         new, reused = submit(spec)
         renamed[jid] = new
-        print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}")
+        moved = "".join(
+            f", {k} at {r['commit'][:12]}"
+            for k, r in spec.get("refs", {}).items()
+            if home and same_repo(Path(r["repo"]), home)
+        )
+        print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}{moved}")
     ensure_worker()
     return 0
 

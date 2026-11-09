@@ -963,6 +963,34 @@ class Campaigns(CampaignCase):
         self.ok(home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
         self.ok(home, "land", pid)
 
+    def test_a_rerun_moves_the_ref_that_holds_the_quests_code(self) -> None:
+        """A job in another repository that names the quest's code by --ref reruns with that ref at the
+        quest's head and its own commit unchanged."""
+        wt = self.lib_quest(self.home, "pin")
+        first = self.git(wt, "rev-parse", "HEAD")
+        own = self.git(self.home, "rev-parse", "HEAD")
+        jid = self.submit(
+            self.home,
+            "--quest",
+            "pin",
+            "--repo",
+            str(self.home),
+            "--commit",
+            own,
+            "--ref",
+            f"lib={self.lib}@{first}",
+            "--",
+            'cat "$JOB_REF_LIB/lib.py" > "$JOB_OUT/seen"',
+        )
+        self.ok(self.home, "wait", jid)
+        head = self.commit(wt, {"lib.py": "X = 2\n"})
+        out = self.ok(self.home, "job", "rerun", jid).out
+        new = out.split()[0].rstrip(":")
+        self.ok(self.home, "wait", new)
+        spec = json.loads((self.root / "jobs" / new / "spec.json").read_text())
+        self.assertEqual((spec["commit"], spec["refs"]["lib"]["commit"]), (own, head))
+        self.assertEqual((self.root / "jobs" / new / "a1/out/seen").read_text(), "X = 2\n")
+
     def test_campaigns_share_the_light_slots(self) -> None:
         """A campaign that queued first does not take every slot from one that queued after it."""
         self.env["CAMPAIGN_LIGHT_JOBS"] = "2"
