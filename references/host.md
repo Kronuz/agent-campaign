@@ -57,8 +57,13 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns sharing the light slots; `quiet` arbitrates the machine across every session. A job
-  that drains the machine (exclusive, or strict on macOS) waits while light work is queued, at most
-  an hour (`CAMPAIGN_DRAIN_WAIT`), since its pending hold blocks every new light one.
+  that drains the machine (exclusive, or strict on macOS) blocks every new light hold while it
+  waits, so drains and light work take turns: a drain starts in a lull (no runnable light work, and
+  the running light jobs end within 10 minutes by their `--minutes`), or once it has waited an hour
+  since the last drain ended (`CAMPAIGN_DRAIN_WAIT`), when no new light job starts until it runs.
+  `campaign window --minutes N --for TEXT` lets queued drains run back to back for a batch of
+  measurements (light jobs wait); it closes by itself or with `--close`. Give long jobs accurate
+  `--minutes`: drains plan around them.
   `campaign worker --restart` (after updating the tool) has the worker finish its tick and
   re-execute in place on the new code; running jobs keep running. SIGINT or SIGTERM stops it
   between ticks, never mid-claim. Priorities: gate checks from `verify` run at 1, ordinary jobs at 0, deferred

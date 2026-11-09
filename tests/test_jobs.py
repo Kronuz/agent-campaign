@@ -455,8 +455,9 @@ class Prune(CampaignCase):
         self.age(old, 30)
         os.utime(mark, (time.time() - 2 * 86400,) * 2)
         self.ok(self.home, "wait", self.submit(self.home, "--", "true next"))  # the worker runs this one
+        log = self.root / "jobs" / "prune.log"
         self.wait_until(lambda: not (self.root / "jobs" / old).exists())
-        self.assertIn(f"deleted {old}", (self.root / "jobs" / "prune.log").read_text())
+        self.wait_until(lambda: log.exists() and f"deleted {old}" in log.read_text())  # logged after deleting
         again = self.submit(self.home, "--sync", "--", "true again")
         self.age(again, 30)
         self.ok(self.home, "wait", self.submit(self.home, "--", "true last"))

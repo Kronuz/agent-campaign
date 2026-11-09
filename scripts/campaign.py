@@ -4594,6 +4594,30 @@ def drains(job: Json) -> bool:
     return level == "exclusive" or (level == "strict" and not SPLITS)
 
 
+def window_until() -> float:
+    """When the open drain window closes (0 when none is open)."""
+    with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+        until = float(json.loads((jobs_dir() / ".window").read_text())["until"])
+        return until if until > time.time() else 0.0
+    return 0.0
+
+
+def cmd_window(a: argparse.Namespace) -> int:
+    path = jobs_dir() / ".window"
+    if a.close:
+        path.unlink(missing_ok=True)
+        print("window closed: drains and light jobs take turns again")
+        return 0
+    if a.minutes:
+        until = time.time() + 60 * a.minutes
+        atomic_write(path, json.dumps({"until": until, "for": a.purpose, "opened": time.time()}) + "\n")
+        print(f"window open until {stamp(until)}: queued drains run back to back, light jobs wait")
+        return 0
+    until = window_until()
+    print(f"window open until {stamp(until)}" if until else "no window open")
+    return 0
+
+
 def camp(job: Json) -> str:
     """The campaign a job serves, for the worker's fair share."""
     return str(job["spec"].get("campaign") or "")
@@ -4716,11 +4740,12 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and states[j["id"]] != "queued"),
                 default=0.0,
             )
+            window = window_until() > now  # an open window: every ready drain is due, back to back
             overdue = [
                 j
                 for j in queued
                 if drains(j)
-                and now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait
+                and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
                 and all(states.get(x) == "done" for x in j["spec"].get("after", []))
             ]
             for j in queued:
@@ -5759,6 +5784,20 @@ def parser() -> argparse.ArgumentParser:
         help="have the running worker finish its tick and restart on the current code; running jobs keep running",
     )
     p.set_defaults(fn=cmd_worker)
+
+    p = command(
+        "window",
+        "let queued drains run back to back for a while",
+        "Opens a window in which every queued strict or exclusive job that drains the machine (exclusive, "
+        "or strict where quiet cannot pin cores) starts as soon as the last one ends, while new light jobs "
+        "wait; it closes after --minutes or with --close. Without a window, drains and light work take "
+        "turns. With no option it shows the open window.",
+        parents=False,
+    )
+    p.add_argument("--minutes", type=float, default=0, metavar="N", help="open it for N minutes")
+    p.add_argument("--for", dest="purpose", default="", metavar="TEXT", help="what it is for, recorded with it")
+    p.add_argument("--close", action="store_true", help="close the open window now")
+    p.set_defaults(fn=cmd_window)
 
     p = sub.add_parser("_run")  # a job's runner, started by the worker
     p.add_argument("jobdir")

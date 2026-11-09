@@ -966,7 +966,8 @@ class Campaigns(CampaignCase):
     def test_campaigns_share_the_light_slots(self) -> None:
         """A campaign that queued first does not take every slot from one that queued after it."""
         self.env["CAMPAIGN_LIGHT_JOBS"] = "2"
-        ours = [self.submit(self.home, "--level", "light", "--force", "--", "sleep 5") for _ in range(4)]
+        # long enough that "theirs" is queued before ours free a slot, even when submits are slow
+        ours = [self.submit(self.home, "--level", "light", "--force", "--", "sleep 15") for _ in range(4)]
         theirs = self.submit(self.other, "--level", "light", "--", "true")
         self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
         self.ok(self.home, "wait", ours[3], "--timeout", "60", timeout=90)
@@ -1005,6 +1006,19 @@ class Campaigns(CampaignCase):
         self.ok(self.other, "wait", theirs, "--timeout", "90", timeout=120)
         self.assertLess(self.job(first)["started"], self.job(theirs)["started"], "the overdue drain went first")
         self.assertLess(self.job(theirs)["started"], self.job(second)["started"], "light work got its turn")
+
+    def test_a_window_runs_drains_back_to_back(self) -> None:
+        """Inside a window, queued drains go before light work; without one, light work goes first."""
+        self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
+        self.assertIn("window open until", self.ok(self.home, "window", "--minutes", "5", "--for", "A9").out)
+        first = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "sleep 1")
+        second = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--force", "--", "sleep 1")
+        theirs = self.submit(self.other, "--level", "light", "--", "true")
+        self.ok(self.home, "wait", first, second, "--timeout", "90", timeout=120)
+        self.ok(self.other, "wait", theirs, "--timeout", "90", timeout=120)
+        self.assertLess(self.job(second)["started"], self.job(theirs)["started"], "light work cut into the window")
+        self.assertIn("window closed", self.ok(self.home, "window", "--close").out)
+        self.assertIn("no window open", self.ok(self.home, "window").out)
 
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"
