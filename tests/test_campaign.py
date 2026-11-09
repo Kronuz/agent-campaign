@@ -943,6 +943,16 @@ class Campaigns(CampaignCase):
         self.ok(self.home, "wait", ours[3], "--timeout", "60", timeout=90)
         self.assertLess(self.job(theirs)["started"], self.job(ours[3])["started"], "the later campaign waited out ours")
 
+    def test_a_draining_job_waits_for_queued_light_work(self) -> None:
+        """An exclusive hold blocks new light holds while it waits, so it starts after queued light work."""
+        self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
+        ours = self.submit(self.home, "--level", "light", "--force", "--", "sleep 4")
+        theirs = self.submit(self.other, "--level", "light", "--", "true")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        self.ok(self.home, "wait", ours, ab, "--timeout", "60", timeout=90)
+        self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
+        self.assertLessEqual(self.job(theirs)["started"], self.job(ab)["started"], "the A/B drained the queue")
+
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"
         fake = self.root / "bin" / "cmux"

@@ -88,6 +88,20 @@ class Identity(CampaignCase):
         )
         self.assertIn("big: light check unit asks for -j8", self.ok(self.home, "check").out)
 
+    def test_a_rerun_chain_keeps_its_order(self) -> None:
+        first = self.submit(self.home, "--", "true")
+        second = self.submit(self.home, "--after", first, "--", "true")
+        self.ok(self.home, "wait", second)
+        (self.home / "more.py").write_text("print(2)\n")
+        self.git(self.home, "add", "more.py")
+        self.git(self.home, "commit", "-qm", "more")
+        lines = self.ok(self.home, "job", "rerun", second, first).out.splitlines()
+        new = {line.split(": ")[1].split()[0]: line.split()[0].rstrip(":") for line in lines if ": " in line}
+        new_first, new_second = new[first], new[second]
+        self.assertNotEqual(new_first, first)
+        spec = json.loads((self.root / "jobs" / new_second / "spec.json").read_text())
+        self.assertEqual(spec["after"], [new_first])
+
     def test_identical_jobs_are_reused_and_force_reruns(self) -> None:
         jid = self.submit(self.home, "--", "true")
         self.ok(self.home, "wait", jid)

@@ -4531,6 +4531,16 @@ def claim(job: Json) -> bool:
     return True
 
 
+# a strict hold pins its own cores only where quiet can (Linux, FreeBSD's cpuset); elsewhere it drains
+SPLITS = sys.platform == "linux" or (sys.platform.startswith("freebsd") and bool(shutil.which("cpuset")))
+
+
+def drains(job: Json) -> bool:
+    """A job whose hold waits for every light hold and blocks new ones while it waits."""
+    level = job["spec"].get("level")
+    return level == "exclusive" or (level == "strict" and not SPLITS)
+
+
 def camp(job: Json) -> str:
     """The campaign a job serves, for the worker's fair share."""
     return str(job["spec"].get("campaign") or "")
@@ -4572,6 +4582,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
         return max(1, ncpu // 4) if heavy else max(1, ncpu // 2)
 
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
+    drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", "3600"))
     try:
         while True:
             try:
@@ -4628,6 +4639,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     or (not is_heavy and not is_bare and light >= slots)
                 ):
                     continue
+                if drains(j) and wanting and time.time() - float(j["spec"].get("submitted") or 0) < drain_wait:
+                    continue  # draining the machine stalls queued light work: wait for a lull, an hour at most
                 if is_late and not is_heavy and late >= max(1, slots // 2):
                     continue  # deferred work never takes every slot from the direct path
                 if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
@@ -4947,8 +4960,21 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
     by default the head of their quest's branch, else of their repository."""
     branch = ""
-    for jid in a.jobs:
-        spec = dict(resolve_job(jid)["spec"])
+    specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, a.jobs)}
+    order: list[str] = []
+
+    def visit(jid: str) -> None:  # a job after its prerequisites, so a rerun chain keeps its order
+        if jid not in order:
+            for x in specs[jid].get("after", []):
+                if x in specs:
+                    visit(x)
+            order.append(jid)
+
+    for jid in specs:
+        visit(jid)
+    renamed: dict[str, str] = {}
+    for jid in order:
+        spec = specs[jid]
         if not spec.get("commit"):
             die(f"{jid} is unversioned: submit it again")
         if not a.commit and spec.get("quest"):
@@ -4958,11 +4984,12 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
         spec.update(
             commit=commit,
-            after=[],
+            after=[renamed.get(x, x) for x in spec.get("after", [])],
             cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
             what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
         )
         new, reused = submit(spec)
+        renamed[jid] = new
         print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}")
     ensure_worker()
     return 0
