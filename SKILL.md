@@ -133,15 +133,19 @@ runs shorter jobs first, but a batch of hour-long jobs still delays everyone: pl
 
 1. `campaign start ID` creates `quest/<campaign>/ID` in its own worktree with a journal. Launch a
    contributor **in the background**, so it can be resumed by message, with the "Contributor"
-   prompt (`references/prompts.md`); run quests in parallel only when they are ready, disjoint and
-   not waiting on the same machine.
+   prompt (`references/prompts.md`). Keep every **launchable** quest running, critical path
+   first, capped by what the lead can review and land and by the host's light slots. A quest is
+   launchable when it is planned, its `needs` have landed, and its file set overlaps no active or
+   review quest's in its repository; `campaign status` lists them in that order.
 2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs:
    `campaign job submit --quest ID --level L --minutes M -- CMD` and `campaign verify ID`. When
    only jobs remain, it records their ids and ends its turn.
 3. The lead waits with one background `campaign wait --commits` (no tokens until a job ends, a
    branch moves or a message arrives), then resumes the contributor by message while its context
    is small (about 150k tokens). A larger context, or a harness that cannot resume it, gets a fresh
-   contributor with the "Resume" prompt, which rebuilds from the journal and job records.
+   contributor with the "Resume" prompt, which rebuilds from the journal and job records. At
+   every wake it fills idle capacity within step 1's caps: launchable quests first, then an
+   exploration batch (below).
 4. When the journal says "ready for review", the lead sets `status=review` and launches the
    reviewers the risk requires; each writes `.campaign/<campaign>/reviews/ID-LENS.md`. The lead
    relays blocking findings to the contributor by id.
@@ -153,8 +157,18 @@ runs shorter jobs first, but a batch of hour-long jobs still delays everyone: pl
 
 For a list worth hunting (a fresh benchmark's losing rows, a profile's hotspots, thinly proven
 code, a backlog of small bugs), send several economical contributors at once, one target each,
-targets from a fresh measurement on current `main`: `references/assignments/exploration.md`. Size
-the batch by its targets and by what the lead can review and land, never by idle quota.
+each confirmed on current `main` first: `references/assignments/exploration.md`. Size the batch
+by its targets and by what the lead can review and land, never by idle quota.
+
+The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead's, committed;
+`campaign init` writes it): one row per target with its evidence and the files to start in;
+`campaign status` counts the open rows.
+
+- When fewer quests are launchable than the lead can review, launch a batch from the hunt list.
+- After a milestone closes or performance-relevant code lands, run a short benchmark on `main`
+  and add its losing rows.
+- Non-blocking review findings, follow-ups and small bugs go to the hunt list, not the lead's
+  notes.
 
 ## Risk and review
 
@@ -179,7 +193,8 @@ the batch by its targets and by what the lead can review and land, never by idle
   (the review names the fixed commit and approves), unless `--fix-scope REASON` says why it adds no
   mechanism (a regression test for a finding).
 - **Two fix rounds, then stop.** A third means the quest or design is wrong: re-plan or ask the
-  owner. Non-blocking findings become a follow-up quest or are dropped with a reason.
+  owner. Non-blocking findings become a follow-up quest or a hunt-list row, or are dropped with a
+  reason.
 - **A design is reviewed once.** Settle disputed behavior with an executable model or test, not
   another text round.
 - **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
@@ -257,8 +272,8 @@ on" and ask.
 
 ## Cost
 
-- No minimum number of agents, no utilization target. `pace` reports quota: check it before
-  launching agents in parallel, which multiplies the burn.
+- No minimum number of agents, no utilization target. `pace` is advice: check it, report it,
+  and launch by the work.
 - The lead coordinates; it does not re-derive what the state holds. It reads this file and
   `references/prompts.md`, and other references only when the table below says; it orients with
   `campaign brief` and learns what changed from `campaign wait --commits`, not by rereading

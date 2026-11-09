@@ -40,7 +40,7 @@ TEMPLATES = SKILL / "templates"
 META = ".campaign"  # .campaign/NAME/ holds a campaign's files in its home repository
 EXCLUDE_META = (f":(exclude){META}",)
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-LEAD_FILES = ("state.json", "PLAN.md", "quests/", "reviews/")  # the lead writes these, never a quest branch
+LEAD_FILES = ("state.json", "PLAN.md", "hunt.md", "quests/", "reviews/")  # the lead writes these, never a quest branch
 STATUSES = ("planned", "active", "review", "landed", "blocked", "dropped")
 FLIGHT = ("active", "review", "blocked")  # in flight: started, neither landed nor dropped
 RISKS = ("low", "normal", "high", "critical")
@@ -589,6 +589,17 @@ def foreign(dep: str) -> Json | None:
     return quest if isinstance(quest, dict) else None
 
 
+def clashes(c: Campaign, pid: str) -> list[str]:
+    """The active or review quests whose files may overlap this one's in its repository: one writer
+    per file set, so `start` refuses them."""
+    p, repo = c.quests[pid], c.repo(c.quests[pid])
+    return [
+        x
+        for x, q in c.quests.items()
+        if x != pid and q["status"] in ("active", "review") and c.repo(q) == repo and overlap(p["files"], q["files"])
+    ]
+
+
 def cross_overlaps(c: Campaign, pid: str) -> list[str]:
     """Quests of other campaigns whose files may overlap this one's in the same repository."""
     p = c.quests[pid]
@@ -766,31 +777,59 @@ def in_flight(counts: dict[str, int]) -> str:
 
 
 def overview(c: Campaign) -> Json:
-    """Counts by status, the quests ready to start, and the current milestone, among the map's in its
-    order: the first with a quest in review or active, else with one ready to start, else not landed."""
+    """Counts by status, the launchable quests, the ready ones a file set holds, the hunt list's open
+    rows, and the current milestone, among the map's in its order: the first with a quest in review
+    or active, else with one ready to start, else not landed."""
     live = {k: p for k, p in c.quests.items() if p["status"] != "dropped"}
     counts = {s: sum(1 for p in live.values() if p["status"] == s) for s in STATUSES}
     ready = [k for k, p in live.items() if p["status"] == "planned" and all(c.landed(d) for d in p["needs"])]
+    held = {k: x for k in ready if (x := clashes(c, k))}
     groups = [(name, ids) for name, _, ids in milestone_groups(c, {k: p["status"] for k, p in live.items()})]
     placed = {k for _, ids in groups for k in ids}
     groups.append(("", [k for k in live if k not in placed]))
     open_ = [(name, ids) for name, ids in groups if any(live[k]["status"] != "landed" for k in ids)]
+    place = {k: (n, i) for n, (_, ids) in enumerate(groups) for i, k in enumerate(ids)}
+    launchable = sorted(
+        (k for k in ready if k not in held), key=lambda k: (place[k][0], -len(waiting_on(live, k)), place[k][1])
+    )
 
     def first(test: Callable[[str], bool]) -> tuple[str, list[str]] | None:
         return next(((name, ids) for name, ids in open_ if any(test(k) for k in ids)), None)
 
     current = first(lambda k: live[k]["status"] in ("review", "active")) or first(lambda k: k in ready)
     current = current or next(iter(open_), None)
-    view: Json = {"counts": counts, "ready": ready, "milestone": None}
+    view: Json = {"counts": counts, "launchable": launchable, "held": held, "hunt": hunt_open(c), "milestone": None}
     if current is not None:
         name, members = current
         view["milestone"] = {
             "name": name,
             "landed": sum(1 for k in members if live[k]["status"] == "landed"),
             "quests": len(members),
-            "ready": [k for k in ready if k in members],
+            "launchable": [k for k in launchable if k in members],
         }
     return view
+
+
+def waiting_on(live: dict[str, Json], pid: str) -> set[str]:
+    """The quests not landed that need PID, or land after it, directly or through others: its
+    critical-path weight."""
+    found: set[str] = set()
+    todo = [pid]
+    while todo:
+        k = todo.pop()
+        for x, q in live.items():
+            if x not in found and q["status"] != "landed" and k in (*q["needs"], *q.get("after", [])):
+                found.add(x)
+                todo.append(x)
+    return found
+
+
+def hunt_open(c: Campaign) -> int | None:
+    """The open rows of the hunt list (`hunt.md`, Status `open`), or None without one."""
+    path = c.home / c.meta / "hunt.md"
+    if not path.exists():
+        return None
+    return sum(1 for line in path.read_text().splitlines() if table_cells(line)[-1].lower() == "open")
 
 
 def sidebar(c: Campaign) -> None:
@@ -816,7 +855,7 @@ def sidebar(c: Campaign) -> None:
             )
     if m is not None:
         label = f"{name}{' ' + m['name'] if m['name'] else ''}: {m['landed']} of {m['quests']} quests landed" + (
-            f" · ready: {', '.join(m['ready'][:3])}" if m["ready"] else ""
+            f" · launchable: {', '.join(m['launchable'][:3])}" if m["launchable"] else ""
         )
         want["bar"] = f"{m['landed']}/{m['quests']}\t{label}"
     cache = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-sidebar.json"
@@ -1108,9 +1147,9 @@ def cmd_init(a: argparse.Namespace) -> int:
     folder = f"{META}/{name}"
     write_json(top / folder / "state.json", {"version": 2, "campaign": name, "ci": a.ci, "quests": {}})
     register(name, top)
-    plan = top / folder / "PLAN.md"
-    if not plan.exists():
-        atomic_write(plan, template("PLAN.md", campaign=name))
+    for doc in ("PLAN.md", "hunt.md"):
+        if not (top / folder / doc).exists():
+            atomic_write(top / folder / doc, template(doc, campaign=name))
     if os.environ.get("CAMPAIGN_NO_COMMIT") != "1":
         git(top, "add", "--", folder)
         git(top, "commit", "-q", "-m", f"campaign: init {name}", "--", folder)
@@ -1361,14 +1400,7 @@ def cmd_start(a: argparse.Namespace) -> int:
             unmet = [d for d in p["needs"] if not c.landed(d)]
             if unmet and not a.force:
                 die(f"{a.id} needs {', '.join(unmet)} landed first (--force REASON to start anyway)")
-            clash = [
-                x
-                for x, q in c.quests.items()
-                if x != a.id
-                and q["status"] in ("active", "review")
-                and c.repo(q) == repo
-                and overlap(p["files"], q["files"])
-            ]
+            clash = clashes(c, a.id)
             if clash and not a.force:
                 die(
                     f"{a.id}'s files may overlap {', '.join(clash)} (one writer per file set): narrow files, order them with needs, or --force REASON"
@@ -2560,9 +2592,12 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
     view["weakened"] = [h for h in p.get("history", []) if h.get("weakened")]
     view["files"] = p["files"]
     unmet = [d for d in p["needs"] if not c.landed(d)]
-    view["ready"] = p["status"] == "planned" and not unmet
+    clash: list[str] = clashes(c, pid) if p["status"] == "planned" and not unmet else []
+    view["launchable"] = p["status"] == "planned" and not unmet and not clash
     if p["status"] == "planned" and unmet:
         view["missing"] = [f"land {', '.join(unmet)} first"]
+    elif clash:
+        view["missing"] = [f"files may overlap {', '.join(clash)}: start once it lands, or narrow files"]
     elif p["status"] == "blocked":
         view["missing"] = [f"blocked: {p.get('reason', '')}"]
     repo = c.repo(p)
@@ -3153,7 +3188,7 @@ def print_quest(v: Json, full: bool) -> None:
             print(f"  {mark('👥')}tasks:")
             for task, state in tasks.items():
                 print(f"    {mark(task_mark(state))}{task}: {state}")
-    elif v["ready"]:
+    elif v["launchable"]:
         print(f"  ready to start: `campaign start {v['id']}`")
     else:
         for gap in v["missing"]:
@@ -3211,7 +3246,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
             q["files"] = v["files"]
         q["next"] = (
             f"campaign start {v['id']}"
-            if v["ready"]
+            if v["launchable"]
             else f"campaign land {v['id']}"
             if "branch" in v and not v["missing"]
             else ""
@@ -3303,10 +3338,17 @@ def show_status(a: argparse.Namespace) -> int:
         return 0
     n = o["counts"]
     print(f"{mark('🏰')}{paint('campaign ' + c.state['campaign'], 'bold')} ({c.home})")
-    print(
-        f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned"
-        + (f"; ready to start: {', '.join(o['ready'])}" if o["ready"] else "")
-    )
+    print(f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned")
+    if n["planned"]:
+        print(f"  launchable now: {', '.join(o['launchable']) or 'none'}")
+    holders: dict[str, list[str]] = {}
+    for k, by in o["held"].items():
+        for x in by:
+            holders.setdefault(x, []).append(k)
+    if holders:
+        print("  held by file sets: " + "; ".join(f"{x} holds {', '.join(ks)}" for x, ks in holders.items()))
+    if o["hunt"] is not None:
+        print(f"  {mark('🔎')}hunt list: {o['hunt']} open ({c.meta}/hunt.md)")
     live = [v for v in views if v["status"] != "dropped"]
     if live and not a.id:
         done = sum(
@@ -5499,7 +5541,7 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "init",
         "start a campaign in this repository's main checkout",
-        "Creates the campaign's directory (.campaign/NAME/: state.json and PLAN.md) in this repository's main "
+        "Creates the campaign's directory (.campaign/NAME/: state.json, PLAN.md and hunt.md) in this repository's main "
         "checkout, registers it on this machine and commits it. This repository becomes the campaign's home; "
         "the owner writes its goals in PLAN.md.",
         parents=False,

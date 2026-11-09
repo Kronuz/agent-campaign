@@ -2,10 +2,11 @@
 
 An exploration assignment takes one target of an exploration batch, or one quick question.
 
-- The lead takes targets from a fresh measurement or probe on current `main` (the losing rows of a
-  benchmark, a profile's hotspots, recently landed or thinly proven code, a backlog of small bugs),
-  never from an old document, and sends one economical contributor per target at once, each on its
-  own quest with disjoint files (`campaign new hunt-<area> --risk low|normal --files <area>`).
+- The lead takes targets from the hunt list (`.campaign/<campaign>/hunt.md`: the losing rows of a
+  fresh benchmark on `main`, a profile's hotspots, thinly proven code, review follow-ups, small
+  bugs, each with its evidence) and sends one economical contributor per target at once, each on
+  its own quest with disjoint files (`campaign new hunt-<area> --risk low|normal --files <area>`),
+  naming the quest in the row's Status.
 - Confirm the target still exists on current `main` before anything else; then at most three
   experiments, one hypothesis each. Time things only as strict or exclusive jobs, so the batch never
   fights over the machine.

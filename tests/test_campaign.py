@@ -192,6 +192,29 @@ class Ownership(CampaignCase):
         self.ok(self.home, "new", "more", "--title", "more", "--risk", "low", "--files", "tests/test_dense_codec.py")
         self.fails(self.home, "start", "more", match="overlap dense")
 
+    def test_status_lists_launchable_quests_critical_path_first(self) -> None:
+        self.started("one", files="lib/**")
+        new = ("--title", "t", "--risk", "low", "--files")
+        self.ok(self.home, "new", "clash", *new, "lib/util.py")  # needs met, but one holds its files
+        self.ok(self.home, "new", "leaf", *new, "docs.md")
+        self.ok(self.home, "new", "root", *new, "app.py")
+        self.ok(self.home, "new", "tail", *new, "tail.py", "--needs", "root")  # waits on root
+        self.ok(self.home, "new", "parked", *new, "parked.py")
+        self.ok(self.home, "set", "parked", "status=blocked", "reason=owner")
+        out = self.ok(self.home, "status").out
+        self.assertIn("  launchable now: root, leaf\n  held by file sets: one holds clash\n", out)
+        self.assertIn("  hunt list: 0 open (.campaign/demo/hunt.md)\n", out)  # init wrote it
+        o = json.loads(self.ok(self.home, "status", "--json").out)["overview"]
+        self.assertEqual((o["launchable"], o["held"]), (["root", "leaf"], {"clash": ["one"]}))
+        brief = self.ok(self.home, "brief").out
+        self.assertIn("clash planned low\n  - files may overlap one: start once it lands, or narrow files\n", brief)
+        self.assertIn("root planned low\n  ready to start: `campaign start root`\n", brief)
+        self.fails(self.home, "start", "clash", match="overlap one")  # the same rule start enforces
+        hunt = self.home / ".campaign/demo/hunt.md"
+        rows = "| slow merge | job J1 row 3 | lib/merge.py | . | open |\n| x | y | z | . | closed: fixed |\n"
+        hunt.write_text(hunt.read_text() + rows)
+        self.assertIn("  hunt list: 1 open", self.ok(self.home, "status").out)
+
     def test_landing_refuses_changes_outside_the_file_set(self) -> None:
         wt = self.started("fix", files="app.py", check="unit=true")
         self.commit(wt, {"app.py": "print(2)\n", "lib/util.py": "X = 2\n"})
@@ -1830,7 +1853,7 @@ class Sidebar(CampaignCase):
         plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M2 | b | |\n| M1 | a | |"))
         self.git(self.home, "commit", "-q", "-am", "milestones")
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md", "--milestone", "M2")
-        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · ready: b|", calls.read_text())
+        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", calls.read_text())
         self.ok(self.home, "start", "a")
         log = calls.read_text()
         self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)  # the active one
@@ -1852,7 +1875,7 @@ class Sidebar(CampaignCase):
         log = calls.read_text()
         self.assertIn("notify|--title|Landed a|--body|", log)
         self.assertIn("clear-status|campaign-demo-a|", log)
-        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · ready: b|", log)
+        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", log)
         self.env.pop("CMUX_WORKSPACE_ID")
         calls.write_text("")
         self.ok(self.home, "set", "b", "status=blocked", "reason=owner")

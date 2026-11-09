@@ -61,7 +61,7 @@ hypotheses pending comparable completed work, not model rankings.
 
 | Assignment or role | Codex starting point |
 |---|---|
-| Implementation, exploration, maintenance, documentation | Sol medium; one implementation trial before parallel expansion |
+| Implementation, exploration, maintenance, documentation | Sol medium |
 | Design, performance, reviewer | Sol high; Astra high for a concrete unresolved mechanism or independent ruling |
 | Research, design freeze | Astra high; max only for a bounded question that warrants it |
 | Lead | Sol medium, small context; measured separately from contributors |

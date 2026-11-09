@@ -16,7 +16,8 @@ and cpp-libraries records (October-November 2026).
 | A branch missing a landed sibling used an API the sibling removed and broke `main` after a clean merge | `main` holds tested code | `land` requires the branch to contain `main`'s code and evidence at that exact commit |
 | A 20% write regression surfaced only at a phase gate and cost a bisect across 19 commits | Measure close to the change | Hot-path changes run a smoke A/B job against their parent before review |
 | Agents narrowed 19 user-visible behaviors alone, one to close a security finding | The owner decides user-visible behavior | Reviewers offer options and never make a narrowing blocking; the lead asks the owner |
-| A critical-path step sat unlaunched for a week while its question was already answered | Ready work is visible | `campaign status` lists ready quests |
+| A critical-path step sat unlaunched for a week while its question was already answered | Ready work is visible | `campaign status` lists launchable quests, critical path first |
+| Leads ran one quest at a time while ~25 were ready; no exploration batch launched, since nothing listed targets (2026-11-09) | Idle capacity is filled | The lead keeps every launchable quest running and fills idle capacity at each wake; the hunt list feeds batches |
 | One message resumed a finished 556k-token agent; a repin cost 74k fresh against ~500k resumed | Resume only small contexts | Resume by message under ~150k tokens; otherwise a fresh agent from the journal |
 | Code rechecks cost ~134k each and confirmed closures every time | Confirm fixes cheaply | The lead reruns the reviewer's probes as jobs, named per finding (`accept --confirm`) |
 | Swarms of Sonnet explorers on fresh targets: 20 of 33 runs landed at a median of 93k tokens; a day of hunting found three bugs from 2019 | Spend on cheap, targeted finding | Exploration batches |
