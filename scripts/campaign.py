@@ -3814,12 +3814,37 @@ def cmd_check(a: argparse.Namespace) -> int:
     reap()
     c = Campaign(home)
     found = problems(c)
-    notes = housekeeping(c)
+    notes = [*oversized_checks(c), *housekeeping(c)]
     for severity, message in [*found, *notes]:
         print_problem(severity, message)
     if not any(s != "note" for s, _ in [*found, *notes]):
         print(f"{mark('✅')}{paint('ok', 'green')}")
     return 1 if any(s == "error" for s, _ in found) else 0
+
+
+LIGHT_BUILD_JOBS = int(os.environ.get("CAMPAIGN_LIGHT_BUILD_JOBS") or 4)  # per light job; several run at once
+PARALLEL = re.compile(r"(?:\s-j\s*|--parallel[=\s]+)(\d+)")
+
+
+def oversized_checks(c: Campaign) -> list[tuple[str, str]]:
+    """Light checks of live quests that ask for more build jobs than a light hold allows: several light
+    jobs run at once, so each keeps to LIGHT_BUILD_JOBS."""
+    out: list[tuple[str, str]] = []
+    for pid, p in c.quests.items():
+        if p["status"] in ("landed", "dropped"):
+            continue
+        for kind in ("checks", "later"):
+            for check in p.get(kind, []):
+                asked = [int(n) for n in PARALLEL.findall(check.get("cmd", ""))]
+                if check.get("level") not in HEAVY and asked and max(asked) > LIGHT_BUILD_JOBS:
+                    out.append(
+                        (
+                            "warning",
+                            f"{pid}: light check {check['name']} asks for -j{max(asked)}; a light job keeps to "
+                            f"-j{LIGHT_BUILD_JOBS} (drop the -j: CMAKE_BUILD_PARALLEL_LEVEL is set)",
+                        )
+                    )
+    return out
 
 
 def housekeeping(c: Campaign) -> list[tuple[str, str]]:
@@ -4259,6 +4284,9 @@ def cmd_run(a: argparse.Namespace) -> int:
         return 0
     env = dict(os.environ)
     env.pop("CMUX_WORKSPACE_ID", None)  # the worker may have started in another workspace
+    env.pop("CMUX_SURFACE_ID", None)  # nor is a job the lead whose surface `note_lead` records
+    if spec.get("level") not in HEAVY:  # a light hold's build parallelism, where a command names none
+        env.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", str(LIGHT_BUILD_JOBS))
     if spec.get("cmux"):
         env["CMUX_WORKSPACE_ID"] = spec["cmux"]  # quiet's pill and notice go to the submitter's
     if spec.get("path"):

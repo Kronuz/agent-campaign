@@ -61,6 +61,32 @@ class Identity(CampaignCase):
         self.assertEqual(seen, "first")
         self.assertEqual(json.loads((self.root / "jobs" / jid / "spec.json").read_text())["commit"], first)
 
+    def test_a_light_job_builds_with_a_light_holds_parallelism(self) -> None:
+        self.env["CMUX_SURFACE_ID"] = "surface-lead"
+        show = 'echo "${CMAKE_BUILD_PARALLEL_LEVEL:-unset} ${CMUX_SURFACE_ID:-none}" > "$JOB_OUT/env"'
+        light = self.submit(self.home, "--level", "light", "--", show)
+        mine = self.submit(self.home, "--level", "light", "--env", "CMAKE_BUILD_PARALLEL_LEVEL=2", "--", show)
+        strict = self.submit(self.home, "--level", "strict", "--", show)
+        self.ok(self.home, "wait", light, mine, strict, "--timeout", "60")
+        seen = {j: (self.root / "jobs" / j / "a1" / "out" / "env").read_text().split() for j in (light, mine, strict)}
+        self.assertEqual(seen[light], ["4", "none"], "a job is never the lead's surface")
+        self.assertEqual(seen[mine], ["2", "none"], "a job's own --env wins")
+        self.assertEqual(seen[strict], ["unset", "none"], "a strict job has the machine's cores to itself")
+        self.ok(
+            self.home,
+            "new",
+            "big",
+            "--title",
+            "big",
+            "--risk",
+            "low",
+            "--files",
+            "app.py",
+            "--check",
+            "unit=cmake --build b -j8 && ctest -j3",
+        )
+        self.assertIn("big: light check unit asks for -j8", self.ok(self.home, "check").out)
+
     def test_identical_jobs_are_reused_and_force_reruns(self) -> None:
         jid = self.submit(self.home, "--", "true")
         self.ok(self.home, "wait", jid)

@@ -60,6 +60,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.
+- **Build parallelism.** Several light jobs run at once, so each keeps to 4 build jobs
+  (`CAMPAIGN_LIGHT_BUILD_JOBS`): a light job gets `CMAKE_BUILD_PARALLEL_LEVEL` unless its `--env`
+  names one, so `cmake --build` needs no `-j`. `campaign check` warns about a light check asking for
+  more. Strict and exclusive jobs have their cores to themselves and get no default.
 - **Supervision.** Each attempt has a runner: the leader of its own process session, writing a
   heartbeat every 15 s. The command runs under `quiet` at the job's level, which stops it at its
   deadline; when the command ends, the runner kills every process left in its session, so helpers
