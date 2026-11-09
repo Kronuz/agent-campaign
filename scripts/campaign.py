@@ -2105,10 +2105,14 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
     def check(kind: str, text: str) -> list[str]:
         cited = list(dict.fromkeys(JOB_ID.findall(text)))
         why = [w for w in map(job, cited) if w]
+        for path, quote in QUOTED.findall(text):
+            if commits and not any(quoted(repo, k, path, quote) for k in commits):
+                why.append(f'"{quote[:60]}" is not in {path} at {commits[0][:12]}')
+        bare = QUOTE.sub("", text)  # what a quote says is never a path
         if kind == "job" and not cited:
             why.append("names no job (a job criterion needs a job id; tag it [manual] or [artifact] otherwise)")
         elif kind == "artifact":
-            paths = re.findall(r"`([^`\s]+)`", text)
+            paths = re.findall(r"`([^`\s]+)`", bare)
             missing = [x for x in paths if not any(read_object(repo, f"{k}:{x}") for k in commits)]
             why += [f"{x} is not in {commits[0][:12]}" for x in missing] if commits else []
             if not paths:
@@ -2121,6 +2125,18 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
 
 
 UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b", re.I)
+QUOTE = re.compile(r'"[^"]+"')
+QUOTED = re.compile(r'`([^`\s]+)`:?\s*"([^"]+)"')  # `path`: "text the file holds"
+_quotes: dict[tuple[str, str, str], str] = {}
+
+
+def quoted(repo: Path, commit: str, path: str, quote: str) -> bool:
+    """Whether PATH at COMMIT holds QUOTE, whitespace aside: evidence that cites what a record says,
+    not only that the record exists."""
+    key = (str(repo), commit, path)
+    if key not in _quotes or not SHA.fullmatch(commit):
+        _quotes[key] = " ".join(file_at(repo, commit, path).split())
+    return " ".join(quote.split()) in _quotes[key]
 
 
 JOB_ID = re.compile(r"\b\d{6}-\d{6}-[0-9a-f]{6}\b")

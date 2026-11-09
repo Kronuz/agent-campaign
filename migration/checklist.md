@@ -31,8 +31,9 @@ rolling back is a matter of links.
      decision: an open question in the quest file naming who decides;
    - evidence in logs: rerun as jobs, or `[artifact]` for a committed result file;
    - completed work (a ledger whose work is on `main`, reviewed and verified then): a quest with the
-     ledger's criteria as `[artifact]` rows citing the ledger, its journal written on `main` in the
-     home with Evidence and a Result (what landed, its numbers, its review, its docs), then
+     ledger's criteria as `[artifact]` rows quoting the ledger's ticked line (`` `path`: "text" ``),
+     its journal written on `main` in the home with Evidence and a Result (what landed, its numbers,
+     its review, its docs), then
      `campaign land ID --record COMMIT --earlier --reason "LEDGER; REVIEW; CI"`;
    - another repository: its own quest (`--repo`), ordered with `--after`;
    - a pre-release campaign in `docs/campaign/` with quests in flight: move it in place, no

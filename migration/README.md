@@ -42,9 +42,9 @@ The whole procedure, in order. `checklist.md` has the detail of steps 4 to 7.
    adoption in its own repository (`git -C REPO branch quest/NAME/ID BRANCH`), its ledger's
    criteria never weakened; reviews by checklist step 4. Quests start in the lead's order, since
    `start` refuses overlapping files. Completed work comes in as history, so the map shows the
-   whole campaign: per finished ledger a quest whose criteria cite the ledger, a journal on `main`
-   with its Result (numbers, review, docs), and `campaign land ID --record COMMIT --earlier
-   --reason "LEDGER; REVIEW; CI"` at the commit where it landed.
+   whole campaign: per finished ledger a quest whose evidence quotes the ledger's ticked lines, a
+   journal on `main` with its Result (numbers, review, docs), and `campaign land ID --record COMMIT
+   --earlier --reason "LEDGER; REVIEW; CI"` at the commit where it landed.
 7. Keep what was learned: the earlier ledgers, plans and handoffs get a `Status: HISTORY` line and
    stay; results and how-it-works go in the docs of the repository each quest changes. Point
    `AGENTS.md` at `.campaign/NAME/` and stop any old run queue.

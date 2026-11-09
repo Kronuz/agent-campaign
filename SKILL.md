@@ -193,7 +193,7 @@ row per criterion, and landing checks each row at the code being landed:
 | Criterion | Its row must name |
 |---|---|
 | `- A1 ...` (untagged) | a job that passed at that code (it, or the same job rerun) |
-| `- A2 [artifact] ...` | a `path` committed in the quest's repository |
+| `- A2 [artifact] ...` | a `path` committed in the quest's repository; with a quote (`` `path`: "text" ``), the text the file holds there |
 | `- A3 [decision] ...` | an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | who checked what, by hand; shown as manual, never as automated proof |
 

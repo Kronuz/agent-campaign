@@ -1727,12 +1727,14 @@ class Map(CampaignCase):
             "# pins: Pins at head\n\n## Outcome\n\nEvery library at its head.\n\n## Acceptance criteria\n\n"
             "- A1 [artifact] Pins at head: `docs/status/pins.md`\n"
             "- A2 [artifact] Pins checked in CI: `docs/status/pins.md`\n"
+            "- A3 [artifact] Pins listed: `docs/status/pins.md`\n"
         )
         journal = self.home / ".campaign/demo/journal/pins.md"
         journal.parent.mkdir(parents=True, exist_ok=True)
         journal.write_text(
             "# pins: journal\n\nState: landed\n\n## Evidence\n\n| Criterion | Evidence |\n|---|---|\n"
-            "| A1 | `docs/status/pins.md` |\n| A2 | open: left unticked in `docs/status/pins.md` |\n\n"
+            '| A1 | `docs/status/pins.md`: "[x] K1 pins  at head" |\n| A2 | open: left unticked in `docs/status/pins.md` |\n'
+            '| A3 | `docs/status/pins.md`: "[x] K9 pins listed" |\n\n'
             "## Result\n\nAll 12 pins at head; CI green.\n"
         )
         self.git(self.home, "add", ".campaign")
@@ -1746,7 +1748,7 @@ class Map(CampaignCase):
         self.assertIn("(before the campaign)", self.ok(self.home, "status", "pins").out)
         out = self.ok(self.home, "map").out
         self.assertIn("- ⚠️ **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
-        self.assertIn("; left open: A2)", out)
+        self.assertIn("; left open: A2, A3)", out)  # A3 quotes what the ledger never says
         self.assertIn("Result: All 12 pins at head; CI green.", out)
         self.assertNotIn("none yet", out)  # reviewed by the process of its time
         plan = self.home / ".campaign/demo/PLAN.md"
@@ -1756,7 +1758,9 @@ class Map(CampaignCase):
         self.assertIn("## ⬜ M9: no quests yet", out)
         self.assertIn("Validation on main: grep -E 'a|b' x\n", out, "an escaped pipe split the cell")
         (pins,) = [q for q in json.loads(self.ok(self.home, "map", "--json").out)["other"] if q["id"] == "pins"]
-        self.assertEqual([x["met"] for x in pins["criteria"]], [True, False], "an unticked criterion reads as met")
+        self.assertEqual(
+            [x["met"] for x in pins["criteria"]], [True, False, False], "an unticked criterion reads as met"
+        )
 
 
 if __name__ == "__main__":
