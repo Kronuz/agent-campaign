@@ -242,11 +242,20 @@ def branch_head(repo: Path, ref: str) -> str | None:
 
 
 def on_commits(key: tuple[str, ...], ask: Callable[[], Any]) -> Any:
-    """ask(), remembered when every argument after the first two is a commit id."""
+    """ask(), remembered when every argument after the first two is a commit id: in the process,
+    and on disk for every later command, since what git says of fixed commits never changes."""
     if not all(SHA.fullmatch(x) for x in key[2:]):
         return ask()
     if key not in _fixed:
-        _fixed[key] = ask()
+        path = jobs_dir() / ".facts" / hashlib.sha256(json.dumps(key).encode()).hexdigest()[:32]
+        try:
+            _fixed[key] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            _fixed[key] = ask()
+            path.parent.mkdir(exist_ok=True)
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(_fixed[key]))
+            tmp.replace(path)
     return _fixed[key]
 
 
@@ -262,6 +271,18 @@ def ancestor(repo: Path, a: str, b: str) -> bool:
     return bool(on_commits(("ancestor", str(repo), a, b), lambda: git_ok(repo, "merge-base", "--is-ancestor", a, b)))
 
 
+_reachable: dict[tuple[str, str], set[str]] = {}
+
+
+def on_branch(repo: Path, commit: str, ref: str) -> bool:
+    """Whether COMMIT is in REF's history: one listing of that history per command, not a git
+    call per commit (Xapiand's 15k commits list in about 0.3 s)."""
+    key = (str(repo), ref)
+    if key not in _reachable:
+        _reachable[key] = set(git(repo, "rev-list", ref, check=False).split())
+    return commit in _reachable[key] if SHA.fullmatch(commit) else ancestor(repo, commit, ref)
+
+
 def merge_base(repo: Path, a: str, b: str) -> str:
     return str(on_commits(("merge-base", str(repo), a, b), lambda: git(repo, "merge-base", a, b)))
 
@@ -269,12 +290,16 @@ def merge_base(repo: Path, a: str, b: str) -> str:
 _common: dict[str, str] = {}
 
 
+def common_dir(p: Path) -> str:
+    """The repository a checkout belongs to (its common git dir), or "" outside one."""
+    if str(p) not in _common:
+        _common[str(p)] = git(p, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    return _common[str(p)]
+
+
 def same_repo(a: Path, b: Path) -> bool:
     """Whether two checkouts (a main checkout, its worktrees) share one repository."""
-    for p in (a, b):
-        if str(p) not in _common:
-            _common[str(p)] = git(p, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-    return bool(_common[str(a)]) and _common[str(a)] == _common[str(b)]
+    return bool(common_dir(a)) and common_dir(a) == common_dir(b)
 
 
 def changed(repo: Path, a: str, b: str) -> list[str]:
@@ -981,8 +1006,10 @@ def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
 def mailbox(c: Campaign, pid: str) -> Path:
     """Where messages for a quest ("" for the campaign's lead) wait, in the home's .git: any
     agent on the machine can leave one there without being the campaign's one writer."""
-    common = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    return common / "campaign-mail" / c.state["campaign"] / (pid or "@")
+    common = common_dir(c.home)
+    if not common:
+        die(f"{c.home} is not a git checkout")
+    return Path(common) / "campaign-mail" / c.state["campaign"] / (pid or "@")
 
 
 def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -> str:
@@ -1564,6 +1591,40 @@ def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> 
     return out + [x for x in rest if at_main[x] != accepted[x]]
 
 
+GH_FRESH = float(os.environ.get("CAMPAIGN_GH_FRESH", "60"))  # seconds a changeable answer is reused
+_gh: dict[str, tuple[int, Any]] = {}
+
+
+def gh_json(repo: Path, args: list[str], final: Callable[[Any], bool]) -> tuple[int, Any]:
+    """`gh ARGS` (JSON out) in REPO, cached on disk for the host: forever once FINAL says the answer
+    cannot change (a run that passed), else for GH_FRESH seconds; (returncode, data or stderr)."""
+    key = hashlib.sha256(json.dumps([str(repo), args]).encode()).hexdigest()[:32]
+    if key in _gh:
+        return _gh[key]
+    path = jobs_dir() / ".gh" / f"{key}.json"
+    with contextlib.suppress(OSError, ValueError):
+        hit = json.loads(path.read_text())
+        if hit["final"] or time.time() - hit["t"] < GH_FRESH:
+            _gh[key] = (0, hit["data"])
+            return _gh[key]
+    p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True)
+    if p.returncode != 0:
+        return p.returncode, p.stderr.strip()
+    data = json.loads(p.stdout or "null")
+    path.parent.mkdir(exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"t": time.time(), "final": final(data), "data": data}))
+    tmp.replace(path)
+    _gh[key] = (0, data)
+    return _gh[key]
+
+
+def all_passed(items: Any) -> bool:
+    """Finished and green: final, while a failure can still be re-run."""
+    ok = ("success", "skipped", "neutral")
+    return bool(items) and all(x.get("status") == "completed" and x.get("conclusion") in ok for x in items)
+
+
 def ci_commit(repo: Path, commit: str) -> str:
     """The commit whose CI speaks for COMMIT: itself, or its nearest first-parent ancestor with the
     same code (only campaign files differ), since a journal commit changes nothing CI tests."""
@@ -1576,13 +1637,8 @@ def ci_commit(repo: Path, commit: str) -> str:
     for k in log:
         if code_tree(repo, k) != tree:
             break
-        p = subprocess.run(
-            ["gh", "run", "list", "--commit", k, "--json", "databaseId", "--limit", "1"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-        )
-        if p.returncode == 0 and json.loads(p.stdout or "[]"):
+        code, runs = gh_json(repo, ["run", "list", "--commit", k, "--json", "databaseId", "--limit", "1"], bool)
+        if code == 0 and runs:  # a commit's runs, once there, stay
             return k
     return commit
 
@@ -1591,15 +1647,12 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    p = subprocess.run(
-        ["gh", "run", "list", "--commit", commit, "--json", "status,conclusion,name", "--limit", "50"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    code, listed = gh_json(
+        repo, ["run", "list", "--commit", commit, "--json", "status,conclusion,name", "--limit", "50"], all_passed
     )
-    if p.returncode != 0:
-        return f"gh failed: {p.stderr.strip()}"
-    runs = [r for r in json.loads(p.stdout or "[]") if r.get("name") not in later]
+    if code != 0:
+        return f"gh failed: {listed}"
+    runs = [r for r in listed or [] if r.get("name") not in later]
     if not runs:
         return "no CI runs for this commit (push the branch)"
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
@@ -1615,35 +1668,26 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
 
 CI_CHECK = "ci:"  # a check whose command is ci:JOB is met by that GitHub CI job, not by a local one
 CI_CITE = re.compile(r"`ci:([^`]+)`")  # an Evidence row citing a CI job: `ci:ThreadSanitizer`
-_ci_jobs: dict[tuple[str, str], list[Json] | str] = {}
 
 
 def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     """The GitHub CI jobs of every run at COMMIT (name, status, conclusion), or why there are none."""
-    key = (str(repo), commit)
-    if key in _ci_jobs:
-        return _ci_jobs[key]
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    p = subprocess.run(
-        ["gh", "run", "list", "--commit", commit, "--json", "databaseId", "--limit", "50"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
+    code, runs = gh_json(
+        repo, ["run", "list", "--commit", commit, "--json", "databaseId", "--limit", "50"], lambda _: False
     )
-    if p.returncode != 0:
-        return f"gh failed: {p.stderr.strip()}"
+    if code != 0:
+        return f"gh failed: {runs}"
     found: list[Json] = []
-    for run in json.loads(p.stdout or "[]"):
-        v = subprocess.run(
-            ["gh", "run", "view", str(run["databaseId"]), "--json", "jobs"], cwd=repo, capture_output=True, text=True
+    for run in runs or []:
+        code, view = gh_json(
+            repo, ["run", "view", str(run["databaseId"]), "--json", "jobs"], lambda v: all_passed(v.get("jobs"))
         )
-        if v.returncode != 0:
-            return f"gh failed: {v.stderr.strip()}"
-        found += json.loads(v.stdout or "{}").get("jobs", [])
-    if found and all(j.get("status") == "completed" for j in found):
-        _ci_jobs[key] = found  # a finished run's jobs never change
+        if code != 0:
+            return f"gh failed: {view}"
+        found += (view or {}).get("jobs", [])
     return found
 
 
@@ -2378,12 +2422,12 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
     touched: dict[str, list[tuple[str, str]]] = {}
     for pid, p in c.quests.items():
         repo = c.repo(p)
-        if not git_ok(repo, "rev-parse", "--git-dir"):
+        if not common_dir(repo):
             out.append(("error", f"{pid}: repository {repo} is missing"))
             continue
         main = main_branch(repo)
         for entry in p.get("landed", []):
-            if not ancestor(repo, entry["commit"], main):
+            if not on_branch(repo, entry["commit"], main):
                 out.append(("error", f"{pid}: landed commit {entry['commit'][:12]} is not on {main}"))
         if p["status"] not in ("active", "review"):
             continue
@@ -2446,13 +2490,20 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         for name, o in campaigns().items():
             if name == c.name:
                 continue
+            # only a started quest changes a contract; starting one tells the other lead already
             for qid, q in o["state"].get("quests", {}).items():
                 if q.get("status") not in ("planned", "active", "review"):
                     continue
-                for x in consumed(p["consumes"], changes(Path(o["home"]), q)):
-                    out.append(("warning", f"{pid}: contract {x} is changing in {name}:{qid}; build against its brief"))
-                for x in consumed(q.get("consumes", []), changes(c.home, p)):
-                    out.append(("warning", f"{pid}: changes contract {x}, which {name}:{qid} consumes; tell its lead"))
+                if q.get("status") != "planned":
+                    for x in consumed(p["consumes"], changes(Path(o["home"]), q)):
+                        out.append(
+                            ("warning", f"{pid}: contract {x} is changing in {name}:{qid}; build against its brief")
+                        )
+                if p["status"] != "planned":
+                    for x in consumed(q.get("consumes", []), changes(c.home, p)):
+                        out.append(
+                            ("warning", f"{pid}: changes contract {x}, which {name}:{qid} consumes; tell its lead")
+                        )
     providers: dict[str, list[str]] = {}
     for pid, p in c.quests.items():
         if p["status"] != "dropped":

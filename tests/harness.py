@@ -116,6 +116,7 @@ class CampaignCase(unittest.TestCase):
             QUIET_DISK_MIN_GB="0",
             QUIET_LIGHT_SLOTS="4",
             CAMPAIGN_LIGHT_JOBS="4",
+            CAMPAIGN_GH_FRESH="0",  # fake gh answers change within a test
             CAMPAIGN_AUTO_PRUNE="0",  # a test that wants the worker's daily prune turns it on
             CAMPAIGN_DISK_MIN_GB="0",
             GIT_AUTHOR_NAME="Test",

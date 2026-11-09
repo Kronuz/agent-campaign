@@ -496,6 +496,23 @@ class Evidence(CampaignCase):
         self.git(wt, "commit", "-qm", "code")
         self.assertIn("no CI job named", self.run_cli(self.home, "brief", "san").out)
 
+    def test_a_passed_ci_run_is_fetched_once_for_every_command(self) -> None:
+        calls = self.root / "gh-calls"
+        jobs = '{"jobs": [{"name": "AddressSanitizer + UBSan", "status": "completed", "conclusion": "success"}]}'
+        fake = self.root / "bin" / "gh"
+        fake.write_text(
+            f'#!/bin/sh\necho "$2" >> {calls}\n'
+            'if [ "$2" = list ]; then echo \'[{"databaseId": 7}]\'; '
+            f"else printf '%s' '{jobs}'; fi\n"
+        )
+        fake.chmod(0o755)
+        self.started("san", check="asan=ci:AddressSanitizer")
+        self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
+        self.assertIn("view", calls.read_text().split())
+        calls.write_text("")
+        self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
+        self.assertNotIn("view", calls.read_text().split(), "a passed run's jobs were fetched again")
+
 
 class Reviews(CampaignCase):
     def normal(self) -> str:
@@ -1032,6 +1049,49 @@ class Campaigns(CampaignCase):
         self.assertIn("both pass now", self.git(self.home, "show", "main:.campaign/demo/journal/api.md"))
         self.assertFalse(journal.exists(), "the journal's worktree outlived the landing")
         self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/api"), "")
+
+    def test_a_planned_contract_change_warns_once_it_starts(self) -> None:
+        self.ok(
+            self.home,
+            "new",
+            "api",
+            "--title",
+            "api",
+            "--risk",
+            "low",
+            "--repo",
+            "../lib",
+            "--files",
+            "lib.py",
+            "--provides",
+            "lib-api",
+            "--check",
+            "unit=true",
+        )
+        self.ok(
+            self.other,
+            "new",
+            "use",
+            "--title",
+            "use",
+            "--risk",
+            "low",
+            "--repo",
+            "../lib",
+            "--files",
+            "use.py",
+            "--consumes",
+            "lib-api",
+            "--check",
+            "unit=true",
+        )
+        self.assertNotIn(
+            "changes contract lib-api", self.run_cli(self.home, "check").out, "a planned quest changes nothing"
+        )
+        self.assertNotIn("is changing in demo:api", self.run_cli(self.other, "check").out)
+        self.ok(self.home, "start", "api")
+        self.assertIn("api: changes contract lib-api, which other:use consumes", self.run_cli(self.home, "check").out)
+        self.assertIn("use: contract lib-api is changing in demo:api", self.run_cli(self.other, "check").out)
 
     def test_campaigns_see_each_other_and_land_a_shared_library_in_order(self) -> None:
         self.fails(self.repo("third", {"t.py": "1\n"}), "init", "--name", "demo", match="already runs from")
