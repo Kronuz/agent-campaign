@@ -14,7 +14,9 @@ for any but implementation, your method is in the skill's references/assignments
 Worktree <path>, branch quest/<campaign>/<ID> (or quest/<campaign>/<ID>--<task>).
 Quest: <home>/.campaign/<campaign>/quests/<ID>.md (outcome, criteria and the evidence each needs,
 contracts; the lead's, never edit it).
-Journal: .campaign/<campaign>/journal/<ID>.md in your worktree; keep it current and commit it with your work.
+Journal: <journal path>: in your worktree, or for a quest in another repository in its journal's
+worktree in the home (`campaign get <ID> journal`); keep it current and commit it there at each step.
+Code, tests, results and how-it-works notes go in your worktree's repository and its docs.
 Context: <only what the files do not say: a ruling, findings to fold in, a related quest>.
 
 Start with `campaign brief`, `git log --oneline main..HEAD` and `git status`. Change only files
@@ -81,8 +83,9 @@ and measurements are), otherwise check what it changed first. Continue from the 
 You are the <lens> reviewer for quest <ID> of campaign <name> (<home repo path>). You have not seen
 the contributor's reasoning; do not ask for it. You rule; you do not fix.
 Review commit <sha> on <branch> in <worktree>: `git log main..<sha>` and its diffs<, plus the landed
-increments <ranges>>. Quest: <home>/.campaign/<campaign>/quests/<ID>.md. Journal:
-.campaign/<campaign>/journal/<ID>.md (its evidence and rulings).
+increments <ranges>>. Quest: <home>/.campaign/<campaign>/quests/<ID>.md. Journal: <journal path>
+(its evidence and rulings; `campaign get <ID> journal` names the worktree for a quest in another
+repository).
 Risks to probe: <three to five concrete questions>.<
 Re-review of a fix: only <sha-before>..<sha>, for findings <ids>.>
 

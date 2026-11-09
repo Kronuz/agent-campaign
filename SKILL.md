@@ -86,7 +86,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 - **`needs`** must land before a quest starts; **`after`** must land before it lands. A quest may
   start against an `after` dependency only because that dependency's quest file fixes the contract.
 - **Contracts** (`--provides`, `--consumes`) name APIs, formats and protocols, so `campaign check`
-  sees two quests touching one.
+  sees two quests touching one. A quest in another repository changes that repository's contracts:
+  a quest building on a library names it (`--consumes http`, or `http:client` for one part), and its
+  lead hears of every quest any campaign starts there.
 - **Tasks:** parallel writers inside one quest (`campaign start ID --task T --files GLOBS`),
   merged into the quest branch by the lead. The quest is still reviewed once.
 - **Increments:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest file's "May
@@ -95,7 +97,10 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   the part the review exists for.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
-  never atomic: each intermediate state must work.
+  never atomic: each intermediate state must work. The campaign's records stay in the home: a quest
+  in another repository has its code worktree there and its journal in a sparse worktree of the
+  home on a branch of the same name (`campaign get ID journal`); landing merges the journal into the
+  home's `main`, so the other repository's history holds only its code and docs.
 - **Messages:** an agent with a finding for a quest it is not working on, in any campaign on the
   machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close

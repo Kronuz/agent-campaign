@@ -904,9 +904,21 @@ class Campaigns(CampaignCase):
         job = self.submit(api, "--quest", "api", "--", "true")
         self.ok(api, "wait", job)
         self.assertIn(job, self.ok(api, "job", "list").out)
-        self.commit(api, {"lib.py": "X = 2\n", ".campaign/demo/journal/api.md": "msg-1, msg-2: both pass now\n"})
+        journal = self.root / "app-wt" / "demo" / "api"  # a library quest keeps its journal in the home
+        self.assertEqual(self.ok(self.home, "get", "api", "journal").out, "../app-wt/demo/api\n")
+        self.assertEqual(sorted(x.name for x in journal.iterdir() if x.name != ".git"), [".campaign"])
+        self.assertIn(job, self.ok(journal, "job", "list").out)  # the journal's worktree finds the campaign too
+        self.commit(api, {"lib.py": "X = 2\n", ".campaign/demo/journal/api.md": "in the library\n"})
+        self.fails(self.home, "land", "api", match="adds campaign files to lib")
+        self.git(api, "reset", "-q", "--hard", "HEAD~1")
+        self.commit(api, {"lib.py": "X = 2\n"})
+        self.commit(journal, {".campaign/demo/journal/api.md": "msg-1, msg-2: both pass now\n"})
         self.landed_from(self.home, "api")
         self.assertEqual([m["id"] for m in self.quest("api")["messages"]], ["msg-1", "msg-2"])
+        self.assertEqual(self.git(self.lib, "ls-tree", "-r", "--name-only", "main", "--", ".campaign"), "")
+        self.assertIn("both pass now", self.git(self.home, "show", "main:.campaign/demo/journal/api.md"))
+        self.assertFalse(journal.exists(), "the journal's worktree outlived the landing")
+        self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/api"), "")
 
     def test_campaigns_see_each_other_and_land_a_shared_library_in_order(self) -> None:
         self.fails(self.repo("third", {"t.py": "1\n"}), "init", "--name", "demo", match="already runs from")
@@ -1497,14 +1509,22 @@ class Sidebar(CampaignCase):
             "--check",
             "unit=true",
         )
+        plan = self.home / ".campaign/demo/PLAN.md"  # PLAN.md orders M2 first, unlike the quests
+        plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M2 | b | |\n| M1 | a | |"))
+        self.git(self.home, "commit", "-q", "-am", "milestones")
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md", "--milestone", "M2")
+        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · ready: b|", calls.read_text())
         self.ok(self.home, "start", "a")
         log = calls.read_text()
-        self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)
+        self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)  # the active one
         self.assertIn("set-status|campaign-demo-a|a: active|--icon|hammer|", log)
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")
+        failed = self.submit(self.home, "--quest", "a", "--", "exit 1")
+        self.run_cli(self.home, "wait", failed, "--timeout", "60")
+        self.ok(self.home, "status")
+        self.assertIn("set-status|campaign-demo-a|a: active · 🔥 1 failed job|", calls.read_text())
         self.commit(self.wt("a"), {"app.py": "print(2)\n"})
         self.verified("a")
         self.ok(self.home, "land", "a")

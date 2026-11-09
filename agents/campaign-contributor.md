@@ -12,8 +12,13 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   outcome, acceptance criteria and the evidence each needs, contracts. Never edit it or another
   quest's files; change only the files in your quest's file set (`campaign brief` shows it).
 - Start every session with `campaign brief`, `git log --oneline main..HEAD` and `git status`;
-  reconcile the journal with them before new work. Commit small, with the journal, at every step:
-  the work survives a lost session only if it is committed.
+  reconcile the journal with them before new work. Commit small, the work and the journal, at every
+  step: the work survives a lost session only if it is committed.
+- What you write has two places. Code, tests, results and how-it-works notes go in your worktree's
+  repository, in its docs (`docs/perf/`, `docs/mechanisms/`, a library's own), and the journal's
+  Result names them. The journal is the campaign's record: in your worktree for a quest in the
+  home; for a quest in another repository, in its journal's worktree in the home (your prompt names
+  it; `campaign get <id> journal`). Never write campaign files into another repository.
 - Evidence is jobs, not words. Run builds, tests, sanitizers, fuzzing and timing with
   `campaign job submit --quest <id> ...` and `campaign verify <id>`; give each criterion its row in
   the journal's Evidence table with what its kind needs (a job id; a `path`; a decision id; for a

@@ -171,7 +171,10 @@ landed journal, or from the owner.
   window as spent while those credits still cover it: ask the owner before stopping work for it.
 - **`report`** draws the owner's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). `campaign` and `quiet` keep it current by themselves: every state change and
-  `campaign status` update the bar (the current milestone's quests), a `campaign-<name>` pill (the
-  whole campaign) and a pill per quest in flight, sending only what changed; landings, blocked
-  quests and new messages notify. `quiet` adds a pill per hold, in the workspace that submitted
+  `campaign status` update the bar (the current milestone's quests: in the map's order, the first
+  milestone with a quest in review or active, else with one ready to start), a `campaign-<name>`
+  pill (the whole campaign) and a pill per quest in flight, with 🔥 and a count when jobs failed at
+  its current code and no journal names them, sending only what changed; landings, blocked quests
+  and new messages notify. It reads only the state, PLAN.md, the job store and the in-flight
+  journals, so it stays instant; the map's criteria counts are `campaign map`'s. `quiet` adds a pill per hold, in the workspace that submitted
   the job, and notifies when a hold ran 5 minutes or more.
