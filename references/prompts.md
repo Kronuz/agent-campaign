@@ -23,7 +23,9 @@ Start with `campaign brief`, `git log --oneline main..HEAD` and `git status`. Ch
 in the quest's file set. Prove each criterion as the quest file says: an untagged criterion with a
 job (`campaign job submit --quest <ID> --level <L> --minutes <M> -- <cmd>`, `campaign verify <ID>`),
 an [artifact] one with a committed `path`, a [decision] one with its PLAN.md id, a [manual] one
-with who checked what. Wait at most once per turn (`campaign wait <ids> --timeout 600`); if jobs
+with who checked what. A check CI runs (`ci:`) needs only the branch pushed; run sanitizers, VMs and
+soaks once, at the head you mark "ready for review", and in a fix round rerun only the probe or test
+of the finding. Wait at most once per turn (`campaign wait <ids> --timeout 600`); if jobs
 still run, record their ids in the journal, set its State to "waiting on jobs <ids>", and end your
 turn. Commits that touch only the journal keep the evidence: jobs are keyed by the code. A check
 that also fails on `main` is the lead's: show it with a job at `main`'s commit and say so under

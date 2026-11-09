@@ -121,6 +121,14 @@ evidence a high or critical risk needs (TSan for concurrency, fuzzing for a deco
 model for durability) is always a gate. Slow CI workflows can be made non-gating the same way
 (`campaign config ci_later=NAME,...`).
 
+**CI first.** With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`),
+met by that CI job passing at the exact commit; it queues no local job, and an Evidence row cites it
+as `` `ci:ThreadSanitizer` ``. Local jobs are for what CI cannot run: other platforms, mutants,
+probes, measurements. **Expensive runs go once:** sanitizers, VMs and soaks run at the candidate
+head, when the journal says "ready for review", never at intermediate commits; a fix round reruns
+only the probe or test of its finding. The job worker shares the slots fairly across campaigns and
+runs shorter jobs first, but a batch of hour-long jobs still delays everyone: plan it.
+
 ## Run a quest
 
 1. `campaign start ID` creates `quest/<campaign>/ID` in its own worktree with a journal. Launch a
@@ -207,7 +215,7 @@ Performance claims follow `references/measurement.md`: before and after at named
 | Level | For | Isolation (`quiet`) |
 |---|---|---|
 | `none` | tiny single-threaded probes | no hold |
-| `light` | builds, test suites, fuzzing | a few at once, nice 19 |
+| `light` | builds, test suites, fuzzing | half the CPUs at once, nice 19, while memory lasts |
 | `strict` | smoke timings, behavioral runs | own cores on Linux; alone on macOS |
 | `exclusive` | numbers that decide or get published, cache-sensitive A/Bs | the machine to itself |
 

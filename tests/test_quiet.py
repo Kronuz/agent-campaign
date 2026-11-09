@@ -311,27 +311,35 @@ class Quiet(unittest.TestCase):
                 f.kill()
                 f.wait()
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_a_light_hold_waits_for_memory(self) -> None:
+        p = self.quiet("light", "mem", "1", "build", "--", "true", QUIET_MIN_MEM_GB="100000", QUIET_LIGHT_WAIT="0")
+        time.sleep(3)
+        self.assertIsNone(p.poll(), "a light hold started without the memory it needs")
+        p.kill()
+        p.communicate()
+        done = self.quiet("light", "mem2", "1", "build", "--", "true", QUIET_MIN_MEM_GB="0")
+        self.assertEqual(done.wait(timeout=30), 0)
 
 
 class LightSlots(unittest.TestCase):
-    """Light holds double while half the machine idles and no strict hold runs; a set count wins."""
+    """Light holds are half the CPUs; free memory, not the load, stops new ones."""
 
-    def test_slots_follow_the_load_and_strict_holds(self) -> None:
-        saved = (quiet.NCPU, quiet.QUARTER, quiet.load1, os.environ.pop("QUIET_LIGHT_SLOTS", None))
+    def test_half_the_cpus_or_a_set_count(self) -> None:
+        saved = (quiet.NCPU, os.environ.pop("QUIET_LIGHT_SLOTS", None))
         try:
-            quiet.NCPU, quiet.QUARTER = 16, 4
-            quiet.load1 = lambda: 5
-            self.assertEqual(quiet.light_slots(""), 8)
-            self.assertEqual(quiet.light_slots("8-15"), 4)  # a strict hold has half the cores
-            quiet.load1 = lambda: 8
-            self.assertEqual(quiet.light_slots(""), 4)
+            quiet.NCPU = 16
+            self.assertEqual(quiet.light_slots(), 8)
             os.environ["QUIET_LIGHT_SLOTS"] = "3"
-            self.assertEqual(quiet.light_slots(""), 3)
+            self.assertEqual(quiet.light_slots(), 3)
         finally:
-            quiet.NCPU, quiet.QUARTER, quiet.load1, fixed = saved
+            quiet.NCPU, fixed = saved
             os.environ.pop("QUIET_LIGHT_SLOTS", None)
             if fixed is not None:
                 os.environ["QUIET_LIGHT_SLOTS"] = fixed
+
+    def test_free_memory_is_measured(self) -> None:
+        self.assertGreater(quiet.free_mem_gb(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

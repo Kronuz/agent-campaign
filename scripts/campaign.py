@@ -26,6 +26,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Collection, Generator
 from datetime import datetime
 from pathlib import Path
@@ -1588,11 +1589,65 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     return "failed: " + ", ".join(bad) if bad else "success"
 
 
+CI_CHECK = "ci:"  # a check whose command is ci:JOB is met by that GitHub CI job, not by a local one
+CI_CITE = re.compile(r"`ci:([^`]+)`")  # an Evidence row citing a CI job: `ci:ThreadSanitizer`
+_ci_jobs: dict[tuple[str, str], list[Json] | str] = {}
+
+
+def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
+    """The GitHub CI jobs of every run at COMMIT (name, status, conclusion), or why there are none."""
+    key = (str(repo), commit)
+    if key in _ci_jobs:
+        return _ci_jobs[key]
+    if not shutil.which("gh"):
+        return "gh is not installed"
+    p = subprocess.run(
+        ["gh", "run", "list", "--commit", commit, "--json", "databaseId", "--limit", "50"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if p.returncode != 0:
+        return f"gh failed: {p.stderr.strip()}"
+    found: list[Json] = []
+    for run in json.loads(p.stdout or "[]"):
+        v = subprocess.run(
+            ["gh", "run", "view", str(run["databaseId"]), "--json", "jobs"], cwd=repo, capture_output=True, text=True
+        )
+        if v.returncode != 0:
+            return f"gh failed: {v.stderr.strip()}"
+        found += json.loads(v.stdout or "{}").get("jobs", [])
+    if found and all(j.get("status") == "completed" for j in found):
+        _ci_jobs[key] = found  # a finished run's jobs never change
+    return found
+
+
+def ci_job(repo: Path, commit: str, name: str) -> str:
+    """ "success" when every CI job at COMMIT whose name contains NAME passed; else why not."""
+    jobs = ci_jobs(repo, commit)
+    if isinstance(jobs, str):
+        return jobs
+    mine = [j for j in jobs if name.lower() in str(j.get("name", "")).lower()]
+    if not mine:
+        return f"no CI job named {name!r} at {commit[:12]} (push the branch)"
+    if any(j.get("status") != "completed" for j in mine):
+        return f"CI job {name!r} is running"
+    bad = [str(j.get("name")) for j in mine if j.get("conclusion") not in ("success", "skipped", "neutral")]
+    return f"CI job {', '.join(bad)} failed" if bad else "success"
+
+
 def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[Json]]:
     repo = c.repo(p)
     missing: list[str] = []
     evidence: list[Json] = []
     for check in gates(p):
+        if check["cmd"].startswith(CI_CHECK):
+            state = ci_job(repo, target, check["cmd"][len(CI_CHECK) :].strip())
+            if state == "success":
+                evidence.append({"check": check["name"], "ci": check["cmd"], "commit": target, "state": "done"})
+            else:
+                missing.append(f"{check['name']}: {state}")
+            continue
         job = job_for_check(repo, target, check)
         if job is None:
             missing.append(f"{check['name']}: no job")
@@ -2172,12 +2227,20 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
     def check(kind: str, text: str) -> list[str]:
         cited = list(dict.fromkeys(JOB_ID.findall(text)))
         why = [w for w in map(job, cited) if w]
+        for name in dict.fromkeys(CI_CITE.findall(text)):
+            state = ci_job(repo, commits[0], name.strip()) if commits else "no commit"
+            if state == "success":
+                cited.append(f"ci:{name}")
+            else:
+                why.append(state)
         for path, quote in QUOTED.findall(text):
             if commits and not any(quoted(repo, k, path, quote) for k in commits):
                 why.append(f'"{quote[:60]}" is not in {path} at {commits[0][:12]}')
         bare = QUOTE.sub("", text)  # what a quote says is never a path
         if kind == "job" and not cited:
-            why.append("names no job (a job criterion needs a job id; tag it [manual] or [artifact] otherwise)")
+            why.append(
+                "names no job (a job criterion needs a job id or a `ci:JOB`; tag it [manual] or [artifact] otherwise)"
+            )
         elif kind == "artifact":
             paths = re.findall(r"`([^`\s]+)`", bare)
             missing = [x for x in paths if not any(read_object(repo, f"{k}:{x}") for k in commits)]
@@ -3912,6 +3975,8 @@ def submit_checks(
     repo = c.repo(p)
     ids: list[str] = []
     for check in checks:
+        if check["cmd"].startswith(CI_CHECK):
+            continue  # GitHub runs it when the branch is pushed
         spec: Json = {
             "repo": str(repo),
             "commit": commit,
@@ -4441,35 +4506,54 @@ def claim(job: Json) -> bool:
     return True
 
 
+def camp(job: Json) -> str:
+    """The campaign a job serves, for the worker's fair share."""
+    return str(job["spec"].get("campaign") or "")
+
+
 def cmd_worker(a: argparse.Namespace) -> int:
     jd = jobs_dir()
     home = jd / ".worker"
-    try:
-        home.mkdir()
-    except FileExistsError:
+    me = str(os.getpid())
+
+    def take() -> bool:
+        """Puts a home holding our pid and a fresh heartbeat in place at once: no starter sees it half made."""
+        new = jd / f".worker.new.{me}"
+        new.mkdir()
+        (new / "pid").write_text(me)
+        (new / "heartbeat").touch()
+        try:
+            new.rename(home)  # refused while another worker's home (never empty) is there
+            return True
+        except OSError:
+            shutil.rmtree(new, ignore_errors=True)
+            return False
+
+    if not take():
         if worker_alive():
             return 0
-        stale = jd / f".worker.stale.{os.getpid()}"
+        stale = jd / f".worker.stale.{me}"
         with contextlib.suppress(OSError):
             home.rename(stale)
         shutil.rmtree(stale, ignore_errors=True)
-        try:
-            home.mkdir()
-        except FileExistsError:
+        if not take():
             return 0
-    (home / "pid").write_text(str(os.getpid()))
     ncpu = os.cpu_count() or 4
 
     def light_slots(heavy: bool) -> int:
-        """Light jobs at once, as quiet admits them: CPUs / 2 while the load is under that, else CPUs / 4."""
+        """Light jobs at once, as quiet admits them: half the CPUs (a quarter beside a heavy job)."""
         if os.environ.get("CAMPAIGN_LIGHT_JOBS"):
             return int(os.environ["CAMPAIGN_LIGHT_JOBS"])
-        quarter = max(1, ncpu // 4)
-        return quarter if heavy or os.getloadavg()[0] >= ncpu // 2 else max(quarter, ncpu // 2)
+        return max(1, ncpu // 4) if heavy else max(1, ncpu // 2)
 
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
     try:
         while True:
+            try:
+                if (home / "pid").read_text() != me:
+                    return 0  # another worker took the home: one worker at a time
+            except FileNotFoundError:
+                return 0
             (home / "heartbeat").touch()
             reap()
             jobs = all_jobs()
@@ -4484,11 +4568,25 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     continue  # whatever arrived while it pruned
                 return 0
             heavy = any(j["spec"].get("level") in HEAVY for j in running)
-            light = sum(1 for j in running if j["spec"].get("level") not in HEAVY)
+            # a "none" job takes no hold: it never waits for a light slot, and has its own as many
+            light = sum(1 for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+            bare = sum(1 for j in running if j["spec"].get("level") == "none")
             late = sum(
                 1 for j in running if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0
             )
             slots = light_slots(heavy)
+            # fair share: campaigns with light work split the slots; within one, the shortest job first
+            holds = Counter(camp(j) for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+            wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
+            share = max(1, slots // max(1, len(wanting | {c for c, n in holds.items() if n})))
+            queued.sort(
+                key=lambda j: (
+                    -int(j["spec"].get("priority", 0)),
+                    holds[camp(j)],
+                    int(j["spec"].get("minutes", 0) or 0),
+                    j["id"],
+                )
+            )
             for j in queued:
                 deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
                 if any(s not in ("queued", "running", "done") for s in deps):
@@ -4496,15 +4594,25 @@ def cmd_worker(a: argparse.Namespace) -> int:
                         finish(load_job(j["dir"]), -1, "skipped", "a job it runs after did not succeed")
                     continue
                 is_heavy = j["spec"].get("level") in HEAVY
+                is_bare = j["spec"].get("level") == "none"
                 is_late = int(j["spec"].get("priority", 0)) < 0
-                if any(s != "done" for s in deps) or (is_heavy and heavy) or (not is_heavy and light >= slots):
+                if (
+                    any(s != "done" for s in deps)
+                    or (is_heavy and heavy)
+                    or (is_bare and bare >= slots)
+                    or (not is_heavy and not is_bare and light >= slots)
+                ):
                     continue
                 if is_late and not is_heavy and late >= max(1, slots // 2):
                     continue  # deferred work never takes every slot from the direct path
+                if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
+                    continue  # its campaign has its share while another campaign waits
                 if claim(j):
                     spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")
                     heavy = heavy or is_heavy
-                    light += 0 if is_heavy else 1
+                    light += 0 if is_heavy or is_bare else 1
+                    bare += 1 if is_bare else 0
+                    holds[camp(j)] += 0 if is_heavy or is_bare else 1
                     late += 1 if is_late and not is_heavy else 0
             time.sleep(tick)
     finally:

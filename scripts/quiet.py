@@ -56,9 +56,9 @@ hold runs they use only the cores it leaves free. A light request waiting QUIET_
 goes before new strict requests, so builds are never starved. A light command keeps running past
 its deadline unless QUIET_KILL=1. Inside another hold, CMD runs at once under it.""",
         """environment:
-  QUIET_LIGHT_SLOTS    light holds at once (default: CPUs / 2 while the load is under CPUs / 2
-                       and no strict hold runs, else CPUs / 4)
-  QUIET_MAX_LOAD       no new light hold above this load (default: CPUs * 3 / 4)
+  QUIET_LIGHT_SLOTS    light holds at once (default: CPUs / 2)
+  QUIET_MAX_LOAD       no new light hold above this load (default: CPUs * 2)
+  QUIET_MIN_MEM_GB     no new light hold below this much free memory (default 4)
   QUIET_STARVE_MIN     minutes before a waiting light request goes first (default 10)
   QUIET_KILL           1: stop the command at its deadline too (job runners set it)""",
     ),
@@ -363,16 +363,34 @@ def load1() -> int:
     return int(os.getloadavg()[0])
 
 
-def light_slots(beside: str) -> int:
-    """Light holds at once: twice the quarter while half the machine idles, since tests leave builds' cores free."""
-    fixed = env("QUIET_LIGHT_SLOTS", "")
-    if fixed:
-        return int(fixed)
-    return QUARTER if beside or load1() >= NCPU // 2 else max(NCPU // 2, QUARTER)
+def light_slots() -> int:
+    """Light holds at once: half the CPUs. They run at nice 19, so the scheduler, not a wait, shares
+    the machine; memory, the load ceiling and disk are what stop new ones."""
+    return int(env("QUIET_LIGHT_SLOTS", str(max(NCPU // 2, 1))))
+
+
+def free_mem_gb() -> float:
+    """Memory a new build can take without swapping: MemAvailable on Linux; free, inactive and
+    speculative pages on macOS."""
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1024**2
+        return float("inf")
+    try:
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return float("inf")
+    m = re.search(r"page size of (\d+)", out)
+    size = int(m.group(1)) if m else 4096
+    pages = sum(int(m.group(1)) for m in re.finditer(r"Pages (?:free|inactive|speculative):\s+(\d+)", out))
+    return pages * size / 1024**3
 
 
 def max_load() -> int:
-    return int(env("QUIET_MAX_LOAD", str(max(NCPU * 3 // 4, 1))))
+    """No new light hold above this load: a runaway's ceiling, not a share (nice 19 does the sharing)."""
+    return int(env("QUIET_MAX_LOAD", str(max(NCPU * 2, 1))))
 
 
 def free_gb() -> int:
@@ -448,11 +466,14 @@ def try_hold(name: str, level: str, exclusive: bool, start: float) -> tuple[tupl
     beside = strict_beside(name, (DIR / f"{name}.starving").exists())
     if beside is None:
         return None, "a strict hold has the machine"
-    if count("light", name) >= light_slots(beside):
+    if count("light", name) >= light_slots():
         return None, "light slots full"
     load = load1()
     if load >= max_load():
         return None, f"load {load:g}"
+    mem = free_mem_gb()
+    if mem < float(env("QUIET_MIN_MEM_GB", "4")):
+        return None, f"{mem:.1f} GiB of memory free"
     return ((complement(beside) if beside else ""), ""), ""
 
 
@@ -929,6 +950,10 @@ def check() -> int:
             f"{mark('❗')}{paint('load', 'yellow')}: {load} on {NCPU} CPUs, above {most}: start no new build or test until it drops"
         )
         code, warned = code or 2, True
+    mem, floor = free_mem_gb(), float(env("QUIET_MIN_MEM_GB", "4"))
+    if mem < floor:
+        print(f"{mark('❗')}{paint('memory', 'yellow')}: {mem:.1f} GiB free, below {floor:g}: new light holds wait")
+        code, warned = code or 2, True
     if held == 1 and not warned:
         print(f"{mark('✅')}free")
     return code
@@ -1028,7 +1053,8 @@ exclusive hold, or too little disk). Run it before starting builds, tests or mea
         epilog="""environment:
   QUIET_DISK_MIN_GB    blocked below this free disk (default 5)
   QUIET_DISK_WARN_GB   warn below this free disk (default 20)
-  QUIET_MAX_LOAD       busy above this load (default: CPUs * 3 / 4)""",
+  QUIET_MAX_LOAD       busy above this load (default: CPUs * 2)
+  QUIET_MIN_MEM_GB     busy below this much free memory (default 4)""",
         formatter_class=raw,
     )
     p.set_defaults(fn=cmd_check)

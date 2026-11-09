@@ -116,9 +116,11 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   past its deadline unless `QUIET_KILL=1` (the job runner sets it).
 - Strict requests are served in arrival order and block new light holds; a light request waiting
   10 minutes (`QUIET_STARVE_MIN`) goes before new strict holds, so builds are never starved.
-- Light holds run a quarter of the CPUs at once, or half while the load is under half the CPUs and
-  no strict hold runs (tests leave a build's cores idle; the job worker launches the same count).
-  None starts above a load of three quarters of the CPUs or below 5 GiB free disk.
+- Light holds run half the CPUs at once at nice 19 and let the scheduler share the machine: a busy
+  host makes builds slower, not wrong. None starts below 4 GiB of free memory (`QUIET_MIN_MEM_GB`),
+  above a load of twice the CPUs (a runaway's ceiling) or below 5 GiB free disk. The job worker
+  launches as many, split fairly across the campaigns that have light work queued, shortest first;
+  a `none` job takes no slot.
 - **A hold counts jobs, not processes.** Cap fan-out inside the command (`-j4`, one interpreter at a
   time): one light hold running a five-interpreter extension matrix once took a workstation to a
   load of 211.

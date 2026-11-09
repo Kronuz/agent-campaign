@@ -457,6 +457,27 @@ class Evidence(CampaignCase):
         self.verified("b")
         self.ok(self.home, "land", "b")
 
+    def test_a_ci_check_is_met_by_its_ci_job_and_queues_nothing(self) -> None:
+        conclusion = self.root / "ci-conclusion"
+        conclusion.write_text("failure")
+        jobs = '{"jobs": [{"name": "AddressSanitizer + UBSan", "status": "completed", "conclusion": "%s"}]}'
+        fake = self.root / "bin" / "gh"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$2" = list ]; then echo \'[{"databaseId": 7}]\'; '
+            f"else printf '{jobs}' \"$(cat {conclusion})\"; fi\n"
+        )
+        fake.chmod(0o755)
+        self.started("san", check="asan=ci:AddressSanitizer")
+        self.ok(self.home, "verify", "san")
+        self.assertNotIn("san", self.ok(self.home, "job", "list", "--all").out, "a CI check queued a local job")
+        refused = self.run_cli(self.home, "land", "san")
+        self.assertIn("check asan is not green", refused.out + refused.err)
+        self.assertIn("AddressSanitizer + UBSan failed", refused.out + refused.err)
+        conclusion.write_text("success")
+        later = self.run_cli(self.home, "land", "san")
+        self.assertNotIn("check asan", later.out + later.err)
+
 
 class Reviews(CampaignCase):
     def normal(self) -> str:
@@ -894,6 +915,15 @@ class Campaigns(CampaignCase):
         self.ok(home, "verify", pid)
         self.ok(home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
         self.ok(home, "land", pid)
+
+    def test_campaigns_share_the_light_slots(self) -> None:
+        """A campaign that queued first does not take every slot from one that queued after it."""
+        self.env["CAMPAIGN_LIGHT_JOBS"] = "2"
+        ours = [self.submit(self.home, "--level", "light", "--force", "--", "sleep 5") for _ in range(4)]
+        theirs = self.submit(self.other, "--level", "light", "--", "true")
+        self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
+        self.ok(self.home, "wait", ours[3], "--timeout", "60", timeout=90)
+        self.assertLess(self.job(theirs)["started"], self.job(ours[3])["started"], "the later campaign waited out ours")
 
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"

@@ -182,6 +182,14 @@ class Scheduling(CampaignCase):
         self.ok(self.home, "wait", gate, "--timeout", "30")
         self.assertLess(self.job(gate)["ended"], max(self.job(x).get("started", 1e18) for x in late))
 
+    def test_a_job_that_takes_no_hold_never_waits_for_a_light_slot(self) -> None:
+        self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
+        build = self.submit(self.home, "--level", "light", "--", "sleep 6")
+        self.wait_until(lambda: self.job(build)["state"] == "running")
+        probe = self.submit(self.home, "--level", "none", "--", "true")
+        self.ok(self.home, "wait", probe, "--timeout", "30")
+        self.assertEqual(self.job(build)["state"], "running", "the probe waited for the build's slot")
+
     def test_the_worker_stays_while_jobs_run_and_exits_when_idle(self) -> None:
         jid = self.submit(self.home, "--", "sleep 3")
         beat = self.root / "jobs" / ".worker" / "heartbeat"
@@ -190,6 +198,20 @@ class Scheduling(CampaignCase):
         self.assertTrue(beat.exists(), "the worker left while a job was running")
         self.ok(self.home, "wait", jid)
         self.wait_until(lambda: not (self.root / "jobs" / ".worker").exists(), timeout=10)
+
+    def test_a_worker_whose_home_was_taken_leaves(self) -> None:
+        """Two starters can both get past a fresh home; the one that no longer owns it exits."""
+        jid = self.submit(self.home, "--", "sleep 60")
+        self.wait_until(lambda: self.job(jid)["state"] == "running")
+        pid_file = self.root / "jobs" / ".worker" / "pid"
+        worker = int(pid_file.read_text())
+        other = subprocess.Popen(["sleep", "60"])  # as if a second worker had taken over
+        try:
+            pid_file.write_text(str(other.pid))
+            self.wait_until(lambda: not alive(worker), timeout=6)  # while its job still runs
+        finally:
+            other.kill()
+            other.wait()
 
 
 class Limits(CampaignCase):
