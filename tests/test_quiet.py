@@ -14,6 +14,8 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+import harness  # noqa: F401  # first: it puts the tools' directory on sys.path
+import quiet
 from harness import alone, scratch
 
 QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.py"
@@ -312,3 +314,24 @@ class Quiet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LightSlots(unittest.TestCase):
+    """Light holds double while half the machine idles and no strict hold runs; a set count wins."""
+
+    def test_slots_follow_the_load_and_strict_holds(self) -> None:
+        saved = (quiet.NCPU, quiet.QUARTER, quiet.load1, os.environ.pop("QUIET_LIGHT_SLOTS", None))
+        try:
+            quiet.NCPU, quiet.QUARTER = 16, 4
+            quiet.load1 = lambda: 5
+            self.assertEqual(quiet.light_slots(""), 8)
+            self.assertEqual(quiet.light_slots("8-15"), 4)  # a strict hold has half the cores
+            quiet.load1 = lambda: 8
+            self.assertEqual(quiet.light_slots(""), 4)
+            os.environ["QUIET_LIGHT_SLOTS"] = "3"
+            self.assertEqual(quiet.light_slots(""), 3)
+        finally:
+            quiet.NCPU, quiet.QUARTER, quiet.load1, fixed = saved
+            os.environ.pop("QUIET_LIGHT_SLOTS", None)
+            if fixed is not None:
+                os.environ["QUIET_LIGHT_SLOTS"] = fixed

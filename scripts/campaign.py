@@ -4440,7 +4440,15 @@ def cmd_worker(a: argparse.Namespace) -> int:
         except FileExistsError:
             return 0
     (home / "pid").write_text(str(os.getpid()))
-    light_slots = int(os.environ.get("CAMPAIGN_LIGHT_JOBS") or max(1, (os.cpu_count() or 4) // 4))
+    ncpu = os.cpu_count() or 4
+
+    def light_slots(heavy: bool) -> int:
+        """Light jobs at once, as quiet admits them: CPUs / 2 while the load is under that, else CPUs / 4."""
+        if os.environ.get("CAMPAIGN_LIGHT_JOBS"):
+            return int(os.environ["CAMPAIGN_LIGHT_JOBS"])
+        quarter = max(1, ncpu // 4)
+        return quarter if heavy or os.getloadavg()[0] >= ncpu // 2 else max(quarter, ncpu // 2)
+
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
     try:
         while True:
@@ -4462,6 +4470,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
             late = sum(
                 1 for j in running if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0
             )
+            slots = light_slots(heavy)
             for j in queued:
                 deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
                 if any(s not in ("queued", "running", "done") for s in deps):
@@ -4470,9 +4479,9 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     continue
                 is_heavy = j["spec"].get("level") in HEAVY
                 is_late = int(j["spec"].get("priority", 0)) < 0
-                if any(s != "done" for s in deps) or (is_heavy and heavy) or (not is_heavy and light >= light_slots):
+                if any(s != "done" for s in deps) or (is_heavy and heavy) or (not is_heavy and light >= slots):
                     continue
-                if is_late and not is_heavy and late >= max(1, light_slots // 2):
+                if is_late and not is_heavy and late >= max(1, slots // 2):
                     continue  # deferred work never takes every slot from the direct path
                 if claim(j):
                     spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")

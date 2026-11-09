@@ -56,7 +56,8 @@ hold runs they use only the cores it leaves free. A light request waiting QUIET_
 goes before new strict requests, so builds are never starved. A light command keeps running past
 its deadline unless QUIET_KILL=1. Inside another hold, CMD runs at once under it.""",
         """environment:
-  QUIET_LIGHT_SLOTS    light holds at once (default: CPUs / 4)
+  QUIET_LIGHT_SLOTS    light holds at once (default: CPUs / 2 while the load is under CPUs / 2
+                       and no strict hold runs, else CPUs / 4)
   QUIET_MAX_LOAD       no new light hold above this load (default: CPUs * 3 / 4)
   QUIET_STARVE_MIN     minutes before a waiting light request goes first (default 10)
   QUIET_KILL           1: stop the command at its deadline too (job runners set it)""",
@@ -362,6 +363,14 @@ def load1() -> int:
     return int(os.getloadavg()[0])
 
 
+def light_slots(beside: str) -> int:
+    """Light holds at once: twice the quarter while half the machine idles, since tests leave builds' cores free."""
+    fixed = env("QUIET_LIGHT_SLOTS", "")
+    if fixed:
+        return int(fixed)
+    return QUARTER if beside or load1() >= NCPU // 2 else max(NCPU // 2, QUARTER)
+
+
 def max_load() -> int:
     return int(env("QUIET_MAX_LOAD", str(max(NCPU * 3 // 4, 1))))
 
@@ -439,7 +448,7 @@ def try_hold(name: str, level: str, exclusive: bool, start: float) -> tuple[tupl
     beside = strict_beside(name, (DIR / f"{name}.starving").exists())
     if beside is None:
         return None, "a strict hold has the machine"
-    if count("light", name) >= int(env("QUIET_LIGHT_SLOTS", str(QUARTER))):
+    if count("light", name) >= light_slots(beside):
         return None, "light slots full"
     load = load1()
     if load >= max_load():
