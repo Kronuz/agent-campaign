@@ -714,9 +714,11 @@ def sidebar(c: Campaign) -> None:
     project = f"status:campaign-{c.name}"
     want[project] = f"{name}: {counts['landed']} landed · {in_flight(counts)} · {counts['planned']} planned"
     jobs = all_jobs() if any(p["status"] in FLIGHT and p.get("branch") for p in c.quests.values()) else []
+    with frozen_heads():  # one branch listing per repository, not two git calls per branch
+        failing_by = {pid: unexplained_failures(c, pid, jobs) for pid, p in c.quests.items() if p["status"] in FLIGHT}
     for pid, p in c.quests.items():
         if p["status"] in FLIGHT:
-            failing = unexplained_failures(c, pid, jobs)
+            failing = failing_by[pid]
             want[f"status:campaign-{c.name}-{pid}"] = (
                 f"{pid}: {p['status']}"
                 + (f" ({p.get('reason', '')})" if p["status"] == "blocked" else "")
@@ -2445,9 +2447,9 @@ def ended_at_head(c: Campaign, pid: str, jobs: list[Json]) -> list[Json]:
     repo = c.repo(p)
     heads = {code_tree(repo, rev(repo, b)) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)}
 
-    def at_head(j: Json) -> bool:
+    def at_head(j: Json) -> bool:  # read through the quest's repository: one reader for every worktree
         with contextlib.suppress(CampaignError, KeyError):
-            return code_tree(Path(j["spec"]["repo"]), j["spec"]["commit"]) in heads
+            return code_tree(repo, j["spec"]["commit"]) in heads
         return False
 
     mine = (j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident)
