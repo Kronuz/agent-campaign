@@ -661,6 +661,54 @@ def register(name: str, home: Path) -> None:
         entry.write_text(f"{home}\n")
 
 
+def leads() -> Path:
+    """Where each campaign's lead was last seen in cmux: one JSON file per campaign name."""
+    return jobs_dir().parent / "leads"
+
+
+def note_lead() -> None:
+    """Records the cmux surface of whoever runs `campaign` in a campaign's checkouts, so a message
+    can wake that lead (`wake_lead`). Jobs and workers run detached and are not leads."""
+    surface = os.environ.get("CMUX_SURFACE_ID", "")
+    if not surface:
+        return
+    try:
+        c = find_campaign(Path.cwd())
+    except CampaignError:
+        return
+    entry = leads() / c.name
+    seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}
+    with contextlib.suppress(OSError, ValueError):
+        if json.loads(entry.read_text()) == seen:
+            return
+    with contextlib.suppress(OSError):
+        leads().mkdir(parents=True, exist_ok=True)
+        entry.write_text(json.dumps(seen) + "\n")
+
+
+def wake_lead(c: Campaign, whom: str, nid: str, text: str, by: str) -> str:
+    """Wakes the campaign's lead in cmux with the message (an idle session reads it at once; a busy
+    one at its next step); "" when the lead is unknown, is the sender, or cmux is unreachable."""
+    try:
+        seen = json.loads((leads() / c.name).read_text())
+    except (OSError, ValueError):
+        return ""
+    surface = str(seen.get("surface", ""))
+    if not surface or surface == os.environ.get("CMUX_SURFACE_ID") or not shutil.which("cmux"):
+        return ""
+    body = f"campaign {c.name}: {nid} for {whom}, from {by}: {text} (close or answer it by that id)"
+    try:
+        done = subprocess.run(
+            ["cmux", "agent", "message", surface, "--from", by or "campaign", "--", body],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return surface if done.returncode == 0 else ""
+
+
 def notify(title: str, body: str) -> None:
     """A notice in the owner's cmux feed; silent outside cmux."""
     if os.environ.get("CMUX_WORKSPACE_ID"):
@@ -937,6 +985,7 @@ def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -
         finally:
             tmp.unlink(missing_ok=True)
     notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
+    wake_lead(c, pid or "the lead", f"msg-{n}", text, by)
     return f"msg-{n}"
 
 
@@ -3458,7 +3507,123 @@ def codex_runs(since: float) -> tuple[list[Json], list[Json]]:
     return runs, sessions
 
 
+def claude_runs(since: float) -> tuple[list[Json], list[Json]]:
+    """Agent runs and lead sessions from Claude Code's transcripts: `<project>/<session>.jsonl` is the
+    lead, `<project>/<session>/subagents/agent-<id>.jsonl` (with its `.meta.json`) each agent. A
+    response's content blocks are logged as separate lines with one message id: each id counts once."""
+    root = Path(os.environ.get("CAMPAIGN_CLAUDE_LOGS") or Path.home() / ".claude" / "projects")
+
+    def stamp_of(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def read(log: Path) -> Json:
+        """Totals of the responses logged at or after `since` (a lead session may predate it)."""
+        seen: dict[str, Json] = {}
+        t: Json = {"prompt": "", "cwd": "", "model": "", "effort": "", "began": "", "ended": "", "calls": 0}
+        with log.open(errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                kind, stamp = e.get("type"), e.get("timestamp") or ""
+                if stamp:
+                    t["began"] = t["began"] or stamp
+                    t["ended"] = stamp
+                t["cwd"] = t["cwd"] or e.get("cwd") or ""
+                if kind == "api-request":
+                    effort = ((e.get("params") or {}).get("output_config") or {}).get("effort")
+                    t["effort"] = effort or t["effort"]
+                    continue
+                m = e.get("message") if isinstance(e.get("message"), dict) else {}
+                if kind == "user" and not t["prompt"]:
+                    body = m.get("content")
+                    t["prompt"] = body if isinstance(body, str) else ""
+                if kind != "assistant":
+                    continue
+                t["model"] = m.get("model") or t["model"]
+                content: list[Json] = m["content"] if isinstance(m.get("content"), list) else []
+                t["calls"] += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
+                if m.get("usage") and stamp_of(stamp) >= since:
+                    seen[m.get("id") or f"line{len(seen)}"] = m["usage"]
+        totals = dict.fromkeys(("tokens", *BREAKDOWN), 0)
+        for u in seen.values():
+            fresh, made = int(u.get("input_tokens") or 0), int(u.get("cache_creation_input_tokens") or 0)
+            cached, out = int(u.get("cache_read_input_tokens") or 0), int(u.get("output_tokens") or 0)
+            totals["tokens"] += fresh + made + cached + out
+            totals["cached_input_tokens"] += cached
+            totals["cache_write_tokens"] += made
+            totals["output_tokens"] += out
+            totals["reasoning_tokens"] += int((u.get("output_tokens_details") or {}).get("thinking_tokens") or 0)
+        totals["requests"] = len(seen)
+        return {**t, **totals}
+
+    def seconds(t: Json) -> float:
+        began = max(stamp_of(t["began"]), since)
+        return max(0.0, stamp_of(t["ended"]) - began) if t["ended"] else 0.0
+
+    runs: list[Json] = []
+    sessions: list[Json] = []
+    for lead_log in sorted(root.glob("*/*.jsonl")):
+        agents = sorted((lead_log.parent / lead_log.stem / "subagents").glob("agent-*.jsonl"))
+        fresh = [a for a in agents if a.stat().st_mtime >= since]
+        if lead_log.stat().st_mtime < since and not fresh:
+            continue
+        mine = 0
+        for log in fresh:
+            t = read(log)
+            what = launch(t["prompt"])
+            if what is None:
+                continue
+            mine += 1
+            meta: Json
+            try:
+                meta = json.loads(log.with_suffix(".meta.json").read_text())
+            except (OSError, ValueError):
+                meta = {}
+            runs.append(
+                {
+                    "harness": "claude",
+                    "session": lead_log.stem,
+                    "agent": log.stem.removeprefix("agent-"),
+                    **what,
+                    "type": meta.get("agentType", ""),
+                    "model": t["model"] or meta.get("pickedEffortModel") or meta.get("model", ""),
+                    "effort": t["effort"],
+                    "began": t["began"],
+                    "ended": t["ended"],
+                    "seconds": seconds(t),
+                    "tool_calls": t["calls"],
+                    "cost": 0.0,
+                    "cost_available": False,
+                    **{k: t[k] for k in ("tokens", *BREAKDOWN)},
+                }
+            )
+        if mine or lead_log.stat().st_mtime >= since:
+            t = read(lead_log)
+            sessions.append(
+                {
+                    "harness": "claude",
+                    "session": lead_log.stem,
+                    "home": t["cwd"],
+                    "model": t["model"],
+                    "effort": t["effort"],
+                    "began": t["began"],
+                    "ended": t["ended"],
+                    "seconds": seconds(t),
+                    "cost": 0.0,
+                    "cost_available": False,
+                    **{k: t[k] for k in ("tokens", *BREAKDOWN)},
+                }
+            )
+    return runs, sessions
+
+
 USAGE_READERS = {
+    "claude": claude_runs,
     "copilot": copilot_runs,
     "codex": codex_runs,
 }  # harness -> reader(since) -> (agent runs, lead sessions)
@@ -3627,8 +3792,8 @@ def cmd_usage(a: argparse.Namespace) -> int:
         "\n"
         + paint(
             f"read: {', '.join(USAGE_READERS)}. Tokens are cumulative per request (input, cached reads included, plus "
-            "output): a measure of work, not of billing. Cost is in each harness's own unit; Codex cost unavailable "
-            "(n/a, never 0).",
+            "output): a measure of work, not of billing. Cost is in each harness's own unit; Claude Code and "
+            "Codex record none (n/a, never 0).",
             "dim",
         )
     )
@@ -5399,6 +5564,8 @@ def main(argv: list[str] | None = None) -> int:
         value = getattr(args, dest, None)
         if isinstance(value, str) and not value.strip():
             ap.error(f"{flag} needs a reason")
+    if args.command != "job":
+        note_lead()
     try:
         return int(args.fn(args))
     except CampaignError as e:

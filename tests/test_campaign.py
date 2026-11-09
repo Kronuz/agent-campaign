@@ -10,11 +10,17 @@ import subprocess
 import sys
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from harness import CAMPAIGN, CampaignCase, campaign_module
+
+
+def at(seconds: float) -> str:
+    """An ISO timestamp `seconds` after now, as Claude Code writes them."""
+    return datetime.fromtimestamp(time.time() + 600 + seconds, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class Quests(CampaignCase):
@@ -889,6 +895,31 @@ class Campaigns(CampaignCase):
         self.ok(home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
         self.ok(home, "land", pid)
 
+    def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
+        calls = self.root / "cmux-calls"
+        fake = self.root / "bin" / "cmux"
+        fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
+        fake.chmod(0o755)
+        self.env["CMUX_SURFACE_ID"] = "surface-other"
+        self.ok(self.other, "status")  # other's lead is seen in its surface
+        self.env["CMUX_SURFACE_ID"] = "surface-demo"
+        self.ok(self.home, "status")
+        sent = self.ok(self.home, "message", "other:", "journal pins moved", "--from", "demo-lead").out
+        self.assertIn("msg-1 for the lead", sent)
+        self.assertIn(
+            "agent|message|surface-other|--from|demo-lead|--|campaign other: msg-1 for the lead, from demo-lead: "
+            "journal pins moved",
+            calls.read_text(),
+        )
+        calls.write_text("")
+        self.ok(self.home, "message", "demo:", "a note to myself", "--from", "demo-lead")
+        self.assertNotIn("agent|message", calls.read_text(), "the sender's own surface is not woken")
+        self.env.pop("CMUX_SURFACE_ID")
+        self.ok(self.home, "message", "other:", "from outside cmux", "--from", "owner")
+        self.assertIn("agent|message|surface-other|", calls.read_text(), "the recorded lead is woken from anywhere")
+        fake.write_text("#!/bin/sh\nexit 1\n")
+        self.assertIn("msg-3 for the lead", self.ok(self.home, "message", "other:", "cmux down", "--from", "x").out)
+
     def test_a_library_quest_works_from_its_own_repository(self) -> None:
         api = self.lib_quest(self.home, "api", "--files", "lib.py")
         elsewhere = self.root / "elsewhere"
@@ -1010,7 +1041,7 @@ class Usage(CampaignCase):
             (lead["tokens"], lead["seconds"], lead["model"], lead["effort"]), (550, 180, "gpt-6.1-sol", "medium")
         )
         out = self.ok(self.home, "usage").out
-        self.assertIn("Codex cost unavailable", out)
+        self.assertIn("Claude Code and Codex record none", out)
         self.assertIn("cost n/a;", out)  # unavailable, never reported as zero
         self.assertNotIn("cost 0", out)
 
@@ -1215,6 +1246,96 @@ class Usage(CampaignCase):
         self.assertIn("recovery: 1 fresh resume, 1,200 tokens", text)
         self.assertIn("contributor performance claude-opus-5.5 high", text)
         self.assertIn("reviewer correctness claude-opus-5.5 high", text)
+
+    def claude_agent(self, session: Path, aid: str, prompt: str, usages: list[tuple[str, int, int, int]]) -> Path:
+        """A Claude Code subagent transcript in its real shapes: (message id, cache read, cache write,
+        output) per logged block; blocks of one response repeat its message id."""
+        lines: list[Any] = [
+            {
+                "type": "user",
+                "agentId": aid,
+                "timestamp": at(0),
+                "message": {"role": "user", "content": prompt},
+            },
+            {
+                "type": "api-request",
+                "timestamp": at(1),
+                "params": {"output_config": {"effort": "high"}},
+            },
+        ]
+        for n, (mid, read, write, out) in enumerate(usages):
+            usage = {
+                "input_tokens": 2,
+                "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": write,
+                "output_tokens": out,
+                "output_tokens_details": {"thinking_tokens": 1},
+            }
+            block = {"type": "tool_use", "name": "Bash"} if n % 2 else {"type": "text", "text": "ok"}
+            lines.append(
+                {
+                    "type": "assistant",
+                    "timestamp": at(60 * (n + 1)),
+                    "message": {"id": mid, "model": "claude-opus-5-5", "usage": usage, "content": [block]},
+                }
+            )
+        log = session / "subagents" / f"agent-{aid}.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(json.dumps(x) + "\n" for x in lines) + "not json\n")
+        log.with_suffix(".meta.json").write_text(json.dumps({"agentType": "campaign-contributor", "model": "opus"}))
+        return log
+
+    def test_usage_reads_claude_code_agents_once_per_response(self) -> None:
+        self.started("fix", files="app.py")
+        home = str(self.home)
+        project = self.root / "claude" / "-app"
+        project.mkdir(parents=True)
+        lead = project / "s1.jsonl"
+        lead.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "cwd": home,
+                    "timestamp": at(0),
+                    "message": {
+                        "id": "m0",
+                        "model": "claude-opus-5-5",
+                        "usage": {"input_tokens": 7, "output_tokens": 3},
+                    },
+                }
+            )
+            + "\n"
+        )
+        prompt = f"You are the contributor for quest fix of campaign demo ({home}).\nAssignment: performance;"
+        # m1 is logged twice (two content blocks of one response): counted once.
+        self.claude_agent(project / "s1", "a1", prompt, [("m1", 100, 10, 5), ("m1", 100, 10, 5), ("m2", 200, 0, 7)])
+        self.claude_agent(
+            project / "s1",
+            "o1",
+            "You are the contributor for quest fix of campaign other (/elsewhere).",
+            [("m3", 999, 0, 1)],
+        )
+        old = self.claude_agent(project / "s1", "z1", prompt, [("m4", 50, 0, 1)])
+        os.utime(old, (0, 0))
+        u = json.loads(self.ok(self.home, "usage", "--json").out)
+        (run,) = u["runs"]
+        self.assertEqual(
+            (run["harness"], run["agent"], run["role"], run["assignment"], run["quest"], run["model"], run["effort"]),
+            ("claude", "a1", "contributor", "performance", "fix", "claude-opus-5-5", "high"),
+        )
+        self.assertEqual(
+            (
+                run["tokens"],
+                run["cached_input_tokens"],
+                run["cache_write_tokens"],
+                run["output_tokens"],
+                run["requests"],
+            ),
+            (2 + 100 + 10 + 5 + 2 + 200 + 7, 300, 10, 12, 2),
+        )
+        self.assertEqual((round(run["seconds"]), run["tool_calls"], run["cost_available"]), (180, 1, False))
+        self.assertEqual([(s["harness"], s["session"], s["tokens"]) for s in u["lead"]], [("claude", "s1", 10)])
+        self.assertIn("read: claude, copilot, codex", self.ok(self.home, "usage").out)
 
 
 class Integration(CampaignCase):

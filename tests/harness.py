@@ -100,6 +100,7 @@ class CampaignCase(unittest.TestCase):
             "CAMPAIGN_MAIN",
             "CAMPAIGN_FINGERPRINT",
             "CMUX_WORKSPACE_ID",
+            "CMUX_SURFACE_ID",
         ):
             self.env.pop(key, None)
         self.env.update(
@@ -124,6 +125,7 @@ class CampaignCase(unittest.TestCase):
         )
         self.env["CAMPAIGN_CODEX_LOGS"] = str(self.root / "codex")
         self.env["CAMPAIGN_COPILOT_LOGS"] = str(self.root / "copilot")
+        self.env["CAMPAIGN_CLAUDE_LOGS"] = str(self.root / "claude")
         self.env["PATH"] = f"{self.root / 'bin'}:{self.env['PATH']}"
         (self.root / "bin").mkdir()
         (self.root / "bin" / "quiet").symlink_to(QUIET)  # this checkout's quiet, not the installed one

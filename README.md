@@ -127,7 +127,8 @@ tested. [`references/lessons.md`](references/lessons.md) lists the incidents beh
 ## Limitations
 
 - The test suite runs on macOS and Linux; FreeBSD's core pinning is untested.
-- `campaign usage` reads Copilot CLI's and Codex's session logs; Claude Code's are not read yet.
+- `campaign usage` reads Claude Code's, Copilot CLI's and Codex's session logs; Claude Code and Codex
+  record no cost, so theirs shows n/a.
 - `pace` reads Claude Code's quota from a status line's snapshot and does not see purchased credits.
 - Landing is one repository at a time: a change across repositories lands in order, never
   atomically.
