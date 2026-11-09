@@ -227,6 +227,19 @@ class Scheduling(CampaignCase):
             other.kill()
             other.wait()
 
+    def test_a_worker_restarts_between_ticks_and_keeps_its_jobs(self) -> None:
+        """`worker --restart` re-executes the worker in place: same pid and home, its jobs untouched."""
+        jid = self.submit(self.home, "--", "sleep 60")
+        self.wait_until(lambda: self.job(jid)["state"] == "running")
+        home = self.root / "jobs" / ".worker"
+        worker, started = int((home / "pid").read_text()), (home / "started").read_text()
+        self.assertIn("restarts on the current code", self.ok(self.home, "worker", "--restart").out)
+        self.wait_until(lambda: (home / "started").read_text() != started, timeout=10)
+        self.assertEqual(int((home / "pid").read_text()), worker, "the same process, re-executed")
+        later = self.submit(self.home, "--force", "--", "true")  # the restarted worker still schedules
+        self.ok(self.home, "wait", later, "--timeout", "30")
+        self.assertEqual(self.job(jid)["state"], "running", "a restart never touches a running job")
+
 
 class Limits(CampaignCase):
     def test_a_no_hold_job_is_stopped_at_its_timeout(self) -> None:

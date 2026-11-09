@@ -58,7 +58,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns sharing the light slots; `quiet` arbitrates the machine across every session. A job
   that drains the machine (exclusive, or strict on macOS) waits while light work is queued, at most
-  an hour (`CAMPAIGN_DRAIN_WAIT`), since its pending hold blocks every new light one. Priorities: gate checks from `verify` run at 1, ordinary jobs at 0, deferred
+  an hour (`CAMPAIGN_DRAIN_WAIT`), since its pending hold blocks every new light one.
+  `campaign worker --restart` (after updating the tool) has the worker finish its tick and
+  re-execute in place on the new code; running jobs keep running. SIGINT or SIGTERM stops it
+  between ticks, never mid-claim. Priorities: gate checks from `verify` run at 1, ordinary jobs at 0, deferred
   checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.

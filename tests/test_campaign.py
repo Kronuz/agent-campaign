@@ -953,6 +953,17 @@ class Campaigns(CampaignCase):
         self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
         self.assertLessEqual(self.job(theirs)["started"], self.job(ab)["started"], "the A/B drained the queue")
 
+    def test_an_overdue_drain_starts_no_new_light_job(self) -> None:
+        """Past its wait, a draining job keeps new light jobs out, so only the running ones delay it."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="2", CAMPAIGN_DRAIN_WAIT="0", CAMPAIGN_DRAIN_SLACK="0")
+        ours = self.submit(self.home, "--level", "light", "--force", "--", "sleep 4")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        theirs = self.submit(self.other, "--level", "light", "--", "true")
+        self.ok(self.home, "wait", ours, ab, "--timeout", "60", timeout=90)
+        self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
+        self.assertLessEqual(self.job(ab)["started"], self.job(theirs)["started"], "light work lengthened the drain")
+
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"
         fake = self.root / "bin" / "cmux"

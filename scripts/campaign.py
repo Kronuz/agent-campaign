@@ -4550,6 +4550,21 @@ def cmd_worker(a: argparse.Namespace) -> int:
     jd = jobs_dir()
     home = jd / ".worker"
     me = str(os.getpid())
+    if a.restart:
+        try:
+            pid = int((home / "pid").read_text())
+        except (FileNotFoundError, ValueError):
+            pid = 0
+        if not pid or not worker_alive():
+            print("no worker is running; the next submit or wait starts one on the current code")
+            return 0
+        os.kill(pid, signal.SIGHUP)
+        print(f"worker {pid}: restarts on the current code after its tick; running jobs keep running")
+        return 0
+    asked: list[str] = []  # "restart" or "stop", acted on between ticks, never mid-claim
+    signal.signal(signal.SIGHUP, lambda *_: asked.append("restart"))
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: asked.append("stop"))
 
     def take() -> bool:
         """Puts a home holding our pid and a fresh heartbeat in place at once: no starter sees it half made."""
@@ -4564,15 +4579,22 @@ def cmd_worker(a: argparse.Namespace) -> int:
             shutil.rmtree(new, ignore_errors=True)
             return False
 
-    if not take():
-        if worker_alive():
-            return 0
+    try:
+        ours = (home / "pid").read_text() == me  # re-executed by a restart: the home is already ours
+    except FileNotFoundError:
+        ours = False
+    if ours or take():
+        pass
+    elif worker_alive():
+        return 0
+    else:
         stale = jd / f".worker.stale.{me}"
         with contextlib.suppress(OSError):
             home.rename(stale)
         shutil.rmtree(stale, ignore_errors=True)
         if not take():
             return 0
+    (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
     ncpu = os.cpu_count() or 4
 
     def light_slots(heavy: bool) -> int:
@@ -4583,6 +4605,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
 
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", "3600"))
+    drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     try:
         while True:
             try:
@@ -4623,6 +4646,25 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     j["id"],
                 )
             )
+            now = time.time()
+            # a draining hold blocks new light holds until the running ones end: start one only when
+            # they all end soon, and past its wait start no new light job, so the drain stays short
+            lights_end = max(
+                (
+                    float(r["state"].get("started") or now) + 60 * int(r["spec"].get("minutes") or 30)
+                    for r in running
+                    if r["spec"].get("level") not in (*HEAVY, "none")
+                ),
+                default=now,
+            )
+            drain_ok = lights_end - now <= drain_slack
+            overdue = [
+                j
+                for j in queued
+                if drains(j)
+                and now - float(j["spec"].get("submitted") or 0) >= drain_wait
+                and all(states.get(x) == "done" for x in j["spec"].get("after", []))
+            ]
             for j in queued:
                 deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
                 if any(s not in ("queued", "running", "done") for s in deps):
@@ -4639,8 +4681,10 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     or (not is_heavy and not is_bare and light >= slots)
                 ):
                     continue
-                if drains(j) and wanting and time.time() - float(j["spec"].get("submitted") or 0) < drain_wait:
-                    continue  # draining the machine stalls queued light work: wait for a lull, an hour at most
+                if drains(j) and (not drain_ok or (wanting and j not in overdue)):
+                    continue  # for a lull in light work, an hour at most, then for the running ones to end
+                if overdue and not is_heavy and not is_bare:
+                    continue  # an overdue drain waits: no new light job lengthens it
                 if is_late and not is_heavy and late >= max(1, slots // 2):
                     continue  # deferred work never takes every slot from the direct path
                 if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
@@ -4652,6 +4696,11 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     bare += 1 if is_bare else 0
                     holds[camp(j)] += 0 if is_heavy or is_bare else 1
                     late += 1 if is_late and not is_heavy else 0
+            if "stop" in asked:
+                return 0
+            if asked:  # a restart keeps the pid and the home: no starter sees the worker gone
+                sys.stdout.flush()
+                os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), "worker"])
             time.sleep(tick)
     finally:
         with contextlib.suppress(FileNotFoundError, ValueError):
@@ -5645,6 +5694,11 @@ def parser() -> argparse.ArgumentParser:
         "Runs queued jobs under quiet, in priority order, and exits when nothing is queued or running. A "
         "submit or a wait starts one, so it is rarely run by hand.",
         parents=False,
+    )
+    p.add_argument(
+        "--restart",
+        action="store_true",
+        help="have the running worker finish its tick and restart on the current code; running jobs keep running",
     )
     p.set_defaults(fn=cmd_worker)
 
