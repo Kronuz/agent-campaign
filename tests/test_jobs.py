@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -295,6 +296,26 @@ class Crashes(CampaignCase):
         finally:
             bystander.kill()
             bystander.wait()
+
+    @unittest.skipUnless(sys.platform == "darwin", "kern.boottime is macOS's")
+    def test_a_drifted_macos_boottime_is_the_same_boot(self) -> None:
+        """kern.boottime moves with clock adjustments: a dead runner's exit is still recorded, not a reboot."""
+        d = self.root / "jobs" / "261108-000000-b00b1e"
+        (d / "a1").mkdir(parents=True)
+        spec: dict[str, object] = {"cmd": "true", "level": "none", "minutes": 1, "repo": "", "commit": ""}
+        (d / "spec.json").write_text(json.dumps({**spec, "refs": {}, "env": {}, "cwd": str(self.root), "retries": 0}))
+        sec = int(
+            subprocess.check_output(["sysctl", "-n", "kern.boottime"], text=True).split("sec = ")[1].split(",")[0]
+        )
+        boot = f"{{ sec = {sec - 7}, usec = 205523 }}"
+        (d / "state.json").write_text(
+            json.dumps({"state": "running", "attempt": 1, "sid": 0, "boot": boot, "runner": 0})
+        )
+        (d / "a1" / "exit").write_text("0")
+        (d / "heartbeat").touch()
+        os.utime(d / "heartbeat", (0, 0))
+        self.ok(self.home, "job", "list", "--all")  # reaps
+        self.assertEqual(self.job(d.name)["state"], "done")
 
     def test_waiting_on_a_corrupt_job_ends(self) -> None:
         jid = self.submit(self.home, "--sync", "--", "true")

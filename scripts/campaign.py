@@ -153,7 +153,25 @@ def boot_id() -> str:
     linux = Path("/proc/sys/kernel/random/boot_id")
     if linux.exists():
         return linux.read_text().strip()
-    return sh(["sysctl", "-n", "kern.boottime"], check=False)
+    # macOS: kern.boottime drifts with clock adjustments (seconds and microseconds); the session UUID does not
+    return sh(["sysctl", "-n", "kern.bootsessionuuid"], check=False) or sh(
+        ["sysctl", "-n", "kern.boottime"], check=False
+    )
+
+
+BOOTTIME = re.compile(r"\{ sec = (\d+),")
+
+
+def same_boot(recorded: str | None) -> bool:
+    """Whether a job's recorded boot is this boot; a macOS kern.boottime record matches within a minute."""
+    now = boot_id()
+    if recorded == now:
+        return True
+    old = BOOTTIME.match(recorded or "")
+    if not old or not now:
+        return False
+    current = BOOTTIME.match(sh(["sysctl", "-n", "kern.boottime"], check=False))
+    return bool(current) and abs(int(old.group(1)) - int(current.group(1))) < 60
 
 
 FINGERPRINT_CMD = (
@@ -4375,13 +4393,13 @@ def reap() -> None:
         try:
             if load_job(d)["state"] != st:
                 continue
-            same_boot = st.get("boot") == boot_id()
+            booted_here = same_boot(st.get("boot"))
             sid = int(st.get("sid") or 0)
             # the runner leads its session; a live leader that is not this job's runner reused its id
-            if sid and same_boot and (not alive(sid) or runs(sid, f"_run {d}")):
+            if sid and booted_here and (not alive(sid) or runs(sid, f"_run {d}")):
                 sweep(sid)
             exit_file = attempt_dir(job) / "exit"
-            if exit_file.exists() and same_boot:
+            if exit_file.exists() and booted_here:
                 code = int(exit_file.read_text().strip() or "1")
                 finish(
                     job,
@@ -4407,7 +4425,7 @@ def reap() -> None:
                     job,
                     -1,
                     "interrupted",
-                    f"attempt {attempt} lost its runner{'' if same_boot else ' (the host rebooted)'}; not retried",
+                    f"attempt {attempt} lost its runner{'' if booted_here else ' (the host rebooted)'}; not retried",
                 )
         finally:
             shutil.rmtree(lock, ignore_errors=True)
