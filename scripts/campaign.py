@@ -4658,11 +4658,16 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 default=now,
             )
             drain_ok = lights_end - now <= drain_slack
+            # a drain's wait counts from the last drain's end: light work and drains take turns
+            last_drain = max(
+                (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and states[j["id"]] != "queued"),
+                default=0.0,
+            )
             overdue = [
                 j
                 for j in queued
                 if drains(j)
-                and now - float(j["spec"].get("submitted") or 0) >= drain_wait
+                and now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait
                 and all(states.get(x) == "done" for x in j["spec"].get("after", []))
             ]
             for j in queued:
@@ -4681,8 +4686,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     or (not is_heavy and not is_bare and light >= slots)
                 ):
                     continue
-                if drains(j) and (not drain_ok or (wanting and j not in overdue)):
-                    continue  # for a lull in light work, an hour at most, then for the running ones to end
+                if drains(j) and j not in overdue and (not drain_ok or wanting):
+                    continue  # for a lull in light work, or its turn after an hour of it
                 if overdue and not is_heavy and not is_bare:
                     continue  # an overdue drain waits: no new light job lengthens it
                 if is_late and not is_heavy and late >= max(1, slots // 2):
