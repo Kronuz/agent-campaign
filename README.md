@@ -106,7 +106,8 @@ The lead drives the tool; these are the commands it reaches for most.
 | `campaign message NAME:ID "text"` | passes a finding to a quest (or `NAME:`, to a campaign's lead) from anywhere on the machine, or to a peer on another machine; a quest's message blocks its landing until answered |
 | `campaign job submit` | runs any command as a job at a commit, at a `quiet` level |
 | `campaign usage` | agent runs and job time per quest, role and assignment |
-| `campaign job prune` | deletes old finished jobs nothing names and slims those evidence names to their record; the worker runs it once a day |
+| `campaign job prune` | deletes old finished jobs nothing names and slims those evidence names to their record, and idle build directories of worktrees no open quest owns; the worker runs it once a day |
+| `campaign sweep` | removes clean worktrees of merged branches and landed or dropped quests, keeping any with a process, a job reading it, or `.scratch` files (`--force`) |
 | `campaign help COMMAND` | each command's description and options (`quiet help`, `report help` too) |
 
 [`SKILL.md`](SKILL.md) is what agents read; [`references/`](references) holds the prompts, the

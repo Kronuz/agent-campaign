@@ -519,6 +519,8 @@ def validate(data: Json) -> list[str]:
         errors.append("landing must be an object")
     if not isinstance(data.get("ci_later", []), list):
         errors.append("ci_later must be a list of CI workflow names")
+    if not isinstance(data.get("disk_warn", 0.0), (int, float)) or data.get("disk_warn", 0) < 0:
+        errors.append("disk_warn must be GiB of free disk, a number")
     quests = data.get("quests")
     if not isinstance(quests, dict):
         return [*errors, "quests must be an object"]
@@ -1157,7 +1159,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "peers", "outbox")
+CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1182,15 +1184,19 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["peers"] = csv(value)
                 elif key == "outbox" and sep:
                     c.state["outbox"] = value
+                elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
+                    c.state.pop("disk_warn", None)
+                    if value:
+                        c.state["disk_warn"] = float(value)
                 else:
                     die(
-                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,... and "
-                        f"outbox=REMOTE, not {item!r}"
+                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,..., "
+                        f"outbox=REMOTE and disk_warn=GIB|'', not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     for key in keys or CONFIG:
-        value = c.state.get(key) or ""
-        text = ",".join(value) if isinstance(value, list) else str(value)
+        value = c.state.get(key, DISK_WARN_GB if key == "disk_warn" else "") or ""
+        text = ",".join(value) if isinstance(value, list) else f"{value:g}" if isinstance(value, float) else str(value)
         print(text if keys else f"{key}={text}")
     return 0
 
@@ -2093,12 +2099,12 @@ def cmd_land(a: argparse.Namespace) -> int:
     return 0
 
 
-def readers_of(path: Path) -> list[str]:
+def readers_of(path: Path, jobs: list[Json] | None = None) -> list[str]:
     """Jobs whose command, directory or environment names a path inside PATH: inputs that live in a
     worktree outside any job's identity, which removing the worktree would lose."""
     roots = {str(path), str(path.resolve())}
     found: list[str] = []
-    for j in all_jobs():
+    for j in all_jobs() if jobs is None else jobs:
         spec = j["spec"]
         text = " ".join([str(spec.get("cmd", "")), str(spec.get("cwd", "")), *map(str, spec.get("env", {}).values())])
         if any(root in text for root in roots):
@@ -4046,8 +4052,8 @@ def oversized_checks(c: Campaign) -> list[tuple[str, str]]:
 
 def housekeeping(c: Campaign) -> list[tuple[str, str]]:
     """What the campaign and the job store leave behind: landed or dropped quests with worktrees or
-    branches, what `job prune` would do, jobs of campaigns this machine does not know, and free disk
-    under CAMPAIGN_DISK_MIN_GB (default 20)."""
+    branches, what `job prune` would do to jobs, jobs of campaigns this machine does not know, and free
+    disk under the campaign's disk_warn."""
     out: list[tuple[str, str]] = []
     left = [
         pid
@@ -4071,16 +4077,9 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
         out.append(("note", f"`campaign job prune` would delete {jobs}, slim {slim} and remove {slots}"))
     for owner, n in sorted(plan["unknown"].items()):
         out.append(("note", f"{plural(n, 'job')} of {owner}, a campaign this machine does not know: prune keeps them"))
-    floor = float(os.environ.get("CAMPAIGN_DISK_MIN_GB", "20"))
-    disk = shutil.disk_usage(c.home)
-    if disk.free < floor * 2**30:
-        out.append(
-            (
-                "warning",
-                f"{disk.free / 2**30:.0f} GiB free ({disk.free / disk.total:.0%}) on {c.home}'s disk: `campaign job "
-                "prune`, `campaign clean` landed quests, and delete build directories nothing uses",
-            )
-        )
+    warning = disk_warning(c.home, disk_floor(c))
+    if warning:
+        out.append(("warning", warning))
     return out
 
 
@@ -4412,9 +4411,14 @@ def slot_lock_try(slot: Path) -> TextIO | None:
 
 
 def slot_idle(slot: Path) -> bool:
-    """Whether no job holds SLOT's lock."""
-    if not slot.with_name(slot.name + ".lock").exists():
+    """Whether no job holds SLOT's lock; it breaks no older runner's lock, so a dry run changes nothing."""
+    lock = slot.with_name(slot.name + ".lock")
+    if not lock.exists():
         return True
+    if lock.is_dir():
+        with contextlib.suppress(FileNotFoundError, ValueError):
+            return not runs(int((lock / "pid").read_text()), " _run ")
+        return False
     fh = slot_lock_try(slot)
     if fh is not None:
         fh.close()
@@ -5236,6 +5240,9 @@ def cmd_job_cancel(a: argparse.Namespace) -> int:
 
 
 SLIM_BYTES = 1 << 20  # a slimmed job keeps its record, its log and its output files up to this size
+BUILD_DIRS = ("build", "build-*", ".deps", "_deps")  # regenerable: prune removes them from idle worktrees
+BUILD_DAYS = 3.0  # a build directory nothing changed in for this long is idle
+DISK_WARN_GB = 100.0  # check and the daily prune warn under this much free disk (`config disk_warn`)
 
 
 def job_needs() -> Json:
@@ -5341,9 +5348,12 @@ def drop_checkouts(j: Json) -> None:
             worktree_remove(ref["repo"], d)
 
 
-def prune(days: float, dry_run: bool = False, beat: Callable[[], None] = lambda: None) -> None:
-    """Carries out prune_plan, logging each deletion and slimming in the job store's prune.log."""
+def prune(
+    days: float, dry_run: bool = False, beat: Callable[[], None] = lambda: None, build_days: float = BUILD_DAYS
+) -> None:
+    """Carries out prune_plan and build_plan, logging each deletion and slimming in the job store's prune.log."""
     plan = prune_plan(days)
+    builds = build_plan(build_days)
     for j in plan["delete"]:
         print(f"delete {j['id']}  {j['state'].get('state')}  {j['spec'].get('what', '')}")
     for j in plan["slim"]:
@@ -5352,9 +5362,12 @@ def prune(days: float, dry_run: bool = False, beat: Callable[[], None] = lambda:
         print(f"slot {x.name}")
     for owner, n in sorted(plan["unknown"].items()):
         print(f"kept {plural(n, 'job')} of {owner}: no campaign on this machine is there")
+    for d, n in builds:
+        print(f"build {d}  {size_text(n)}")
     jobs, slim, slots = (plural(len(plan[k]), "slot" if k == "slots" else "job") for k in ("delete", "slim", "slots"))
+    dirs = f"{plural(len(builds), 'build dir')} ({size_text(sum(n for _, n in builds))}, idle {build_days:g} days)"
     if dry_run:
-        print(f"would delete {jobs}, slim {slim} and remove {slots} (older than {days:g} days)")
+        print(f"would delete {jobs}, slim {slim} and remove {slots} (older than {days:g} days) and {dirs}")
         return
     with open(jobs_dir() / "prune.log", "a") as log:
         for j in plan["delete"]:
@@ -5384,11 +5397,16 @@ def prune(days: float, dry_run: bool = False, beat: Callable[[], None] = lambda:
                 x.with_name(x.name + ".lock").unlink(missing_ok=True)  # a waiter that opened it retries
             log.write(f"{stamp()} removed slot {x.name}\n")
             beat()
+        for d, n in builds:
+            shutil.rmtree(d, ignore_errors=True)
+            log.write(f"{stamp()} removed build dir {d} ({size_text(n)})\n")
+            beat()
+    (jobs_dir() / "disk.json").unlink(missing_ok=True)  # the sizes it cached changed
     keys = jobs_dir() / "keys"
     for link in keys.iterdir() if keys.is_dir() else []:
         if link.is_symlink() and not (jobs_dir() / os.readlink(link)).exists():
             link.unlink()
-    print(f"deleted {jobs}, slimmed {slim} and removed {slots} (older than {days:g} days)")
+    print(f"deleted {jobs}, slimmed {slim} and removed {slots} (older than {days:g} days) and {dirs}")
 
 
 def daily_prune(beat: Callable[[], None]) -> bool:
@@ -5403,13 +5421,279 @@ def daily_prune(beat: Callable[[], None]) -> bool:
     mark.touch()
     try:
         prune(14, beat=beat)
+        warning = disk_warning(jobs_dir(), disk_floor())
+        if warning:
+            print(f"campaign: {warning}", file=sys.stderr)
+            with open(jobs_dir() / "prune.log", "a") as log:
+                log.write(f"{stamp()} warning: {warning}\n")
+            notify("campaign: disk low", warning)
     except (CampaignError, OSError) as e:
         print(f"campaign: the daily prune failed: {e}", file=sys.stderr)
     return True
 
 
 def cmd_job_prune(a: argparse.Namespace) -> int:
-    prune(a.days, a.dry_run)
+    prune(a.days, a.dry_run, build_days=a.build_days)
+    return 0
+
+
+# ---------------------------------------------------------------- disk
+
+
+def size_text(n: int) -> str:
+    return f"{n / 2**30:.1f} GiB" if n >= 2**30 else f"{n / 2**20:.0f} MiB"
+
+
+def disk_sizes(paths: list[Path]) -> dict[Path, int]:
+    """Bytes each path takes on disk, from `du` (a hard link counts once)."""
+    out: dict[Path, int] = {}
+    for i in range(0, len(paths), 200):
+        p = subprocess.run(["du", "-sk", *map(str, paths[i : i + 200])], capture_output=True, text=True)
+        for line in p.stdout.splitlines():
+            kb, _, name = line.partition("\t")
+            with contextlib.suppress(ValueError):
+                out[Path(name)] = int(kb) * 1024
+    return out
+
+
+def worktree_list(repo: Path) -> list[Json]:
+    """REPO's linked worktrees, its main checkout left out: path, branch ("" when detached) and held
+    (git locked it, or finds it gone)."""
+    out: list[Json] = []
+    for block in git(repo, "worktree", "list", "--porcelain", check=False).split("\n\n")[1:]:
+        entry = {key: value for key, _, value in (line.partition(" ") for line in block.splitlines())}
+        if entry.get("worktree"):
+            out.append(
+                {
+                    "path": Path(entry["worktree"]),
+                    "branch": entry.get("branch", "").removeprefix("refs/heads/"),
+                    "held": "locked" in entry or "prunable" in entry,
+                }
+            )
+    return out
+
+
+def machine_worktrees() -> list[Json]:
+    """Every linked worktree of the repositories this machine's campaigns use, outside the job store
+    and any .scratch, with its repository's main checkout (repo) and quest: "open" when an unfinished quest of any
+    campaign owns its branch or path, "landed" or "dropped" when only a finished one does, else ""."""
+    repos: dict[str, Path] = {}
+    owners: dict[str, str] = {}  # a branch, or a worktree's resolved path -> its quest's status
+    for name, o in campaigns().items():
+        c = Campaign(Path(o["home"]), name)
+        for repo in {c.home, *(c.repo(p) for p in c.quests.values())}:
+            if common_dir(repo):
+                repos.setdefault(common_dir(repo), main_checkout(repo))
+        for pid, p in c.quests.items():
+            status = p["status"] if p["status"] in ("landed", "dropped") else "open"
+            for qname, branch, rel, _ in branches(c, pid):
+                jp = journal_place(c, qname)
+                for key in (branch, *(str(x.resolve()) for x in ((c.home / rel) if rel else None, jp) if x)):
+                    if owners.get(key) != "open":
+                        owners[key] = status
+    store = jobs_dir().resolve()
+    out: list[Json] = []
+    for main in repos.values():
+        for wt in worktree_list(main):
+            path = wt["path"].resolve()
+            if wt["held"] or not path.is_dir() or path == store or store in path.parents or ".scratch" in path.parts:
+                continue  # git's own hold, the job store's checkouts, a probe kept in a .scratch
+            found = [owners.get(str(path), ""), owners.get(wt["branch"], "") if wt["branch"] else ""]
+            quest = "open" if "open" in found else next((x for x in found if x), "")
+            out.append({**wt, "path": path, "repo": main, "quest": quest})
+    return out
+
+
+def build_dirs(wt: Path) -> list[Path]:
+    """WT's regenerable build directories: top-level directories named as BUILD_DIRS that git ignores
+    whole, so none holds a tracked or an unignored file."""
+    try:
+        names = sorted(
+            x.name
+            for x in wt.iterdir()
+            if any(fnmatch.fnmatchcase(x.name, g) for g in BUILD_DIRS) and x.is_dir() and not x.is_symlink()
+        )
+    except OSError:
+        return []
+    if not names:
+        return []
+    args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--"]
+    listed = git(wt, *args, *(f":(literal){n}" for n in names), check=False)
+    whole = {x[:-1] for x in listed.split("\0") if x.endswith("/")}
+    return [wt / n for n in names if n in whole]
+
+
+def changed_within(path: Path, days: float) -> bool:
+    """Whether anything in PATH changed within DAYS; a part `find` cannot read counts as changed."""
+    if days <= 0:
+        return False
+    minutes = f"-{max(1, round(days * 1440))}"
+    p = subprocess.run(["find", str(path), "-mmin", minutes, "-print", "-quit"], capture_output=True, text=True)
+    return p.returncode != 0 or bool(p.stdout.strip())
+
+
+def build_plan(days: float) -> list[tuple[Path, int]]:
+    """The build directories prune removes, with their sizes: those of worktrees no open quest owns
+    (main checkouts and the job store are not worktrees here) that nothing changed in for DAYS."""
+    found = [
+        d
+        for wt in machine_worktrees()
+        if wt["quest"] != "open"
+        for d in build_dirs(wt["path"])
+        if not changed_within(d, days)
+    ]
+    sizes = disk_sizes(found)
+    return [(d, sizes.get(d, 0)) for d in found]
+
+
+def disk_floor(c: Campaign | None = None) -> float:
+    """GiB of free disk under which check and the daily prune warn: $CAMPAIGN_DISK_WARN_GB, else the
+    campaign's disk_warn, else (the worker) the largest of the machine's campaigns, else DISK_WARN_GB."""
+    if os.environ.get("CAMPAIGN_DISK_WARN_GB"):
+        return float(os.environ["CAMPAIGN_DISK_WARN_GB"])
+    states = [c.state] if c else [o["state"] for o in campaigns().values()]
+    return max((float(x.get("disk_warn", DISK_WARN_GB)) for x in states), default=DISK_WARN_GB)
+
+
+def disk_consumers() -> list[tuple[str, int, str]]:
+    """What the campaigns know fills the disk, largest first: (what, bytes, the command that reclaims
+    it). Measured with `du` at most once an hour (a prune or sweep measures again)."""
+    cache = jobs_dir() / "disk.json"
+    with contextlib.suppress(CampaignError):
+        cached = read_json(cache)
+        if cached and time.time() - float(cached.get("at", 0)) < 3600:
+            return [(str(w), int(n), str(cmd)) for w, n, cmd in cached["consumers"]]
+    groups: dict[tuple[str, str], list[Path]] = {}
+    store = jobs_dir()
+    if store.is_dir():
+        groups["the job store's jobs", "campaign job prune"] = [x for x in store.iterdir() if x.name != "slots"]
+    if (store / "slots").is_dir():
+        groups["build slots", "campaign job prune"] = [store / "slots"]
+    for wt in machine_worktrees():
+        if wt["quest"] != "open":
+            key = (f"build dirs in {wt['repo'].name}'s worktrees", "campaign job prune --build-days 0")
+            groups.setdefault(key, []).extend(build_dirs(wt["path"]))
+    ccache = Path(os.environ.get("CCACHE_DIR") or Path.home() / ".ccache")
+    if ccache.is_dir():
+        groups["ccache", "ccache --evict-older-than 7d"] = [ccache]
+    sizes = disk_sizes([x for paths in groups.values() for x in paths])
+    rows = sorted(
+        ((what, sum(sizes.get(x, 0) for x in paths), cmd) for (what, cmd), paths in groups.items()),
+        key=lambda row: -row[1],
+    )
+    write_json(cache, {"at": time.time(), "consumers": rows})
+    return rows
+
+
+def disk_warning(where: Path, floor: float) -> str:
+    """A warning when WHERE's disk has under FLOOR GiB free, naming the five largest consumers the
+    campaigns know and what reclaims each; "" otherwise."""
+    disk = shutil.disk_usage(where)
+    if disk.free >= floor * 2**30:
+        return ""
+    top = ", ".join(f"{what} {size_text(n)} (`{cmd}`)" for what, n, cmd in disk_consumers()[:5] if n)
+    return (
+        f"{disk.free / 2**30:.0f} GiB free ({disk.free / disk.total:.0%}) on {where}'s disk, under {floor:g} GiB "
+        f"(`campaign config disk_warn=N`); largest: {top or 'none the campaigns know'}; "
+        "`campaign sweep` removes merged worktrees"
+    )
+
+
+def process_dirs() -> list[Path] | None:
+    """The working directories of this user's processes, or None where the host shows none."""
+    if Path("/proc/self/cwd").exists():
+        found: list[Path] = []
+        for d in Path("/proc").iterdir():
+            if d.name.isdigit():
+                with contextlib.suppress(OSError):
+                    found.append(Path(os.readlink(d / "cwd")))
+        return found
+    if not shutil.which("lsof"):
+        return None
+    p = subprocess.run(["lsof", "-w", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fn"], capture_output=True, text=True)
+    return [Path(line[1:]) for line in p.stdout.splitlines() if line.startswith("n/")]
+
+
+def sweep_plan() -> list[Json]:
+    """The worktrees `campaign sweep` removes or keeps: of the known repositories, on a branch merged
+    into main or of a landed or dropped quest, and no open quest's. Each says why it stays (why), and
+    lists the files its .scratch holds."""
+    cwds = process_dirs()
+    jobs = all_jobs()
+    out: list[Json] = []
+    for wt in machine_worktrees():
+        path, repo, branch = wt["path"], wt["repo"], wt["branch"]
+        if wt["quest"] == "open" or not branch:
+            continue
+        try:
+            merged = ancestor(repo, branch, main_branch(repo))
+        except CampaignError:  # no main branch
+            merged = False
+        if not merged and wt["quest"] not in ("landed", "dropped"):
+            continue
+        dirty = git(path, "status", "--porcelain", check=False)
+        busy = cwds is not None and any(x == path or path in x.parents for x in cwds)
+        readers = readers_of(path, jobs)
+        why = (
+            "uncommitted or untracked files"
+            if dirty
+            else "this host shows no process's directory (no /proc, no lsof)"
+            if cwds is None
+            else "a process runs in it"
+            if busy
+            else f"job {', '.join(readers)} reads from it"
+            if readers
+            else ""
+        )
+        scratch = path / ".scratch"
+        files: list[str] = []
+        if scratch.is_dir():
+            files = sorted(str(f.relative_to(path)) for f in scratch.rglob("*") if f.is_file())
+        out.append({**wt, "merged": merged, "why": why, "scratch": files})
+    return out
+
+
+def cmd_sweep(a: argparse.Namespace) -> int:
+    """Removes clean worktrees of merged branches and finished quests, and their merged branches."""
+    plan = sweep_plan()
+    going = [w for w in plan if not w["why"] and (a.force or not w["scratch"])]
+    sizes = disk_sizes([w["path"] for w in going])
+    removed = 0
+    for w in plan:
+        path, repo, branch = w["path"], w["repo"], w["branch"]
+        label = f"{path} ({branch}, {'merged' if w['merged'] else w['quest']})"
+        shown = ", ".join(w["scratch"][:5]) + (", ..." if len(w["scratch"]) > 5 else "")
+        if w["why"]:
+            print(f"keep {label}: {w['why']}")
+            continue
+        if w not in going:
+            print(
+                f"keep {label}: .scratch holds {plural(len(w['scratch']), 'file')} ({shown}); commit what is "
+                "reusable, then --force"
+            )
+            continue
+        size = size_text(sizes.get(path, 0))
+        if a.dry_run:
+            print(f"remove {label}  {size}")
+            continue
+        r = subprocess.run(["git", "-C", str(repo), "worktree", "remove", str(path)], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"keep {label}: git refused: {(r.stderr or r.stdout).strip()}")
+            continue
+        removed += 1
+        line = f"removed worktree {label} ({size})"
+        if w["merged"]:
+            gone = git_ok(repo, "branch", "-q", "-d", branch)
+            line += f" and branch {branch}" if gone else f"; kept branch {branch}: `git branch -d` refused"
+        print(line)
+        with open(jobs_dir() / "prune.log", "a") as log:
+            log.write(f"{stamp()} {line}\n")
+    total = size_text(sum(sizes.get(w["path"], 0) for w in going))
+    if a.dry_run:
+        print(f"would remove {plural(len(going), 'worktree')} ({total}) and keep {len(plan) - len(going)}")
+    else:
+        (jobs_dir() / "disk.json").unlink(missing_ok=True)
+        print(f"removed {plural(removed, 'worktree')} and kept {len(plan) - removed}")
     return 0
 
 
@@ -5596,12 +5880,13 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "config",
-        "show or set campaign-wide settings: ci, ci_later, peers, outbox",
+        "show or set campaign-wide settings: ci, ci_later, peers, outbox, disk_warn",
         "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE "
         "assignments, sets them (from the home's main checkout). ci=github makes landing wait for green GitHub "
         "CI; ci_later=WORKFLOW,... names workflows that do not gate it. peers=NAME=URL,... names campaigns on "
         "other machines and where their outboxes are (a repository they push to); outbox=REMOTE is where this "
-        "campaign pushes its own (default origin).",
+        "campaign pushes its own (default origin). disk_warn=GIB is the free disk under which `check` warns "
+        "(default 100; the worker's daily prune uses the largest any campaign sets).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -5738,10 +6023,26 @@ def parser() -> argparse.ArgumentParser:
         "contradictions between state, git, worktrees and jobs",
         "Reports errors and warnings where state.json, git, the worktrees and the job records disagree, and "
         "what other campaigns on this machine overlap; exits 1 on an error. Notes report what is left behind: "
-        "landed quests not cleaned, what `job prune` would do, jobs of campaigns this machine does not know; a "
-        "warning, free disk under CAMPAIGN_DISK_MIN_GB (default 20). It changes nothing.",
+        "landed quests not cleaned, what `job prune` would do to jobs, jobs of campaigns this machine does not "
+        "know; a warning, free disk under disk_warn (`campaign config`, default 100 GiB), naming the five "
+        "largest consumers the campaigns know and what reclaims each. It changes nothing.",
     )
     p.set_defaults(fn=cmd_check)
+
+    p = command(
+        "sweep",
+        "remove clean worktrees of merged branches and finished quests",
+        "Lists the worktrees of the repositories this machine's campaigns use (outside the job store, never an "
+        "unfinished quest's) whose branch is merged into main or whose quest landed or was dropped, and removes "
+        "each with `git worktree remove`, deleting its branch when merged. It keeps a worktree with "
+        "uncommitted or untracked files, one a process runs in, one a job reads from, and one whose .scratch "
+        "holds files unless --force (commit reusable .scratch files first). Removals are logged in the job "
+        "store's prune.log.",
+        parents=False,
+    )
+    p.add_argument("--dry-run", action="store_true", help="list what it would remove or keep, with sizes")
+    p.add_argument("--force", action="store_true", help="remove worktrees whose .scratch holds files too")
+    p.set_defaults(fn=cmd_sweep)
 
     p = command(
         "verify",
@@ -5986,11 +6287,20 @@ def parser() -> argparse.ArgumentParser:
         "deferred check, journal or review): their kept checkouts and output files over 1 MiB go, their spec, "
         "state, log and smaller outputs stay, and they are never reused by identity again. Jobs of quests not "
         "landed or dropped, and of campaigns this machine does not know, are kept whole. Build slots no open "
-        "quest uses go too. Each deletion is logged in the job store's prune.log. The worker runs this with its "
+        "quest uses go too, and the build directories (build, build-*, .deps, _deps, ignored by git) of worktrees "
+        "of the campaigns' repositories that no unfinished quest owns, once nothing in them changed for "
+        "--build-days. Each deletion is logged in the job store's prune.log. The worker runs this with its "
         "defaults once a day when its queue empties (CAMPAIGN_AUTO_PRUNE=0 turns that off).",
     )
     p.add_argument(
         "--days", type=float, default=14, metavar="N", help="keep jobs that ended within N days (default 14)"
+    )
+    p.add_argument(
+        "--build-days",
+        type=float,
+        default=BUILD_DAYS,
+        metavar="N",
+        help=f"keep build directories changed within N days (default {BUILD_DAYS:g})",
     )
     p.add_argument("--dry-run", action="store_true", help="list what would be deleted")
     p.set_defaults(fn=cmd_job_prune)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -448,6 +449,7 @@ class Prune(CampaignCase):
 
     def test_the_worker_prunes_once_a_day_when_its_queue_empties(self) -> None:
         self.env["CAMPAIGN_AUTO_PRUNE"] = "1"
+        self.env["CAMPAIGN_DISK_WARN_GB"] = str(10**9)
         mark = self.root / "jobs" / ".pruned"
         mark.parent.mkdir(exist_ok=True)
         mark.touch()  # pruned today: the first run leaves the store alone
@@ -458,6 +460,7 @@ class Prune(CampaignCase):
         log = self.root / "jobs" / "prune.log"
         self.wait_until(lambda: not (self.root / "jobs" / old).exists())
         self.wait_until(lambda: log.exists() and f"deleted {old}" in log.read_text())  # logged after deleting
+        self.wait_until(lambda: "warning: " in log.read_text())  # and under disk_warn, the disk's consumers
         again = self.submit(self.home, "--sync", "--", "true again")
         self.age(again, 30)
         self.ok(self.home, "wait", self.submit(self.home, "--", "true last"))
@@ -511,6 +514,105 @@ class Slots(CampaignCase):
         held = sorted(tuple(map(float, x.read_text().split())) for x in spans)
         for (_, end), (start, _) in zip(held, held[1:]):
             self.assertGreaterEqual(start, end, f"two runners held the slot at once: {held}")
+
+
+class Disk(CampaignCase):
+    def aged(self, path: Path, days: float = 10) -> None:
+        then = time.time() - days * 86400
+        for d, dirs, files in os.walk(path, topdown=False):
+            for name in [*files, *dirs]:
+                os.utime(Path(d) / name, (then, then), follow_symlinks=False)
+        os.utime(path, (then, then))
+
+    def built(self, *dirs: Path, days: float = 10) -> None:
+        for d in dirs:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "obj.o").write_bytes(b"x" * 300_000)
+            if days:
+                self.aged(d, days)
+
+    def landed(self, pid: str) -> Path:
+        wt = self.started(pid, files="app.py")
+        self.commit(wt, {"app.py": f"print('{pid}')\n"})
+        self.verified(pid)
+        self.ok(self.home, "land", pid, "--keep")
+        return wt
+
+    def test_prune_removes_idle_build_dirs_only_outside_open_quests(self) -> None:
+        self.commit(self.home, {"build-tools/gen.py": "X = 1\n"})  # tracked, then ignored by the pattern
+        self.commit(self.home, {".gitignore": "build/\nbuild-*/\n.deps/\n.scratch/\n"})
+        done = self.landed("done")
+        current = self.started("current", files="README.md")
+        manual = self.root / "manual"
+        self.git(self.home, "worktree", "add", "-q", "-b", "manual", str(manual))
+        probe = self.home / ".scratch" / "probe-wt"  # a review's probe, kept in a .scratch
+        self.git(self.home, "worktree", "add", "-q", "--detach", str(probe))
+        self.built(done / "build", done / "build-tools", done / "_deps", done / ".scratch", manual / ".deps")
+        self.built(probe / "build")
+        self.built(current / "build", self.home / "build")  # an open quest's, the main checkout's
+        self.built(done / "build-asan", days=0)  # changed today
+        (done / "notes.txt").write_text("untracked source\n")
+        dry = self.ok(self.home, "job", "prune", "--dry-run").out
+        self.assertRegex(dry, rf"build {re.escape(str(done / 'build'))}  \d+ MiB")
+        self.assertIn("2 build dirs", dry)
+        self.assertTrue((done / "build").exists() and (manual / ".deps").exists(), "a dry run deleted")
+        out = self.ok(self.home, "job", "prune").out
+        self.assertIn("2 build dirs", out)
+        self.assertFalse((done / "build").exists())
+        self.assertFalse((manual / ".deps").exists())
+        for kept in (
+            done / "build-asan",
+            done / "build-tools" / "gen.py",
+            done / "build-tools" / "obj.o",
+            done / "_deps",
+            done / ".scratch" / "obj.o",
+            done / "notes.txt",
+            done / "app.py",
+            current / "build",
+            self.home / "build",
+            probe / "build",
+        ):
+            self.assertTrue(kept.exists(), f"prune deleted {kept}")
+        log = (self.root / "jobs" / "prune.log").read_text()
+        self.assertIn(f"removed build dir {done / 'build'} (", log)
+        self.assertIn(f"removed build dir {manual / '.deps'} (", log)
+
+    def test_sweep_removes_clean_merged_worktrees_and_keeps_the_rest(self) -> None:
+        self.commit(self.home, {".gitignore": ".scratch/\n"})
+        clean = self.landed("clean")
+        probed = self.landed("probed")
+        (probed / ".scratch").mkdir()
+        (probed / ".scratch" / "model.py").write_text("reusable\n")
+        current = self.started("current", files="README.md")  # at main, so merged, but open
+        extra = {name: self.root / name for name in ("dirty", "busy", "wip")}
+        for name, path in extra.items():
+            self.git(self.home, "worktree", "add", "-q", "-b", name, str(path))
+        (extra["dirty"] / "notes.txt").write_text("untracked\n")
+        self.commit(extra["wip"], {"wip.py": "X = 1\n"})  # not merged, no quest
+        sleeper = subprocess.Popen(["sleep", "60"], cwd=extra["busy"])
+        try:
+            dry = self.ok(self.home, "sweep", "--dry-run").out
+            self.assertIn(f"remove {clean} (quest/demo/clean, merged)", dry)
+            self.assertIn(f"keep {probed} (quest/demo/probed, merged): .scratch holds 1 file (.scratch/model.py)", dry)
+            self.assertIn(f"keep {extra['dirty']} (dirty, merged): uncommitted or untracked files", dry)
+            self.assertIn(f"keep {extra['busy']} (busy, merged): a process runs in it", dry)
+            self.assertNotIn(str(current), dry)
+            self.assertNotIn(str(extra["wip"]), dry)
+            self.assertTrue(clean.exists(), "a dry run removed a worktree")
+            out = self.ok(self.home, "sweep").out
+            self.assertIn(f"removed worktree {clean} (quest/demo/clean, merged)", out)
+            self.assertFalse(clean.exists())
+            self.assertFalse(self.git(self.home, "branch", "--list", "quest/demo/clean"))
+            self.assertTrue((probed / ".scratch" / "model.py").exists())
+            self.ok(self.home, "sweep", "--force")
+            self.assertFalse(probed.exists())
+            for path in (current, *extra.values()):
+                self.assertTrue(path.exists(), f"sweep removed {path}")
+            self.assertTrue((extra["dirty"] / "notes.txt").exists())
+            self.assertIn(f"removed worktree {clean}", (self.root / "jobs" / "prune.log").read_text())
+        finally:
+            sleeper.kill()
+            sleeper.wait()
 
 
 class Contention(CampaignCase):

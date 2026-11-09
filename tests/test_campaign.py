@@ -953,7 +953,7 @@ class DirectPath(CampaignCase):
         self.ok(self.home, "check")
 
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
-        self.assertEqual(self.ok(self.home, "config").out, "ci=\nci_later=\npeers=\noutbox=\n")
+        self.assertEqual(self.ok(self.home, "config").out, "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\n")
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
         wt = self.started("fix", files="app.py", check="unit=true")
@@ -2009,9 +2009,18 @@ class Recovery(CampaignCase):
         out = self.ok(self.home, "check").out
         self.assertIn("still have worktrees or branches: fix", out)
         self.assertIn("would delete 1 job", out)
-        self.env["CAMPAIGN_DISK_MIN_GB"] = str(10**9)
+        self.env.pop("CAMPAIGN_DISK_WARN_GB")  # the campaign's disk_warn decides
+        self.env["CCACHE_DIR"] = str(self.root / "ccache")
+        (self.root / "ccache").mkdir()
+        (self.root / "ccache" / "blob").write_bytes(b"x" * 3_000_000)
+        self.ok(self.home, "config", "disk_warn=100000")
+        self.assertEqual(self.ok(self.home, "config", "disk_warn").out.strip(), "100000")
         out = self.ok(self.home, "check").out
         self.assertIn("GiB free", out)
+        self.assertIn("under 100000 GiB", out)
+        self.assertIn("largest: ccache 3 MiB (`ccache --evict-older-than 7d`), the job store's jobs", out)
+        self.ok(self.home, "config", "disk_warn=0")
+        self.assertNotIn("GiB free", self.ok(self.home, "check").out)
 
 
 class Map(CampaignCase):

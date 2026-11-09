@@ -97,7 +97,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 Retries are off by default because a command may not be safe to run twice; checks queued by
 `campaign verify` retry once.
 
-`campaign job prune [--days N] [--dry-run]` acts on finished jobs that ended more than N days ago
+`campaign job prune [--days N] [--build-days N] [--dry-run]` acts on finished jobs that ended more than N days ago
 (14). It keeps whole every job of a quest not landed or dropped and every job such a quest's
 journals, reviews, gates or confirmations name, in any campaign on the machine, and every job of a
 campaign the machine does not know (a home moved by hand). It slims a job only landed or dropped
@@ -107,6 +107,36 @@ by identity again. It deletes the rest, with their checkouts and identity links,
 slots no open quest uses. Every deletion and slimming is logged in the job store's `prune.log`.
 The worker runs it with these defaults once a day when its queue empties; `CAMPAIGN_AUTO_PRUNE=0`
 turns that off.
+
+## Disk
+
+Every disk rule acts on the repositories the machine's campaigns use (their homes and quest
+repositories) and on their linked worktrees outside the job store and outside any `.scratch` (a
+review's probe). A worktree an unfinished quest
+of any campaign owns, by branch or path, is open; main checkouts are never touched.
+
+- **Build directories.** `campaign job prune` also deletes the regenerable build directories
+  (`BUILD_DIRS`: `build`, `build-*`, `.deps`, `_deps`) at the top of every worktree that is not
+  open, when git ignores the directory whole (no tracked or unignored file inside) and nothing in
+  it changed for `--build-days` (3). It never touches source files, tracked or untracked, or a
+  worktree's `.scratch`. Each deletion is logged with its size in `prune.log`; `--dry-run` lists
+  them with sizes.
+- **Worktrees.** `campaign sweep [--dry-run] [--force]` removes, with `git worktree remove` (never
+  `--force`), each worktree that is not open and whose branch is merged into main or whose quest
+  landed or was dropped, and deletes its branch with `git branch -d` when merged. It keeps a
+  worktree with uncommitted or untracked files, one a process runs in (a process's working
+  directory, from `/proc` or `lsof`), and one a job's command, directory or environment names. A
+  worktree whose `.scratch` holds files is listed with them and kept unless `--force`: commit the
+  reusable ones first. Removals are logged in `prune.log`; detached worktrees are left alone.
+- **Free disk.** `campaign check` warns when the home's disk has less than `disk_warn` GiB free
+  (`campaign config disk_warn=N`, default 100; `CAMPAIGN_DISK_WARN_GB` overrides it), naming the
+  five largest consumers the campaigns know with their sizes and what reclaims each: the job
+  store's jobs and its build slots (`campaign job prune`), the build directories of each
+  repository's worktrees (`campaign job prune --build-days 0`), and `~/.ccache` or `$CCACHE_DIR`
+  (`ccache --evict-older-than 7d`). The worker's daily prune gives the same warning, at the
+  largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed. Sizes
+  come from `du` and are reused for an hour (a prune or sweep measures again). Below 5 GiB free,
+  `quiet` admits no hold at all.
 
 ## quiet: host holds
 

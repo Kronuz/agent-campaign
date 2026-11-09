@@ -240,8 +240,10 @@ host and toolchain: name a mutable input (a dataset version) with `--env`, and r
 `--force` what depends on more. A strict or exclusive job lasts at most 30 minutes and is stopped at
 its deadline. Every process a job starts dies with it. A worker starts by itself and exits when
 the queue is empty, pruning once a day: jobs nothing names go after 14 days, and jobs evidence
-names keep their record and lose only bulky outputs (`campaign job prune`). Mechanics:
-`references/host.md`.
+names keep their record and lose only bulky outputs (`campaign job prune`). The same prune deletes
+build directories idle 3 days in worktrees no open quest owns; `campaign sweep` removes clean
+worktrees of merged or finished work; `campaign check` warns under `disk_warn` free GiB (100) with
+the largest consumers. Mechanics: `references/host.md`.
 
 ## Integration
 

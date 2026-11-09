@@ -1,11 +1,11 @@
 {
   "group: core": {
-    "words": 3281,
-    "tokens": 5151
+    "words": 3318,
+    "tokens": 5211
   },
   "group: references": {
-    "words": 7636,
-    "tokens": 11909
+    "words": 7987,
+    "tokens": 12485
   },
   "group: agents": {
     "words": 715,
@@ -20,8 +20,8 @@
     "tokens": 377
   },
   "lead": {
-    "words": 3281,
-    "tokens": 5151
+    "words": 3318,
+    "tokens": 5211
   },
   "lead, launching": {
     "words": 982,
