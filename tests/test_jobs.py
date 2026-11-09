@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import CampaignCase, alive, campaign_module, session_members
+from harness import CAMPAIGN, CampaignCase, alive, campaign_module, session_members
 
 
 class Races(unittest.TestCase):
@@ -463,6 +463,54 @@ class Prune(CampaignCase):
         self.ok(self.home, "wait", self.submit(self.home, "--", "true last"))
         time.sleep(1)  # the worker empties its queue and exits
         self.assertTrue((self.root / "jobs" / again).exists(), "the worker pruned twice in a day")
+
+
+class Slots(CampaignCase):
+    def test_jobs_sharing_a_slot_take_turns_without_holding_up_others(self) -> None:
+        go = self.root / "go"
+        first = self.submit(self.home, "--slot", "s", "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        second = self.submit(self.home, "--slot", "s", "--", "true second")
+        other = self.submit(self.home, "--", "true other")
+        self.ok(self.home, "wait", other, "--timeout", "30")  # the queued slot job holds no one up
+        self.wait_until(lambda: self.job(first)["state"] == "running")
+        time.sleep(1)  # several worker ticks
+        self.assertEqual(self.job(second)["state"], "queued", "a second job entered a busy slot")
+        go.touch()
+        self.ok(self.home, "wait", first, second, "--timeout", "60")
+        self.assertGreaterEqual(self.job(second)["started"], self.job(first)["ended"])
+
+    def test_runners_breaking_a_dead_lock_at_once_take_the_slot_one_at_a_time(self) -> None:
+        slot, go = self.root / "jobs" / "slots" / "s", self.root / "go"
+        stale = slot.with_name("s.lock")
+        stale.mkdir(parents=True)
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        (stale / "pid").write_text(str(dead.pid))  # a runner that died holding it
+        helper = self.root / "contend.py"
+        helper.write_text(
+            "import importlib.util, os, sys, time\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(CAMPAIGN.parent)!r})\n"
+            f"spec = importlib.util.spec_from_file_location('campaign', {str(CAMPAIGN)!r})\n"
+            "m = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+            f"while not os.path.exists({str(go)!r}):\n"
+            "    time.sleep(0.01)\n"
+            f"m.slot_lock(Path({str(slot)!r}), Path(sys.argv[2] + '.beat'))\n"
+            "began = time.time()\n"
+            "time.sleep(0.3)\n"
+            "Path(sys.argv[2]).write_text(f'{began} {time.time()}')\n"
+        )
+        spans = [self.root / f"span{i}" for i in range(6)]
+        # the command line names _run, as a runner's does: the old lock judged its holder by it
+        procs = [subprocess.Popen([sys.executable, str(helper), "_run", str(x)]) for x in spans]
+        time.sleep(1)  # every contender is importing or waiting at the start line
+        go.touch()
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=60), 0)
+        held = sorted(tuple(map(float, x.read_text().split())) for x in spans)
+        for (_, end), (start, _) in zip(held, held[1:]):
+            self.assertGreaterEqual(start, end, f"two runners held the slot at once: {held}")
 
 
 class Contention(CampaignCase):

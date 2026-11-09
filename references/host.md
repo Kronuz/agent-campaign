@@ -51,8 +51,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   passed at the quest's current code.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (untracked build outputs stay, which is
-  the point), and one job uses it at a time. `campaign verify` uses
-  a slot per quest, except for critical quests and `--fresh`, which check out afresh.
+  the point), and one job uses it at a time: the worker starts no job whose slot a running job
+  holds, in any campaign, and starts the jobs behind it instead; the runner holds the slot's lock
+  (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify` uses a slot
+  per quest, except for critical quests and `--fresh`, which check out afresh.
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,

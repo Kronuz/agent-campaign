@@ -30,7 +30,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TextIO
 
 import report
 from style import add_help, mark, paint, show_help, styled
@@ -4381,23 +4381,52 @@ def worktree_remove(repo: str, path: Path) -> None:
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True)
 
 
-def slot_lock(slot: Path, beat: Path) -> None:
+_slot_locks: dict[str, TextIO] = {}  # this runner's slot lock: the kernel drops it when the runner dies
+
+
+def slot_lock_try(slot: Path) -> TextIO | None:
+    """SLOT's lock file, open and locked, or None while another process holds it. A lock file that was
+    unlinked after this opened it is retried: the lock is the file at the path now."""
     lock = slot.with_name(slot.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
     while True:
+        if lock.is_dir():  # an older runner's lock: wait while the runner its pid names lives
+            with contextlib.suppress(FileNotFoundError, ValueError):
+                if not runs(int((lock / "pid").read_text()), " _run "):
+                    shutil.rmtree(lock, ignore_errors=True)
+            if lock.is_dir():
+                return None
         try:
-            lock.mkdir(parents=True)
-            (lock / "pid").write_text(str(os.getpid()))
-            return
-        except FileExistsError:
-            try:
-                holder = int((lock / "pid").read_text())
-            except (FileNotFoundError, ValueError):
-                holder = 0
-            if holder and not runs(holder, " _run "):
-                shutil.rmtree(lock, ignore_errors=True)
-                continue
-            beat.touch()
-            time.sleep(2)
+            fh = open(lock, "a")  # noqa: SIM115 - held past this function: it is the lock
+        except IsADirectoryError:
+            continue
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            return None
+        with contextlib.suppress(FileNotFoundError):
+            if os.stat(lock).st_ino == os.fstat(fh.fileno()).st_ino:
+                return fh
+        fh.close()
+
+
+def slot_idle(slot: Path) -> bool:
+    """Whether no job holds SLOT's lock."""
+    if not slot.with_name(slot.name + ".lock").exists():
+        return True
+    fh = slot_lock_try(slot)
+    if fh is not None:
+        fh.close()
+    return fh is not None
+
+
+def slot_lock(slot: Path, beat: Path) -> None:
+    """Holds SLOT's lock until this runner releases it or dies: one job builds in a slot at a time."""
+    while (fh := slot_lock_try(slot)) is None:
+        beat.touch()
+        time.sleep(0.5)
+    _slot_locks[slot.name] = fh
 
 
 def prepare(spec: Json, d: Path) -> Path:
@@ -4426,12 +4455,11 @@ def prepare(spec: Json, d: Path) -> Path:
     return root / spec["cwd"]
 
 
-def release(spec: Json, d: Path, owner: int) -> None:
-    if spec.get("slot"):
-        lock = jobs_dir() / "slots" / (spec["slot"] + ".lock")
-        with contextlib.suppress(FileNotFoundError, ValueError):
-            if int((lock / "pid").read_text()) == owner:
-                shutil.rmtree(lock, ignore_errors=True)
+def release(spec: Json, d: Path) -> None:
+    """Drops this runner's slot lock, if it holds one, and the job's own checkouts unless it keeps them."""
+    fh = _slot_locks.pop(spec.get("slot") or "", None)
+    if fh is not None:
+        fh.close()
     if spec.get("commit") and not spec.get("keep"):
         worktree_remove(spec["repo"], d / "src")
         for name, ref in spec.get("refs", {}).items():
@@ -4481,7 +4509,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     try:
         cwd = prepare(spec, d)
     except CampaignError as e:
-        release(spec, d, me)
+        release(spec, d)
         (ad / "exit").write_text("125")
         finish(job, 125, "failed", f"could not prepare sources: {e}", fence=me)
         return 0
@@ -4552,7 +4580,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             kill_group(child, beat)
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
-    release(spec, d, me)
+    release(spec, d)
     state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "done" if code == 0 else "failed"
     finish(job, code, state, fence=me)
     return 0
@@ -4593,7 +4621,7 @@ def reap() -> None:
                     "recorded after its runner died",
                 )
                 continue
-            release(spec, d, int(st.get("runner", 0)))
+            release(spec, d)
             attempt = int(st.get("attempt", 1))
             if attempt <= int(spec.get("retries", 0)):
                 shutil.rmtree(d / "claim", ignore_errors=True)
@@ -4658,6 +4686,11 @@ def cmd_window(a: argparse.Namespace) -> int:
     until = window_until()
     print(f"window open until {stamp(until)}" if until else "no window open")
     return 0
+
+
+def slot_of(spec: Json) -> str:
+    """The build slot a job checks its commit out in, or "" when it has its own checkout."""
+    return str(spec.get("slot") or "") if spec.get("commit") else ""
 
 
 def camp(job: Json) -> str:
@@ -4741,6 +4774,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 key=lambda j: (-int(j["spec"].get("priority", 0)), j["id"]),
             )
             running = [j for j in jobs if states[j["id"]] == "running"]
+            busy = {slot_of(j["spec"]) for j in running} - {""}  # a slot is one build directory: one job at a time
             if not queued and not running:
                 if daily_prune((home / "heartbeat").touch):
                     continue  # whatever arrived while it pruned
@@ -4814,8 +4848,11 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     continue  # deferred work never takes every slot from the direct path
                 if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
                     continue  # its campaign has its share while another campaign waits
+                if slot_of(j["spec"]) in busy:
+                    continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
                 if claim(j):
                     spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")
+                    busy |= {slot_of(j["spec"])} - {""}
                     heavy = heavy or is_heavy
                     light += 0 if is_heavy or is_bare else 1
                     bare += 1 if is_bare else 0
@@ -5289,7 +5326,7 @@ def prune_plan(days: float) -> Json:
         if x.is_dir()
         and not x.name.endswith(".lock")
         and x.name not in needs["slots"]
-        and not x.with_name(x.name + ".lock").exists()
+        and slot_idle(x)
         and (mtime(x) or 0) < cutoff
     ]
     return plan
@@ -5336,10 +5373,15 @@ def prune(days: float, dry_run: bool = False, beat: Callable[[], None] = lambda:
             log.write(f"{stamp()} slimmed {j['id']} {j['spec'].get('what', '')}\n")
             beat()
         for x in plan["slots"]:
-            common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-            shutil.rmtree(x, ignore_errors=True)
-            if common:
-                git(Path(common).parent, "worktree", "prune", check=False)
+            fh = slot_lock_try(x)
+            if fh is None:
+                continue  # a job took it since the plan
+            with fh:
+                common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+                shutil.rmtree(x, ignore_errors=True)
+                if common:
+                    git(Path(common).parent, "worktree", "prune", check=False)
+                x.with_name(x.name + ".lock").unlink(missing_ok=True)  # a waiter that opened it retries
             log.write(f"{stamp()} removed slot {x.name}\n")
             beat()
     keys = jobs_dir() / "keys"
