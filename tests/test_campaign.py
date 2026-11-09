@@ -1443,6 +1443,12 @@ class Style(CampaignCase):
         self.assertTrue(any(g.startswith("check unit is not green") for g in quest["to_land"]), quest)
         self.assertEqual([(n["id"], n["by"]) for n in quest["messages"]], [("msg-1", "explorer")])
         self.assertEqual([f["job"] for f in quest["failed"]], [failed])
+        out = self.ok(self.home, "map").out
+        self.assertIn("- 🔥 **fix**", out)
+        self.assertIn(f"Failing: {failed} failed", out)
+        journal = wt / ".campaign/demo/journal/fix.md"
+        journal.write_text(journal.read_text() + f"\n{failed} failed on purpose: the overflow check.\n")
+        self.assertIn("- 🔨 **fix**", self.ok(self.home, "map").out, "a failure its journal names still burns")
         data = json.loads(self.ok(self.home, "brief", "--json").out)
         self.assertEqual(data["counts"]["planned"], 1)
         other = next(q for q in data["quests"] if q["id"] == "other")
@@ -1671,15 +1677,16 @@ class Map(CampaignCase):
         self.ok(self.home, "new", "open", "--title", "Open work", "--files", "README.md", "--milestone", "M1")
         self.ok(self.home, "land", "fix")
         written = (self.home / ".campaign/demo/MAP.md").read_text()
-        self.assertIn("- [x] 🏁 **fix**", written, "the landing did not refresh MAP.md")
+        self.assertIn("- ✅ **fix**", written, "the landing did not refresh MAP.md")
         out = self.ok(self.home, "map").out
         self.assertIn("- 🎯 Totals print right, in every locale\n", out)
         self.assertIn("## 🔨 M1: 1 of 2 landed", out)
-        self.assertIn("- [x] 🏁 **fix**: fix", out)
+        self.assertIn("- ✅ **fix**: fix", out)
+        self.assertIn("⚠️ landed, criteria left open", out)  # the legend
         self.assertIn("Outcome: Prints two instead of one.", out)
         self.assertIn("Result: Prints 2; 1.0 ms per call", out)
         self.assertIn("Docs: docs/mechanisms/print.md", out)
-        self.assertIn("- [ ] 📋 **open**: Open work", out)
+        self.assertIn("- 📋 **open**: Open work", out)
         self.assertNotIn("**open**", self.ok(self.home, "map", "fix").out)
         data = json.loads(self.ok(self.home, "map", "--json").out)
         self.assertEqual([q["id"] for q in data["milestones"][0]["quests"]], ["fix", "open"])
@@ -1718,9 +1725,7 @@ class Map(CampaignCase):
         self.assertEqual(record["unverified"], [], "work verified before the campaign is listed as unverified")
         self.assertIn("(before the campaign)", self.ok(self.home, "status", "pins").out)
         out = self.ok(self.home, "map").out
-        self.assertIn(
-            "- [x] 🏁 **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out
-        )
+        self.assertIn("- ⚠️ **pins**: Pins at head (normal risk, landed before the campaign 2026-10-01 at app:", out)
         self.assertIn("; left open: A2)", out)
         self.assertIn("Result: All 12 pins at head; CI green.", out)
         self.assertNotIn("none yet", out)  # reviewed by the process of its time

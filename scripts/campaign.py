@@ -63,6 +63,7 @@ SET_STATUS: dict[str, tuple[str, ...]] = {  # what `campaign set status=` may mo
     "landed": (),
 }
 TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped", "corrupt")
+FAILED = ("failed", "timeout", "interrupted")
 HEAVY = ("strict", "exclusive")
 DEFERRED_HEAVY_MAX = 10  # minutes: a gate job never waits longer behind a deferred measurement
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
@@ -2221,16 +2222,6 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["missing"] = [f"blocked: {p.get('reason', '')}"]
     repo = c.repo(p)
     mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident]
-    # failures count only at the code the quest has now; older ones are history (`campaign job list`)
-    heads = set()
-    if p["status"] in FLIGHT:
-        heads = {code_tree(repo, rev(repo, b)) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)}
-
-    def at_head(j: Json) -> bool:
-        with contextlib.suppress(CampaignError, KeyError):
-            return code_tree(Path(j["spec"]["repo"]), j["spec"]["commit"]) in heads
-        return False
-
     view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
     view["landed"] = [
         x["commit"][:12]
@@ -2292,16 +2283,34 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
         }
-    ended = [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
+    ended = ended_at_head(c, pid, mine)
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
     view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
     noted = "\n".join(texts.values())
     view["bad_at_head"] = [
         {**job_summary(j), "check": j["id"] in checked, "noted": j["id"] in noted}
         for j in ended
-        if j["state"].get("state") in ("failed", "timeout", "interrupted")
+        if j["state"].get("state") in FAILED
     ]
     return view
+
+
+def ended_at_head(c: Campaign, pid: str, jobs: list[Json]) -> list[Json]:
+    """The quest's finished jobs at the code its branches have now; failures count only there, older
+    ones are history (`campaign job list`)."""
+    p = c.quests[pid]
+    if p["status"] not in FLIGHT:
+        return []
+    repo = c.repo(p)
+    heads = {code_tree(repo, rev(repo, b)) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)}
+
+    def at_head(j: Json) -> bool:
+        with contextlib.suppress(CampaignError, KeyError):
+            return code_tree(Path(j["spec"]["repo"]), j["spec"]["commit"]) in heads
+        return False
+
+    mine = (j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident)
+    return [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
 
 
 def acceptance(acc: Json, now: str) -> str:
@@ -2336,9 +2345,10 @@ def plan_milestones(c: Campaign) -> list[Json]:
     return rows
 
 
-def quest_map(c: Campaign, pid: str) -> Json:
+def quest_map(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     """A quest as the map shows it: its intent (the quest file's Outcome), its result (the journal's
-    Result), the documents its landing added to its repository, its criteria and reviews."""
+    Result), the documents its landing added to its repository, its criteria and reviews, and the jobs
+    that failed at its current code with no journal naming them."""
     p = c.quests[pid]
     repo = c.repo(p)
     wanted = criteria(c, pid)
@@ -2354,6 +2364,7 @@ def quest_map(c: Campaign, pid: str) -> Json:
     for name, branch, rel, _ in branches(c, pid):
         journals.setdefault(name, journal_text(c, name, branch, rel))
     journal = journals.get(pid, "")
+    rows: dict[str, list[Json]] = {}
     if final and not final[-1].get("unverified") and not final[-1].get("earlier"):
         met = set(wanted)  # landing required every criterion
     elif final:  # recorded after the fact, or before the campaign: what its journal's evidence proves
@@ -2402,7 +2413,14 @@ def quest_map(c: Campaign, pid: str) -> Json:
         "outcome": first_paragraph(section(c.quest_file(pid), "Outcome")),
         "result": "\n".join(x for x in section(journal, "Result").strip().splitlines() if not x.startswith("<")),
         "docs": docs,
-        "criteria": [{"id": x, "text": w["text"], "met": x in met} for x, w in wanted.items()],
+        "criteria": [
+            {"id": x, "text": w["text"], "met": x in met, "listed": bool(rows.get(x))} for x, w in wanted.items()
+        ],
+        "failing": [
+            {"job": j["id"], "state": j["state"]["state"], "what": job_summary(j)["what"]}
+            for j in ended_at_head(c, pid, jobs)
+            if j["state"]["state"] in FAILED and j["id"] not in "\n".join(journals.values())
+        ],
         "reviews": reviews,
         "next": "" if final else next_step(journal),
         "blocked": "" if final or re.match(r"nothing\b", blocked, re.I) else blocked,
@@ -2414,8 +2432,9 @@ def map_data(c: Campaign, only: str = "") -> Json:
     quests in no milestone, and the dropped ones."""
     if only:
         c.quest(only)
+    jobs = all_jobs()
     with frozen_heads():
-        quests = {pid: quest_map(c, pid) for pid in c.quests if not only or pid == only}
+        quests = {pid: quest_map(c, pid, jobs) for pid in c.quests if not only or pid == only}
     plan = c.home / c.meta / "PLAN.md"
     goals: list[str] = []
     for line in section(plan.read_text() if plan.exists() else "", "Goals").splitlines():
@@ -2461,11 +2480,30 @@ def map_data(c: Campaign, only: str = "") -> Json:
     }
 
 
+def quest_mark(q: Json) -> tuple[str, str]:
+    """A quest's emoji and color on the map: landed (with criteria left open or not), failing at its
+    current code with no journal naming it, or its status."""
+    if q["status"] == "landed":
+        return ("✅", "green") if all(x["met"] for x in q["criteria"]) else ("⚠️", "yellow")
+    if q["failing"]:
+        return "🔥", "red"
+    tint, emoji = STAGES.get(q["status"], ("dim", "❔"))
+    return emoji, tint
+
+
+MAP_LEGEND = (
+    "✅ landed · ⚠️ landed, criteria left open · 🔥 failing · 🔍 in review · 🔨 active · 🚧 blocked · 📋 planned"
+)
+
+
 def milestone_mark(quests: list[Json]) -> tuple[str, str]:
-    """A milestone's emoji and color: done, under way, waiting only on blocked quests, or planned."""
+    """A milestone's emoji and color: done, failing, under way, waiting only on blocked quests, or
+    planned."""
     statuses = {q["status"] for q in quests}
     if not statuses:
         return "⬜", "dim"
+    if any(q["failing"] for q in quests):
+        return "🔥", "red"
     if statuses == {"landed"}:
         return "✅", "green"
     if statuses & {"landed", "active", "review"}:
@@ -2492,14 +2530,16 @@ def map_text(c: Campaign, only: str = "", color: bool = False) -> str:
             f"{m['landed']} of {plural(m['quests'], 'quest')} landed, {m['met']} of {criteria_count(m['criteria'])} "
             f"met. Generated by `campaign map` on {stamp()[:10]}; edit the quest files and journals, not this.",
             "",
+            p(MAP_LEGEND, "dim"),
+            "",
         ]
 
     def quest(q: Json, full: bool) -> list[str]:
         done = q["status"] == "landed"
         met = sum(1 for x in q["criteria"] if x["met"])
-        tint, emoji = STAGES.get(q["status"], ("dim", "❔"))
+        emoji, tint = quest_mark(q)
         name = p("**" + q["id"] + "**", "bold", tint)
-        head = f"- {p('[x]' if done else '[ ]', tint)} {emoji} {name}: {q['title']} "
+        head = f"- {emoji} {name}: {q['title']} "
         if done:
             left = [x["id"] for x in q["criteria"] if not x["met"]]
             landed = q["landed"]
@@ -2536,11 +2576,13 @@ def map_text(c: Campaign, only: str = "", color: bool = False) -> str:
             note("Next", q["next"], "cyan")
         if q["status"] == "blocked" and q["reason"]:
             note("Blocked", q["reason"], "red")
+        if q["failing"]:
+            note("Failing", "; ".join(f"{f['job']} {f['state']}: {f['what']}" for f in q["failing"]), "red")
         if full or q["status"] in ("active", "review"):
             for x in q["criteria"]:
                 text = x["text"] if full else x["text"].split(": ", 1)[0][:100]
-                box = p("[x]", "green") if x["met"] else p("[ ]", "yellow")
-                lines.append(f"  - {box} {x['id']} {text}")
+                sign = "✅" if x["met"] else "⏳" if x["listed"] else "⬜"
+                lines.append(f"  - {sign} {x['id']} {text}")
         return lines
 
     for g in m["milestones"]:
@@ -2627,7 +2669,7 @@ STAGES = {  # color and mark per quest status
     "active": ("cyan", "🔨"),
     "review": ("magenta", "🔍"),
     "blocked": ("red", "🚧"),
-    "landed": ("green", "🏁"),
+    "landed": ("green", "✅"),
     "dropped": ("dim", "🚫"),
 }
 JOB_MARKS = {
