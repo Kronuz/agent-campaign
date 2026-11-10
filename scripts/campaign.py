@@ -2635,7 +2635,9 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["docs_only"] = [
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)
-            if not x["cmd"].startswith(CI_CHECK) and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []))) and j.get("docs")
+            if not x["cmd"].startswith(CI_CHECK)
+            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", [])))
+            and j.get("docs")
         ]
         if brief:
             for name, branch, _, _ in branches(c, pid):
@@ -4246,9 +4248,7 @@ def tested_docs(spec: Json) -> list[str]:
     return list(state.get("tested_docs", [])) if isinstance(state, dict) else []
 
 
-def docs_only_ancestors(
-    repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()
-) -> list[tuple[str, list[str]]]:
+def docs_only_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()) -> list[tuple[str, list[str]]]:
     """COMMIT's first-parent ancestors whose code differs from COMMIT's only in documentation CMD does
     not name and no TESTED glob matches, nearest first, each with the paths that differ."""
     out: list[tuple[str, list[str]]] = []
@@ -5410,7 +5410,11 @@ def job_needs() -> Json:
             for _, branch, _, _ in branches(c, pid):
                 if has_ref(repo, branch):
                     head = rev(repo, branch)
-                    whole.update(j["id"] for j in (job_for_check(repo, head, x, c.state.get("tested_docs", [])) for x in gates(p)) if j)
+                    whole.update(
+                        j["id"]
+                        for j in (job_for_check(repo, head, x, c.state.get("tested_docs", [])) for x in gates(p))
+                        if j
+                    )
     return {"whole": whole, "record": record - whole, "open": open_quests, "slots": slots, "known": known}
 
 
