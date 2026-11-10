@@ -68,6 +68,7 @@ FAILED = ("failed", "timeout", "interrupted")
 HEAVY = ("strict", "exclusive")
 DEFERRED_HEAVY_MAX = 10  # minutes: a gate job never waits longer behind a deferred measurement
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
+UNSTARTED_ATTEMPTS = 3  # a runner that dies before the command starts is requeued, up to this many tries
 BEAT = float(os.environ.get("CAMPAIGN_HEARTBEAT_SECONDS", "15"))
 HOST = socket.gethostname().split(".")[0]
 
@@ -733,7 +734,7 @@ def note_lead() -> None:
         return
     try:
         c = find_campaign(Path.cwd())
-    except CampaignError:
+    except (CampaignError, OSError):  # OSError: run from a removed directory
         return
     entry = leads() / c.name
     seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}
@@ -4383,6 +4384,7 @@ def spawn(args: list[str], log: Path) -> subprocess.Popen[bytes]:
             stderr=fh,
             start_new_session=True,
             close_fds=True,
+            cwd=jobs_dir(),  # never the caller's directory: a removed worktree would break every runner
         )
 
 
@@ -4712,14 +4714,16 @@ def reap() -> None:
                 continue
             release(spec, d)
             attempt = int(st.get("attempt", 1))
-            if attempt <= int(spec.get("retries", 0)):
+            unstarted = not (attempt_dir(job) / "began").exists()  # its command never ran: safe to repeat
+            if attempt <= int(spec.get("retries", 0)) or (unstarted and attempt < UNSTARTED_ATTEMPTS):
                 shutil.rmtree(d / "claim", ignore_errors=True)
+                why = "lost its runner before its command started" if unstarted else "lost its runner"
                 write_json(
                     d / "state.json",
                     {
                         "state": "queued",
                         "attempt": attempt + 1,
-                        "note": f"requeued at {stamp()}: attempt {attempt} lost its runner",
+                        "note": f"requeued at {stamp()}: attempt {attempt} {why}",
                     },
                 )
             else:
@@ -4727,7 +4731,9 @@ def reap() -> None:
                     job,
                     -1,
                     "interrupted",
-                    f"attempt {attempt} lost its runner{'' if booted_here else ' (the host rebooted)'}; not retried",
+                    f"attempt {attempt} lost its runner"
+                    + (" before its command started" if unstarted else "" if booted_here else " (the host rebooted)")
+                    + "; not retried",
                 )
         finally:
             shutil.rmtree(lock, ignore_errors=True)
@@ -6472,7 +6478,7 @@ def main(argv: list[str] | None = None) -> int:
         value = getattr(args, dest, None)
         if isinstance(value, str) and not value.strip():
             ap.error(f"{flag} needs a reason")
-    if args.command != "job":
+    if args.command not in ("job", "_run", "worker"):
         note_lead()
     try:
         return int(args.fn(args))

@@ -295,6 +295,19 @@ class Limits(CampaignCase):
         self.run_cli(self.home, "wait", run, "--timeout", "30")
         self.assertEqual(self.job(run)["state"], "cancelled")
 
+    def test_runners_survive_the_removal_of_the_directory_the_worker_started_in(self) -> None:
+        """A worker started from a worktree that is later removed still runs jobs: its runners never
+        run in the caller's directory."""
+        self.env["CMUX_SURFACE_ID"] = "surface-1"  # a lead's surface: the runner must not look for its campaign
+        gone = self.home / "gone"
+        gone.mkdir()
+        first = self.submit(gone, "--cwd", ".", "--", "sleep 3")
+        self.wait_until(lambda: self.job(first)["state"] == "running")
+        gone.rmdir()
+        second = self.submit(self.home, "--", "true")
+        self.ok(self.home, "wait", first, second, "--timeout", "60")
+        self.assertEqual(self.job(second)["state"], "done", self.job(second).get("note", ""))
+
 
 class Crashes(CampaignCase):
     def kill_runner(self, jid: str) -> int:
