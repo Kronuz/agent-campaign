@@ -4486,6 +4486,50 @@ def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
     return jid, False
 
 
+def shape(spec: Json) -> str:
+    """A quest's job up to its commits: campaign, quest, repository, command, directory, level,
+    environment and the other repositories it names. Jobs of one shape are one job at other code."""
+    refs = sorted((name, r.get("repo")) for name, r in spec.get("refs", {}).items())
+    env = sorted(spec.get("env", {}).items())
+    fields = ("campaign", "quest", "repo", "cmd", "cwd", "level")
+    return json.dumps([*(spec.get(k) for k in fields), refs, env])
+
+
+def code_of(spec: Json) -> list[Any]:
+    """The commits a job runs: its own and each other repository's."""
+    return [spec.get("commit"), sorted((name, r.get("commit")) for name, r in spec.get("refs", {}).items())]
+
+
+def supersede(ids: list[str]) -> None:
+    """Cancels the still-queued jobs these newly queued quest jobs replace: same shape, other code,
+    submitted earlier. One a pending job waits on (--after) is kept unless that job is replaced too."""
+    new = [resolve_job(x) for x in dict.fromkeys(ids)]
+    jobs = [j for j in all_jobs() if j["id"] not in ids]
+    replaced: dict[str, str] = {}
+    for n in new:
+        if not n["spec"].get("quest") or not n["spec"].get("commit"):
+            continue
+        for j in jobs:
+            s = j["spec"]
+            if (
+                j["state"].get("state") == "queued"
+                and shape(s) == shape(n["spec"])
+                and code_of(s) != code_of(n["spec"])
+                and s.get("submitted", 0) <= n["spec"].get("submitted", 0)
+            ):
+                replaced.setdefault(j["id"], n["id"])
+    pending = [j for j in all_jobs() if j["state"].get("state") not in TERMINAL and j["id"] not in replaced]
+    for jid, by in replaced.items():
+        waiter = next((p["id"] for p in pending if jid in p["spec"].get("after", [])), "")
+        if waiter:
+            print(f"kept {jid}: {waiter} waits on it")
+            continue
+        j = load_job(jobs_dir() / jid)
+        if j["state"].get("state") == "queued" and claim(j):  # one the worker took since keeps running
+            finish(load_job(j["dir"]), -1, "cancelled", note=f"superseded by {by}")
+            print(f"superseded {jid}: queued at {j['spec']['commit'][:12]}, cancelled for {by}")
+
+
 def mtime(path: Path) -> float | None:
     """A file's modification time, or None when it is gone (its owner may remove it at any moment)."""
     try:
@@ -5224,6 +5268,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             spec["campaign"] = find_campaign(Path.cwd()).ident
     jid, reused = submit(spec, force=a.force)
     print(jid + (f" (reused: {resolve_job(jid)['spec'].get('what', '')})" if reused else ""))
+    if not reused:
+        supersede([jid])
     if a.sync:
         job = resolve_job(jid)
         if job["state"].get("state") == "queued" and claim(job):
@@ -5448,6 +5494,7 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     for jid in specs:
         visit(jid)
     renamed: dict[str, str] = {}
+    queued: list[str] = []
     for jid in order:
         spec = specs[jid]
         if not spec.get("commit"):
@@ -5482,6 +5529,9 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
             if home and same_repo(Path(r["repo"]), home)
         )
         print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}{moved}")
+        if not reused:
+            queued.append(new)
+    supersede(queued)
     ensure_worker()
     return 0
 
@@ -6488,7 +6538,8 @@ def parser() -> argparse.ArgumentParser:
         "queue a command at an exact commit",
         "Queues CMD to run at an exact commit (the quest's branch with --quest, else HEAD) in its own checkout, "
         "under quiet at --level. An identical job that is pending or succeeded is returned instead; --sync "
-        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity.",
+        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity. "
+        "A --quest job cancels the quest's still-queued jobs it replaces (the same job at other code).",
     )
     p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")
     p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
@@ -6549,7 +6600,8 @@ def parser() -> argparse.ArgumentParser:
         "rerun",
         "the same jobs at the quest's head",
         "Resubmits jobs with their command, level, directory, environment and other repositories at another "
-        "commit: by default the head of their quest's branch, else of their repository.",
+        "commit: by default the head of their quest's branch, else of their repository. Each cancels its "
+        "quest's still-queued jobs it replaces (the same job at other code), unless a pending job waits on one.",
     )
     p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: the quest's branch, else HEAD)")

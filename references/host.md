@@ -34,9 +34,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Reuse.** A job's key is the host, the toolchain fingerprint (`uname`, compiler and interpreter
   versions found on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the
   repository, the code (each commit's tree without `.campaign/`), refs, command, directory, level
-  and `--env`. The job runs with the submitter's PATH, whoever started the worker. An identical job
-  that is pending or succeeded is returned instead of rerun; `--force` reruns. What the key does
-  not see is the submitter's to name:
+  and `--env`. An identical job that is pending or succeeded is returned; `--force` reruns, and a
+  quest job at other code cancels its queued older instances (but one a pending job waits on).
+  What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|

@@ -179,6 +179,34 @@ class Scheduling(CampaignCase):
         self.run_cli(self.home, "wait", slow, queued, other, "--timeout", "60")
         self.assertEqual(self.job(queued)["state"], "done")
 
+    def test_a_job_at_new_code_cancels_its_queued_older_instance(self) -> None:
+        """A rerun, or a submit identical up to its commit, cancels the quest's still-queued older
+        instance and says so; a running one, and one a pending job waits on, are kept."""
+        wt = self.started("fix", files="app.py")
+        go = self.root / "go"
+        hold = f"while [ ! -e {go} ]; do sleep 0.1; done"
+        gate = self.submit(wt, "--quest", "fix", "--", hold)
+        self.wait_until(lambda: self.job(gate)["state"] == "running")
+        old = self.submit(wt, "--quest", "fix", "--after", gate, "--", "python3 app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        out = self.ok(self.home, "job", "rerun", old, gate).out
+        new = next(line.split(":")[0] for line in out.splitlines() if f": {old} at" in line)
+        self.assertIn(f"superseded {old}", out)
+        self.assertEqual(self.job(old)["state"], "cancelled")
+        self.assertEqual(self.job(gate)["state"], "running", "a running instance was cancelled")
+        self.commit(wt, {"app.py": "print(3)\n"})
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--after", gate, "--", "python3 app.py")
+        third = r.out.split()[0]
+        self.assertIn(f"superseded {new}", r.out)
+        self.assertEqual(self.job(new)["state"], "cancelled")
+        waiter = self.submit(wt, "--quest", "fix", "--after", third, "--", "true waiter")
+        self.commit(wt, {"app.py": "print(4)\n"})
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--after", gate, "--", "python3 app.py")
+        self.assertIn(f"kept {third}: {waiter} waits on it", r.out)
+        self.assertEqual(self.job(third)["state"], "queued")
+        go.touch()
+        self.ok(self.home, "wait", "--quest", "fix", "--timeout", "60")
+
     def test_priority_orders_the_queue(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
         go = self.root / "go"  # the blocker holds the only slot until both are queued, however slow submits are
