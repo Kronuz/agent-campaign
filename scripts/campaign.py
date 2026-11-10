@@ -1819,7 +1819,10 @@ def review_path(c: Campaign, pid: str, lens: str) -> Path:
 
 
 def read_review(text: str) -> Json:
-    """A review file's verdict, the commit it reviewed, and its findings table: ID, blocking, kind."""
+    """A review file's verdict, the commit it reviewed, and its findings table: ID, blocking, kind.
+    An appended re-check counts: the last `Commit:` line starts the round that is read."""
+    rounds = list(REVIEWED.finditer(text))
+    text = text[rounds[-1].start() :] if rounds else text
     verdict, reviewed = VERDICT.search(text), REVIEWED.search(text)
     findings: list[Json] = []
     for row in (section(text, "Findings") or text).splitlines():

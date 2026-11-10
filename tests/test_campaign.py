@@ -871,6 +871,14 @@ class ReviewBinding(CampaignCase):
         self.review("feat", "correctness", "**APPROVE.**")
         self.ok(self.home, "accept", "feat", "correctness")
 
+    def test_an_appended_recheck_is_the_verdict(self) -> None:
+        self.feature()
+        reviewed = self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
+        path = self.home / ".campaign/demo/reviews/feat-correctness.md"
+        path.write_text(path.read_text() + f"\n## Re-check\n\nCommit: {reviewed}\nVerdict: APPROVE\n\nC1: closed.\n")
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["reviewed"], reviewed)
+
     def test_only_jobs_that_passed_at_the_fixed_code_confirm_each_finding(self) -> None:
         wt, reviewed = self.feature()
         self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"), ("C2", "yes", "gap")))
