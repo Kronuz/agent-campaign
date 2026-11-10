@@ -369,6 +369,26 @@ class Evidence(CampaignCase):
         self.ok(self.home, "wait", rerun)
         self.ok(self.home, "land", "fix")  # the row still names the probe; its rerun at this code counts
 
+    def test_brief_names_the_newer_job_that_replaces_a_cited_one(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        probe = self.submit(wt, "--quest", "fix", "--sync", "--", "python3 app.py | grep -q 2")
+        journal = ".campaign/demo/journal/fix.md"
+        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.assertNotIn("replaces it", self.ok(wt, "brief").out)
+        self.commit(wt, {"app.py": "print(2)  # the code moves on\n"})
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        out = self.ok(wt, "brief").out
+        self.assertIn(f"  - A1 in fix cites {probe}; {rerun} replaces it (done at ", out)
+        [quest] = json.loads(self.ok(wt, "brief", "--json").out)["quests"]
+        self.assertEqual([(r["job"], r["by"]) for r in quest["replaced"]], [(probe, rerun)])
+        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {rerun} |\n"})
+        self.assertNotIn("replaces it", self.ok(wt, "brief").out)
+
     def test_a_cited_job_that_ran_after_another_counts(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"

@@ -2477,6 +2477,44 @@ def evidence(
     return rows
 
 
+def replaced_citations(journals: dict[str, str], jobs: list[Json]) -> list[Json]:
+    """Evidence rows citing a job that a newer one of its shape (the same job at other code) replaced:
+    submitted later and ended, and cited by no journal of the quest. The row should name that result."""
+    by_id = {j["id"]: j for j in jobs}
+    shapes = {j["id"]: shape(j["spec"]) for j in jobs}
+    cited = {x for text in journals.values() for x in JOB_ID.findall(section(text, "Evidence"))}
+    out: list[Json] = []
+    for name, text in journals.items():
+        for row in section(text, "Evidence").splitlines():
+            cells = table_cells(row)
+            if len(cells) < 2 or cells[0].startswith("<"):
+                continue
+            for jid in dict.fromkeys(JOB_ID.findall(" ".join(cells[1:]))):
+                old = by_id.get(jid)
+                if old is None:
+                    continue
+                newer = [
+                    j
+                    for j in jobs
+                    if shapes[j["id"]] == shapes[jid]
+                    and j["spec"].get("submitted", 0) > old["spec"].get("submitted", 0)
+                    and j["state"].get("state") in ("done", *FAILED)
+                ]
+                if newer and not cited & {j["id"] for j in newer}:
+                    n = max(newer, key=lambda j: j["spec"].get("submitted", 0))
+                    out.append(
+                        {
+                            "journal": name,
+                            "criteria": cells[0],
+                            "job": jid,
+                            "by": n["id"],
+                            "state": n["state"].get("state"),
+                            "commit": str(n["spec"].get("commit", ""))[:12],
+                        }
+                    )
+    return out
+
+
 def id_ranges(ids: list[str]) -> str:
     """A1, A2, A3, A5 as "A1-A3, A5"."""
     nums = sorted(int(x[1:]) for x in ids)
@@ -2732,6 +2770,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
         }
+    view["replaced"] = replaced_citations(texts, mine) if texts else []
     ended = ended_at_head(c, pid, mine)
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
     view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
@@ -3322,6 +3361,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
             {k: m[k] for k in ("id", "by", "at", "text")} for m in v.get("messages", []) if not m["answered"]
         ]
         q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
+        q["replaced"] = v["replaced"]
         q["pending"] = {s: k for s, k in v["jobs"].items() if k}
         quests.append(q)
     return out
@@ -3354,6 +3394,11 @@ def print_brief(b: Json) -> None:
             print(f"  - {m['id']} from {m['by']}: {m['text']}")
         for f in q["failed"]:
             print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
+        for r in q["replaced"]:
+            print(
+                f"  - {r['criteria']} in {r['journal']} cites {r['job']}; {r['by']} replaces it "
+                f"({r['state']} at {r['commit']}): cite that one"
+            )
         if q["pending"]:
             print(f"  - jobs: {', '.join(f'{k} {s}' for s, k in q['pending'].items())}")
 
@@ -6341,7 +6386,7 @@ def parser() -> argparse.ArgumentParser:
         "brief",
         "what each quest still needs, for agents",
         "What a quest still needs, one line each: landing gaps, unanswered messages, failed jobs no journal names yet, "
-        "pending jobs; --json gives the same as JSON. In a quest's worktree, that quest and its file set; "
+        "Evidence rows citing a job a newer one of the same command replaced, pending jobs; --json gives the same as JSON. In a quest's worktree, that quest and its file set; "
         "elsewhere, every quest not landed.",
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest")

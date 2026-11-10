@@ -46,9 +46,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | a measurement | the key; a strict or exclusive job is self-contained (A and B in one job, `--ref base=`), so its result stands for that code, host and toolchain |
   | files outside the checkout | not seen: `submit` warns about paths into jobs or worktrees; build them in the job |
 
-  Upgrading `campaign` can change how keys are computed; run `campaign verify` again after an
-  upgrade. A journal's Evidence row naming a job counts only while that job, or the same job rerun,
-  passed at the quest's current code.
+  Upgrading `campaign` can change keys: `campaign verify` again. A journal's Evidence row naming
+  a job counts only while that job, or the same job rerun, passed at the quest's current code;
+  `brief` names rows citing a replaced job.
 - **Documentation-only commits.** Evidence that passed at a commit still counts at a later one
   when every path that differs between them (outside `.campaign/`) is documentation (`DOC_PATHS`:
   `docs/**`, `*.md`) that the job's command does not name, itself or by a `docs/` folder. Gates,
