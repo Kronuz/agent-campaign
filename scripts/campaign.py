@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable, Collection, Generator, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
@@ -521,6 +521,8 @@ def validate(data: Json) -> list[str]:
         errors.append("ci_later must be a list of CI workflow names")
     if not isinstance(data.get("disk_warn", 0.0), (int, float)) or data.get("disk_warn", 0) < 0:
         errors.append("disk_warn must be GiB of free disk, a number")
+    if not isinstance(data.get("tested_docs", []), list):
+        errors.append("tested_docs must be a list of path globs")
     quests = data.get("quests")
     if not isinstance(quests, dict):
         return [*errors, "quests must be an object"]
@@ -1159,7 +1161,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn")
+CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "tested_docs")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1184,6 +1186,8 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["peers"] = csv(value)
                 elif key == "outbox" and sep:
                     c.state["outbox"] = value
+                elif key == "tested_docs" and sep:
+                    c.state["tested_docs"] = csv(value)
                 elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
                     c.state.pop("disk_warn", None)
                     if value:
@@ -1191,7 +1195,7 @@ def cmd_config(a: argparse.Namespace) -> int:
                 else:
                     die(
                         "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,..., "
-                        f"outbox=REMOTE and disk_warn=GIB|'', not {item!r}"
+                        f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     for key in keys or CONFIG:
@@ -1753,7 +1757,7 @@ def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[J
             else:
                 missing.append(f"{check['name']}: {state}")
             continue
-        job = job_for_check(repo, target, check)
+        job = job_for_check(repo, target, check, c.state.get("tested_docs", []))
         if job is None:
             missing.append(f"{check['name']}: no job")
         elif job["state"].get("state") != "done":
@@ -2631,7 +2635,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["docs_only"] = [
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)
-            if not x["cmd"].startswith(CI_CHECK) and (j := job_for_check(repo, head, x)) and j.get("docs")
+            if not x["cmd"].startswith(CI_CHECK) and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []))) and j.get("docs")
         ]
         if brief:
             for name, branch, _, _ in branches(c, pid):
@@ -2642,7 +2646,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["checks"] = checks
         view["later"] = [x["name"] for x in deferred(p)]
         for check in gates(p):
-            job = job_for_check(repo, head, check)
+            job = job_for_check(repo, head, check, c.state.get("tested_docs", []))
             note = f" ({docs_note(job)})" if job and job.get("docs") else ""
             checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
             if job:
@@ -4206,7 +4210,7 @@ def all_jobs() -> list[Json]:
     return [load_job(d) for d in sorted(jobs_dir().iterdir()) if d.is_dir() and (d / "spec.json").exists()]
 
 
-def job_for_check(repo: Path, commit: str, check: Json) -> Json | None:
+def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = ()) -> Json | None:
     nothing: Json = {}
     spec: Json = {
         "repo": str(repo),
@@ -4217,23 +4221,36 @@ def job_for_check(repo: Path, commit: str, check: Json) -> Json | None:
         "level": check["level"],
         "env": nothing,
     }
-    return job_at(spec, commit)
+    return job_at(spec, commit, tested)
 
 
 DOC_PATHS = ("docs/**", "*.md")  # documentation: evidence outlives commits that change only these
 DOCS_DEPTH = 20  # how many commits back evidence is looked for across documentation-only commits
 
 
-def doc_path(path: str, cmd: str) -> bool:
-    """Whether PATH is documentation that the command CMD does not name, itself or by a folder."""
+def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
+    """Whether PATH is documentation that the command CMD does not name, itself or by a folder, and
+    that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
     folders = [path[: i + 1] for i, ch in enumerate(path) if ch == "/"]
     named = path in cmd or any(f in cmd for f in folders if f.startswith("docs/"))
-    return not named and any(fnmatch.fnmatchcase(path, g) for g in DOC_PATHS)
+    if named or any(fnmatch.fnmatchcase(path, g) for g in tested):
+        return False
+    return any(fnmatch.fnmatchcase(path, g) for g in DOC_PATHS)
 
 
-def docs_only_ancestors(repo: Path, commit: str, cmd: str) -> list[tuple[str, list[str]]]:
+def tested_docs(spec: Json) -> list[str]:
+    """The `tested_docs` globs of the campaign that submitted SPEC (its "campaign" folder): the
+    documentation its tests execute."""
+    folder = spec.get("campaign")
+    state = read_json(Path(folder) / "state.json") if folder and (Path(folder) / "state.json").is_file() else None
+    return list(state.get("tested_docs", [])) if isinstance(state, dict) else []
+
+
+def docs_only_ancestors(
+    repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()
+) -> list[tuple[str, list[str]]]:
     """COMMIT's first-parent ancestors whose code differs from COMMIT's only in documentation CMD does
-    not name, nearest first, each with the paths that differ."""
+    not name and no TESTED glob matches, nearest first, each with the paths that differ."""
     out: list[tuple[str, list[str]]] = []
     ignored: set[str] = set()
     newer = commit
@@ -4243,7 +4260,7 @@ def docs_only_ancestors(repo: Path, commit: str, cmd: str) -> list[tuple[str, li
     )
     for older in line[1:]:
         paths = [x for x in changed(repo, older, newer) if not is_meta(x)]
-        if not all(doc_path(x, cmd) for x in paths):
+        if not all(doc_path(x, cmd, tested) for x in paths):
             break
         ignored.update(paths)
         out.append((older, sorted(ignored)))
@@ -4251,14 +4268,15 @@ def docs_only_ancestors(repo: Path, commit: str, cmd: str) -> list[tuple[str, li
     return out
 
 
-def job_at(spec: Json, commit: str) -> Json | None:
+def job_at(spec: Json, commit: str, tested: Sequence[str] | None = None) -> Json | None:
     """The job with SPEC's identity at COMMIT's code; when none passed there, the one that passed at
     the nearest ancestor whose code differs only in documentation the command does not name, with
     "at" (that commit) and "docs" (the paths it ignores)."""
     exact = job_with_key({**spec, "commit": commit})
     if exact is not None and exact["state"].get("state") == "done":
         return exact
-    for older, paths in docs_only_ancestors(Path(spec["repo"]), commit, spec["cmd"]):
+    globs = tested_docs(spec) if tested is None else tested
+    for older, paths in docs_only_ancestors(Path(spec["repo"]), commit, spec["cmd"], globs):
         twin = job_with_key({**spec, "commit": older})
         if twin is not None and twin["state"].get("state") == "done":
             return {**twin, "at": older, "docs": paths}
@@ -4829,6 +4847,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", "3600"))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
+    drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
     try:
         while True:
             try:
@@ -4895,6 +4914,15 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
                 and all(states.get(x) == "done" for x in j["spec"].get("after", []))
             ]
+            if overdue and not window:
+                # an overdue drain opens a turn: the queued drains run back to back for DRAIN_TURN, then
+                # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
+                until = now + drain_turn
+                atomic_write(
+                    jobs_dir() / ".window",
+                    json.dumps({"until": until, "for": "drain turn", "opened": now}) + "\n",
+                )
+                window = True
             for j in queued:
                 deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
                 if any(s not in ("queued", "running", "done") for s in deps):
@@ -5354,7 +5382,7 @@ def job_needs() -> Json:
             for _, branch, _, _ in branches(c, pid):
                 if has_ref(repo, branch):
                     head = rev(repo, branch)
-                    whole.update(j["id"] for j in (job_for_check(repo, head, x) for x in gates(p)) if j)
+                    whole.update(j["id"] for j in (job_for_check(repo, head, x, c.state.get("tested_docs", [])) for x in gates(p)) if j)
     return {"whole": whole, "record": record - whole, "open": open_quests, "slots": slots, "known": known}
 
 

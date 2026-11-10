@@ -300,6 +300,17 @@ class Evidence(CampaignCase):
         self.commit(named, {"app.py": "print(4)\n", "docs/later.md": "x\n"})
         self.assertIn("check unit is not green", self.ok(self.home, "brief", "named").out)
 
+    def test_docs_that_tests_execute_void_the_evidence(self) -> None:
+        self.ok(self.home, "config", "tested_docs=docs/site/**")
+        wt = self.started("fix", files="app.py,docs/**")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        self.commit(wt, {"docs/notes.md": "prose\n"})
+        self.assertNotIn("check unit is not green", self.ok(self.home, "brief", "fix").out)  # plain docs keep it
+        self.commit(wt, {"docs/site/api.md": "a request the e2e runs\n"})
+        self.assertIn("check unit is not green", self.ok(self.home, "brief", "fix").out)
+        self.assertIn("tested_docs=docs/site/**", self.ok(self.home, "config").out)
+
     def test_each_criterion_needs_the_kind_of_evidence_it_names(self) -> None:
         wt = self.started("fix", files="app.py,docs/**")
         brief = self.home / ".campaign/demo/quests/fix.md"
@@ -977,7 +988,7 @@ class DirectPath(CampaignCase):
         self.ok(self.home, "check")
 
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
-        self.assertEqual(self.ok(self.home, "config").out, "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\n")
+        self.assertEqual(self.ok(self.home, "config").out, "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n")
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
         wt = self.started("fix", files="app.py", check="unit=true")
@@ -1070,8 +1081,8 @@ class Campaigns(CampaignCase):
         self.assertLessEqual(self.job(ab)["started"], self.job(theirs)["started"], "light work lengthened the drain")
 
     def test_drains_and_light_work_take_turns(self) -> None:
-        """After a drain ends, queued light work runs before the next drain's wait is up again."""
-        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5")
+        """With no drain turn, queued light work runs after a drain before the next drain's wait is up."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5", CAMPAIGN_DRAIN_TURN="0")
         ours = self.submit(self.home, "--level", "light", "--force", "--", "sleep 8")
         self.wait_until(lambda: self.job(ours)["state"] == "running")
         first = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
@@ -1081,6 +1092,19 @@ class Campaigns(CampaignCase):
         self.ok(self.other, "wait", theirs, "--timeout", "90", timeout=120)
         self.assertLess(self.job(first)["started"], self.job(theirs)["started"], "the overdue drain went first")
         self.assertLess(self.job(theirs)["started"], self.job(second)["started"], "light work got its turn")
+
+    def test_an_overdue_drain_opens_a_turn_for_the_queued_drains(self) -> None:
+        """An overdue drain opens a turn: the drains queued behind it run before light work resumes."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5", CAMPAIGN_DRAIN_TURN="60")
+        ours = self.submit(self.home, "--level", "light", "--force", "--", "sleep 8")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        first = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        second = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--force", "--", "true")
+        theirs = self.submit(self.other, "--level", "light", "--", "true")
+        self.ok(self.home, "wait", ours, first, second, "--timeout", "90", timeout=120)
+        self.ok(self.other, "wait", theirs, "--timeout", "90", timeout=120)
+        self.assertLess(self.job(second)["started"], self.job(theirs)["started"], "light work cut into the turn")
+        self.assertIn("window open until", self.ok(self.home, "window").out)
 
     def test_a_window_runs_drains_back_to_back(self) -> None:
         """Inside a window, queued drains go before light work; without one, light work goes first."""
