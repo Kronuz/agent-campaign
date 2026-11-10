@@ -50,13 +50,12 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
   | a measurement | the key; a strict or exclusive job holds A and B (`--ref base=`), so its result stands for that code, host and toolchain |
   | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
-- **Read sets** (`reads.json`) are recorded when a versioned job passes: the files the depfiles of
-  the build directories it used list (`ninja -t deps` and `-t inputs`, or CMake's `*.d`: every
-  target built there, up-to-date ones included); what its Python processes opened, listed or
-  imported; on Linux, for `none` and `light` jobs, what strace saw (`$CAMPAIGN_STRACE` overrides),
-  else each CTest executable's source folders whole; and always the build files (`BUILD_FILES`),
-  `tested_docs`, the check's `--inputs` and the paths its command names. A missing or partial
-  capture keeps whole-tree identity; `reads.json` says why.
+- **Read sets** (`reads.json`), recorded when a versioned job passes, hold what its Python
+  processes opened, listed or imported; what a Ninja build directory's deps, inputs and configure
+  step name; for `none` and `light` jobs on Linux, what strace saw (`$CAMPAIGN_STRACE` overrides);
+  every tracked path name but docs; the build files, `tested_docs`, `--inputs` and the paths its
+  command names. Unless every source reports itself whole (no untraced test binary or custom
+  command, Make build, or Python with `-I`, `-E`, `-S`), the job keeps whole-tree identity.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (build outputs stay), and one job uses it
   at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the slot's
