@@ -32,43 +32,31 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   agent's worktree. Extra commits, of this or another repository, are checked out at
   `$JOB_REF_<NAME>`. `$JOB_OUT` is the attempt's output directory; `$JOB_SRC` the working directory.
 - **Reuse.** A job's key is the host, the toolchain fingerprint (`uname`, compiler and interpreter
-  versions found on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the
-  repository, the code (each commit's tree without `.campaign/`), refs, command, directory, level
-  and `--env`. An identical job that is pending or succeeded is returned; `--force` reruns, and a
-  quest job at newer code cancels its queued older instances (but one a pending job waits on).
-  What the key does not see is the submitter's to name:
+  versions on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the repository, the
+  code (each commit's tree without `.campaign/`), refs, command, directory, level and `--env`. An
+  identical job that is pending or succeeded is returned (`--force` reruns), and a quest job at
+  newer code cancels its queued older instances (but one a pending job waits on). A passed job,
+  cited or resubmitted, also counts wherever every tracked file in its read set holds what it held,
+  and across up to 20 first-parent commits that change only documentation (`docs/**`, `*.md`) its
+  command does not name and no `tested_docs` glob matches (the brief names what it ignored); the
+  build-test, a gate check without `--inputs`, never by its read set, since `land` needs its code.
+  `brief` names Evidence rows citing a replaced job. Upgrading `campaign` can change keys: run
+  `campaign verify` again. What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|
   | code, command, toolchain, host | the key |
   | a dataset version, a download, a feature flag | `--env NAME=VERSION` |
   | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
-  | a measurement | the key; a strict or exclusive job is self-contained (A and B in one job, `--ref base=`), so its result stands for that code, host and toolchain |
+  | a measurement | the key; a strict or exclusive job holds A and B (`--ref base=`), so its result stands for that code, host and toolchain |
   | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
-
-  Upgrading `campaign` can change keys: `campaign verify` again. A journal's Evidence row naming
-  a job counts only while that job, or the same job rerun, passed at the quest's current code;
-  `brief` names rows citing a replaced job.
-- **Documentation-only commits.** Evidence that passed at a commit still counts at a later one
-  when every path that differs between them (outside `.campaign/`) is documentation (`DOC_PATHS`:
-  `docs/**`, `*.md`) that the job's command does not name, itself or by a `docs/` folder. Gates,
-  criteria, confirmations, `verify` (which reuses such a job instead of rerunning it), `land` and
-  `status` accept it; the brief names each such job and the documentation paths it ignores, and
-  the landing records them. The search follows first parents back at most 20 commits and stops at
-  the first commit that changes code. A `tested_docs` glob (`campaign config`) marks documentation
-  that tests execute: changing it voids evidence like code does.
-- **Input-scoped checks.** `campaign new|set ID --inputs NAME=GLOBS` scopes the quest check NAME
-  (an empty GLOBS clears it). Its jobs' code is then the blobs of the paths that match GLOBS, the
-  build files (`CMakeLists*`, `*.cmake`, `CMakePresets*.json`, `*toolchain*`, Makefiles, `*.mk`,
-  `meson.build`, `pyproject.toml`, `setup.py`, `setup.cfg`, `.gitmodules`) and every path or folder
-  the command names, instead of the whole tree; refs, `--env`, host, toolchain, command, directory
-  and level stay in the key. A job of the check at an older commit with the same inputs is the same
-  job, so `verify` reuses it ("its inputs are unchanged since ..."), and Evidence rows, `accept
-  --confirm` and `land` count it. Only checks the quest file declares carry inputs; adding or
-  narrowing them needs `--weaken`. A quest keeps at least one gate check without inputs, the
-  build-test, which `land` needs at the exact code.
-  GLOBS name everything the command executes, not only what it reads: a check that runs a binary
-  the job builds names that binary's sources (an E2E over docs pages names `src/**` too).
+- **Read sets** (`reads.json`) are recorded when a versioned job passes: the files the depfiles of
+  the build directories it used list (`ninja -t deps` and `-t inputs`, or CMake's `*.d`: every
+  target built there, up-to-date ones included); what its Python processes opened, listed or
+  imported; on Linux, for `none` and `light` jobs, what strace saw (`$CAMPAIGN_STRACE` overrides),
+  else each CTest executable's source folders whole; and always the build files (`BUILD_FILES`),
+  `tested_docs`, the check's `--inputs` and the paths its command names. A missing or partial
+  capture keeps whole-tree identity; `reads.json` says why.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (build outputs stay), and one job uses it
   at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the slot's
@@ -121,7 +109,6 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 | Host rebooted | The same, without killing anything (the boot id changed, so old pids mean nothing) |
 | Command finished but the runner died before recording | The exit code was written first; the reaper records it |
 | An old runner wakes after its attempt was replaced | It no longer owns the attempt and writes nothing |
-| Job submitted twice | An identical job that is queued, running or done is returned; an interrupted or failed one runs anew |
 | Dependency (`--after`) failed | `skipped` |
 | Disk below 5 GiB | `quiet` admits nothing until space is freed |
 | No worker can run | `--sync` runs the job in the foreground through the same runner and records the same result |
@@ -145,8 +132,8 @@ store's `prune.log`. The worker runs it with these defaults once a day when its 
 
 Every disk rule acts on the repositories the machine's campaigns use (their homes and quest
 repositories) and on their linked worktrees outside the job store and outside any `.scratch` (a
-review's probe). A worktree an unfinished quest
-of any campaign owns, by branch or path, is open; main checkouts are never touched.
+review's probe). A worktree an unfinished quest of any campaign owns, by branch or path, is open;
+main checkouts are never touched.
 
 - **Build directories.** `campaign job prune` also deletes the regenerable build directories
   (`BUILD_DIRS`: `build`, `build-*`, `.deps`, `_deps`) at the top of every worktree that is not

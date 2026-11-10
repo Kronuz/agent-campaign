@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +26,139 @@ class Races(unittest.TestCase):
             # the worker removes its heartbeat right after an existence check says it is there
             with mock.patch.object(Path, "exists", return_value=True):
                 self.assertFalse(module.worker_alive())
+
+
+CMAKE = (
+    "cmake_minimum_required(VERSION 3.16)\nproject(p C)\nenable_testing()\nadd_library(lib src/lib.c)\n"
+    "add_executable(t tests/t.c)\ntarget_link_libraries(t lib)\nadd_test(NAME t COMMAND t)\n"
+)
+C_FILES = {
+    "CMakeLists.txt": CMAKE,
+    "src/lib.h": "#define V 1\n",
+    "src/lib.c": '#include "lib.h"\nint v(void) { return V; }\n',
+    "src/other.c": "int unused(void) { return 0; }\n",
+    "tests/t.c": "int v(void);\nint main(void) { return v() - 1; }\n",
+    "app.py": "from lib import util\n\nprint(util.X)\n",
+    "website/guide.mdx": "a page\n",  # a new top-level folder would change what imports list
+}
+CXX = "cmake -S . -B build -G Ninja >/dev/null && cmake --build build >/dev/null && ctest --test-dir build"
+FAKE_STRACE = """#!/bin/sh
+out=""
+while [ "$1" != "--" ]; do [ "$1" = "-o" ] && { shift; out=$1; }; shift; done
+shift
+"$@"
+code=$?
+case "$(cat "$STRACE_MODE" 2>/dev/null)" in
+  kill) echo "1 +++ killed by SIGKILL +++" > "$out" ;;
+  ok) printf '1 openat(AT_FDCWD, "lib/util.py", O_RDONLY|O_CLOEXEC) = 3</x>\\n1 +++ exited with 0 +++\\n' > "$out" ;;
+esac
+exit $code
+"""
+
+
+class ReadSets(CampaignCase):
+    """A passed job counts at any commit where every tracked file it read is unchanged."""
+
+    checkout: Path
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.checkout = self.started("rs", files="CMakeLists.txt,src/**,tests/**,website/**,app.py,lib/**")
+        self.commit(self.checkout, C_FILES)
+
+    def run_job(self, cmd: str, *extra: str) -> tuple[str, bool]:
+        out = self.ok(self.checkout, "job", "submit", "--quest", "rs", "--sync", *extra, "--", cmd).out
+        return out.split()[0], "(reused" in out
+
+    def reads(self, jid: str) -> tuple[bool, str, set[str]]:
+        """A job's read set: whether it is complete, why not, and its keys."""
+        data = json.loads((self.root / "jobs" / jid / "reads.json").read_text())
+        return bool(data["complete"]), " ".join(data["why"]), set(data["reads"])
+
+    @unittest.skipUnless(all(map(shutil.which, ("cmake", "ninja", "cc"))), "needs cmake, ninja and a C compiler")
+    def test_cpp_and_python_jobs_count_wherever_what_they_read_is_unchanged(self) -> None:
+        cxx, _ = self.run_job(CXX, "--slot", "rs-build")
+        py, _ = self.run_job("python3 app.py")
+        for jid in (cxx, py):
+            self.assertTrue(self.reads(jid)[0], self.reads(jid)[1])
+        self.assertTrue({"src/lib.h", "src/lib.c", "tests/**", "CMakeLists.txt"} <= self.reads(cxx)[2])
+        self.assertNotIn("src/other.c", self.reads(cxx)[2])
+        self.assertTrue({"app.py", "lib/util.py"} <= self.reads(py)[2])
+        self.verified("rs")
+        brief = self.home / ".campaign/demo/quests/rs.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints one: the app run"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(self.checkout, {".campaign/demo/journal/rs.md": f"## Evidence\n\n| A1 | {py} |\n"})
+        self.commit(self.checkout, {"website/guide.mdx": "a page no job reads, edited\n"})
+        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.assertEqual(self.run_job("python3 app.py"), (py, True))
+        out = self.ok(self.home, "status", "rs").out
+        self.assertIn("    A1  met      prints one", out)
+        self.assertIn("check unit is not green", self.ok(self.home, "brief", "rs").out)  # the build-test is exact
+        self.commit(self.checkout, {"src/other.c": "int unused(void) { return 1; }\n"})
+        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.commit(self.checkout, {"lib/util.py": "X = 1  # read by the app\n"})
+        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.assertNotEqual(self.run_job("python3 app.py")[0], py)  # an imported module changed
+        self.commit(self.checkout, {"src/lib.h": "#define V 1  /* a header the depfile lists */\n"})
+        rebuilt, reused = self.run_job(CXX, "--slot", "rs-build")
+        self.assertFalse(reused)
+        # an incremental build in the slot still records the up-to-date objects' deps
+        self.assertTrue({"src/lib.h", "tests/t.c"} <= self.reads(rebuilt)[2])
+
+    def test_partial_capture_keeps_whole_tree_identity(self) -> None:
+        nodeps, _ = self.run_job("mkdir -p build && touch build/CMakeCache.txt && python3 app.py", "--fresh")
+        self.assertFalse(self.reads(nodeps)[0])
+        self.assertIn("has no dependency information", self.reads(nodeps)[1])
+        fake = self.root / "bin" / "fake-strace"
+        fake.write_text(FAKE_STRACE)
+        fake.chmod(0o755)
+        mode = self.root / "strace-mode"
+        self.env.update(CAMPAIGN_STRACE=str(fake), STRACE_MODE=str(mode))
+        traced: dict[str, str] = {}
+        for name, why in (
+            ("kill", "the trace ends before its first process exits"),
+            ("none", "the trace is missing"),
+            ("ok", ""),
+        ):
+            mode.write_text(name)
+            jid, _ = self.run_job(f"python3 app.py && echo {name}", "--fresh")
+            self.assertEqual(self.reads(jid)[1], why)
+            traced[name] = jid
+        self.assertIn("lib/util.py", self.reads(traced["ok"])[2])
+        self.commit(self.checkout, {"website/guide.mdx": "a page no job reads, edited\n"})
+        self.assertFalse(self.run_job("mkdir -p build && touch build/CMakeCache.txt && python3 app.py", "--fresh")[1])
+        for name in traced:
+            mode.write_text(name)
+            self.assertEqual(self.run_job(f"python3 app.py && echo {name}", "--fresh")[1], name == "ok", name)
+
+    def test_a_strace_log_resolves_paths_by_each_process_directory(self) -> None:
+        log = self.root / "trace"
+        log.write_text(
+            '10 chdir("sub") = 0\n'
+            "10 clone(child_stack=NULL, flags=SIGCHLD) = 11\n"
+            '11 openat(AT_FDCWD, "a.h", O_RDONLY <unfinished ...>\n'
+            '10 openat(4</r/other>, "b.c", O_RDONLY) = 5</r/other/b.c>\n'
+            "11 <... openat resumed>) = 3</r/sub/a.h>\n"
+            '11 newfstatat(AT_FDCWD, "/r/gone.h", 0x7ff, 0) = -1 ENOENT (No such file or directory)\n'
+            '11 openat(AT_FDCWD, "/r/docs", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 6</r/docs>\n'
+            '11 execve("/r/tool", ["tool"], 0x0 /* 3 vars */) = 0\n'
+            "11 +++ exited with 0 +++\n"
+            "10 +++ exited with 0 +++\n"
+        )
+        paths, problem = campaign_module().strace_paths(log, "/r")
+        self.assertEqual(problem, "")
+        self.assertEqual(
+            paths,
+            [
+                ("/r/sub", False),
+                ("/r/other/b.c", False),
+                ("/r/sub/a.h", False),
+                ("/r/gone.h", False),
+                ("/r/docs", True),
+                ("/r/tool", False),
+            ],
+        )
 
 
 class Identity(CampaignCase):

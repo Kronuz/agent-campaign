@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import codecs
 import contextlib
 import fcntl
 import fnmatch
@@ -2811,7 +2812,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
             for x in gates(p)
             if not x["cmd"].startswith(CI_CHECK)
             and (j := job_for_check(repo, head, x, c.state.get("tested_docs", [])))
-            and j.get("docs")
+            and docs_note(j)
         ]
         if brief:
             for name, branch, _, _ in branches(c, pid):
@@ -2823,7 +2824,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["later"] = [x["name"] for x in deferred(p)]
         for check in gates(p):
             job = job_for_check(repo, head, check, c.state.get("tested_docs", []))
-            note = f" ({docs_note(job)})" if job and job.get("docs") else ""
+            note = f" ({docs_note(job)})" if job and docs_note(job) else ""
             checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
             if job:
                 checked.add(job["id"])
@@ -4312,8 +4313,9 @@ def submit_checks(
             "retries": 1,
             **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
-        earlier = None if force else job_at(spec, commit)
-        if earlier is not None and earlier.get("docs"):
+        exact = build_test(check)
+        earlier = None if force else job_at(spec, commit, exact=exact)
+        if earlier is not None and docs_note(earlier) and not earlier["state"].get("slimmed"):
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
             continue
@@ -4322,10 +4324,8 @@ def submit_checks(
                 f"campaign: {check['name']}'s inputs {','.join(spec['inputs'])} match no file at {commit[:12]}",
                 file=sys.stderr,
             )
-        jid, reused = submit(spec, force=force)
-        at = load_job(jobs_dir() / jid)["spec"]["commit"] if reused and spec.get("inputs") else commit
-        note = f" (reused: its inputs are unchanged since {at[:12]})" if at != commit else " (reused)" if reused else ""
-        print(f"{check['name']}: {jid}{note}")
+        jid, reused = submit(spec, force=force, exact=exact)
+        print(f"{check['name']}: {jid}" + (" (reused)" if reused else ""))
         ids.append(jid)
     ensure_worker()
     return ids
@@ -4374,9 +4374,8 @@ def jobs_dir() -> Path:
 BUILD_FILES = ("CMakeLists*", "*.cmake", "CMakePresets*.json", "*toolchain*", "Makefile", "GNUmakefile", "*.mk")
 BUILD_FILES += ("meson.build", "meson_options.txt", "pyproject.toml", "setup.py", "setup.cfg", ".gitmodules")
 INPUTS_HELP = (
-    "the files a check's jobs depend on (GLOBS comma-separated; empty clears): its evidence then survives "
-    "commits that change nothing under them, the build files (CMakeLists*, *.cmake, toolchain files) and "
-    "the paths its command names"
+    "files a check's jobs depend on beyond what they are seen to read (GLOBS comma-separated; empty clears); "
+    "a gate check with inputs is no longer the build-test, so it may count by its read set at land"
 )
 
 
@@ -4391,59 +4390,20 @@ def named_paths(cmd: str, cwd: str) -> list[str]:
     return [x for x in dict.fromkeys(out) if x and not x.startswith("..")]
 
 
-def input_files(repo: Path, commit: str, spec: Json) -> list[str]:
-    """The `mode sha path` entries of COMMIT that a job with declared inputs depends on: what its
-    globs match, the build files, and the paths its command names (a named folder, all of it)."""
-    globs, named = spec["inputs"], named_paths(spec["cmd"], spec.get("cwd", ""))
-
-    def wanted(path: str) -> bool:
-        if is_meta(path):
-            return False
-        name = path.rsplit("/", 1)[-1]
-        return (
-            any(fnmatch.fnmatchcase(path, g) for g in globs)
-            or any(fnmatch.fnmatchcase(name, g) for g in BUILD_FILES)
-            or any(path == x or path.startswith(x + "/") for x in named)
-        )
-
-    listing = git(repo, "ls-tree", "-r", "-z", "--full-tree", commit).split("\0")
-    return [
-        f"{meta.split()[0]} {meta.split()[2]} {path}"
-        for meta, _, path in (x.partition("\t") for x in listing if x)
-        if wanted(path)
-    ]
-
-
 def matches_inputs(repo: Path, commit: str, globs: list[str]) -> bool:
     listing = git(repo, "ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).split("\0")
     return any(fnmatch.fnmatchcase(x, g) for x in listing if x and not is_meta(x) for g in globs)
 
 
-def input_digest(repo: Path, commit: str, spec: Json) -> str:
-    """What identifies the code of a job with declared inputs: the blobs input_files lists."""
-    scope = json.dumps([spec["inputs"], spec["cmd"], spec.get("cwd", "")])
-    tag = "inputs:" + hashlib.sha256(scope.encode()).hexdigest()[:16]
-    digest: str = on_commits(
-        (tag, str(repo), commit),
-        lambda: hashlib.sha256("\n".join(input_files(repo, commit, spec)).encode()).hexdigest(),
-    )
-    return digest
-
-
 def job_key(spec: Json) -> str:
     """The identity of a result: same key, same evidence. Host and toolchain are part of it, and
-    the code is identified by its tree, not its commit; a job of a check with declared inputs, by
-    the blobs under them."""
+    the code is identified by its tree, not its commit."""
     refs = sorted((name, code_tree(Path(r["repo"]), r["commit"])) for name, r in spec["refs"].items())
-    repo = Path(spec["repo"])
-    code = (
-        ["inputs", input_digest(repo, spec["commit"], spec)] if spec.get("inputs") else code_tree(repo, spec["commit"])
-    )
     identity = [
         HOST,
         fingerprint(),
         spec["repo"],
-        code,
+        code_tree(Path(spec["repo"]), spec["commit"]),
         refs,
         spec["cmd"],
         spec["cwd"],
@@ -4451,6 +4411,15 @@ def job_key(spec: Json) -> str:
         sorted(spec["env"].items()),
         *([sorted(spec["scripts"].items())] if spec.get("scripts") else []),  # an evidence job's outside files
     ]
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
+
+
+def reuse_key(spec: Json) -> str:
+    """A job's identity without its code: jobs that share it are the same job wherever the files
+    they read are the same (reads.json)."""
+    refs = sorted((name, code_tree(Path(r["repo"]), r["commit"])) for name, r in spec["refs"].items())
+    identity = ["reads", HOST, fingerprint(), spec["repo"], refs, spec["cmd"], spec["cwd"], spec["level"]]
+    identity += [sorted(spec["env"].items()), sorted(spec.get("inputs", [])), sorted(spec.get("scripts", {}).items())]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
 
 
@@ -4484,7 +4453,13 @@ def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = 
         "env": nothing,
         **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
-    return job_at(spec, commit, tested)
+    return job_at(spec, commit, tested, exact=build_test(check))
+
+
+def build_test(check: Json) -> bool:
+    """Whether a check is the build-test: a gate check without declared inputs, which `land` needs at
+    the exact code (or across documentation-only commits), never by its read set."""
+    return not check.get("later") and not check.get("inputs")
 
 
 DOC_PATHS = ("docs/**", "*.md")  # documentation: evidence outlives commits that change only these
@@ -4529,26 +4504,29 @@ def docs_only_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str]
     return out
 
 
-def job_at(spec: Json, commit: str, tested: Sequence[str] | None = None) -> Json | None:
+def job_at(spec: Json, commit: str, tested: Sequence[str] | None = None, exact: bool = False) -> Json | None:
     """The job with SPEC's identity at COMMIT's code; when none passed there, the one that passed at
     the nearest ancestor whose code differs only in documentation the command does not name, with
-    "at" (that commit) and "docs" (the paths it ignores)."""
-    exact = job_with_key({**spec, "commit": commit})
-    if exact is not None and exact["state"].get("state") == "done":
-        return exact
+    "at" (that commit) and "docs" (the paths it ignores); unless EXACT, then one whose every read
+    file is unchanged at COMMIT, with "at" and "reads"."""
+    found = job_with_key({**spec, "commit": commit})
+    if found is not None and found["state"].get("state") == "done":
+        return found
     globs = tested_docs(spec) if tested is None else tested
     for older, paths in docs_only_ancestors(Path(spec["repo"]), commit, spec["cmd"], globs):
         twin = job_with_key({**spec, "commit": older})
         if twin is not None and twin["state"].get("state") == "done":
             return {**twin, "at": older, "docs": paths}
-    return exact
+    return (None if exact else read_twin(spec, commit)) or found
 
 
 def docs_note(job: Json) -> str:
-    """How a job found across documentation-only commits counts: "" for one at the exact code."""
-    if not job.get("docs"):
-        return ""
-    return f"passed at {job['at'][:12]}; ignores docs-only {', '.join(job['docs'])}"
+    """How a job found at other code counts: "" for one at the exact code."""
+    if job.get("docs"):
+        return f"passed at {job['at'][:12]}; ignores docs-only {', '.join(job['docs'])}"
+    if job.get("reads"):
+        return f"passed at {job['at'][:12]}; the {job['reads']} files it read are unchanged"
+    return ""
 
 
 def job_with_key(spec: Json) -> Json | None:
@@ -4577,12 +4555,14 @@ def job_summary(job: Json) -> Json:
         "exit": st.get("exit"),
         "seconds": round(st["ended"] - st["began"], 1) if st.get("ended") and st.get("began") else None,
         **({"docs": job["docs"]} if job.get("docs") else {}),
+        **({"reads": job["reads"], "at": job["at"]} if job.get("reads") else {}),
         **({"inputs": s["inputs"]} if s.get("inputs") else {}),
     }
 
 
-def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
-    """Queues a job, or returns an identical one, after the same jobs, that is pending or succeeded."""
+def submit(spec: Json, force: bool = False, exact: bool = False) -> tuple[str, bool]:
+    """Queues a job, or returns an identical one, after the same jobs, that is pending or succeeded;
+    unless EXACT, also one that passed at other code reading the same files (read_twin)."""
     jd = jobs_dir()
     defaults: list[tuple[str, object]] = [("refs", {}), ("env", {}), ("after", [])]
     for key, default in (
@@ -4607,10 +4587,15 @@ def submit(spec: Json, force: bool = False) -> tuple[str, bool]:
         # a slimmed job is a record of its result, not its outputs: asking again runs it again
         if old["state"].get("state") in ("queued", "running", "done") and not old["state"].get("slimmed"):
             return old["id"], True
+    twin = read_twin(spec, spec["commit"]) if key and not (force or exact or order) else None
+    if twin is not None and not twin["state"].get("slimmed"):
+        return twin["id"], True
     jid = time.strftime("%y%m%d-%H%M%S-") + secrets.token_hex(3)
     d = jd / jid
     d.mkdir()
     spec.update(key=key, submitted=time.time(), fingerprint=fingerprint(), path=os.environ.get("PATH", ""))
+    if key:
+        spec["rkey"] = reuse_key(spec)
     write_json(d / "spec.json", spec)
     write_json(d / "state.json", {"state": "queued", "attempt": 1})
     if key:
@@ -4836,6 +4821,376 @@ def slot_lock(slot: Path, beat: Path) -> None:
     _slot_locks[slot.name] = fh
 
 
+# ---------------------------------------------------------------- read sets
+
+READS_PY = '''"""campaign: records the files this Python process reads, for its job's identity."""
+import atexit
+import os
+import sys
+
+_out = os.environ.get("CAMPAIGN_READS_PY")
+if _out and hasattr(sys, "addaudithook"):
+    _fh = open(os.path.join(_out, "py-%d.txt" % os.getpid()), "a", buffering=1)
+    _seen = set()
+
+    def _note(kind, path):
+        try:
+            line = kind + " " + os.path.abspath(os.fsdecode(path))
+        except (TypeError, ValueError):
+            return
+        if line not in _seen and "\\n" not in line:
+            _seen.add(line)
+            _fh.write(line + "\\n")
+
+    def _hook(event, args):
+        if not args:
+            return
+        if event == "open" and isinstance(args[0], (str, bytes)):
+            head, name = os.path.split(os.fsdecode(args[0]))
+            if name.endswith(".pyc") and os.path.basename(head) == "__pycache__":
+                _note("o", os.path.join(os.path.dirname(head), name.split(".")[0] + ".py"))
+            _note("o", args[0])
+        elif event in ("os.listdir", "os.scandir") and not isinstance(args[0], int):
+            _note("d", "." if args[0] is None else args[0])
+        elif event == "glob.glob":
+            _note("g", args[0])
+        elif event == "subprocess.Popen":
+            _note("x", args[0] if args[0] is not None else list(args[1])[0] if args[1] else "-")
+        elif event in ("os.exec", "os.posix_spawn"):
+            _note("x", args[0])
+
+    sys.addaudithook(_hook)
+
+    @atexit.register
+    def _modules():
+        for module in list(sys.modules.values()):
+            path = getattr(module, "__file__", None)
+            if isinstance(path, str):
+                _note("o", path)
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_rest = [x for x in sys.path if os.path.abspath(x or ".") != _here]
+import importlib.machinery
+import importlib.util
+
+_spec = importlib.machinery.PathFinder.find_spec("sitecustomize", _rest)
+if _spec is not None and _spec.loader is not None:
+    _spec.loader.exec_module(importlib.util.module_from_spec(_spec))
+'''
+STRACE_ARGS = ("-f", "-q", "-y", "-s", "65535", "-e", "trace=%file,%process,fchdir")
+SOURCES = (".c", ".cc", ".cpp", ".cxx", ".c++", ".m", ".mm", ".cu")
+BUILD_TOOLS = re.compile(r"(?:^|/)(?:cmake|ninja|make|gmake|ctest)$")
+PYTHON = re.compile(r"(?:^|/)(?:python[\d.]*|pytest|py\.test)$")
+_tracers: dict[str, bool] = {}
+
+
+def tracer() -> str:
+    """The strace that records a light job's reads: $CAMPAIGN_STRACE ("" turns it off), else strace on
+    Linux, if it runs here (a container may forbid ptrace)."""
+    found = os.environ.get("CAMPAIGN_STRACE")
+    if found is None:
+        found = (shutil.which("strace") or "") if sys.platform.startswith("linux") else ""
+    if found and found not in _tracers:
+        probe = [found, *STRACE_ARGS, "-o", os.devnull, "--", "true"]
+        _tracers[found] = subprocess.run(probe, capture_output=True, check=False).returncode == 0
+    return found if found and _tracers[found] else ""
+
+
+def tree_map(repo: Path, commit: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Every path of COMMIT's code (without .campaign/) to its object id, trees included, and each
+    folder's names ("" is the root)."""
+    key = (str(repo), commit)
+    if key not in _maps:
+        objects: dict[str, str] = {}
+        names: dict[str, list[str]] = {}
+        for line in git(repo, "ls-tree", "-r", "-t", "-z", "--full-tree", commit).split("\0"):
+            meta, _, path = line.partition("\t")
+            if path and not is_meta(path):
+                objects[path] = meta.split()[2] + ("/" if meta.split()[1] == "tree" else "")
+                parent, _, name = path.rpartition("/")
+                names.setdefault(parent, []).append(name)
+        _maps[key] = (objects, names)
+    return _maps[key]
+
+
+_maps: dict[tuple[str, str], tuple[dict[str, str], dict[str, list[str]]]] = {}
+
+
+def read_value(objects: dict[str, str], names: dict[str, list[str]], key: str) -> str:
+    """What a read-set key holds at a commit: PATH its object ("dir" for a folder), PATH/ the names a
+    listing of it returns, PATH/** everything under it; "-" when it is not there."""
+    if key.endswith("/**"):
+        path = key[:-3]
+        return objects.get(path, "-") if path else "-"
+    if key.endswith("/"):
+        path = key[:-1]
+        if path and not objects.get(path, "").endswith("/"):
+            return "-"
+        listing = sorted(names.get(path, []))
+        return hashlib.sha256("\0".join(listing).encode()).hexdigest()[:24]
+    found = objects.get(key, "-")
+    return "dir" if found.endswith("/") else found
+
+
+def make_deps(text: str) -> dict[str, list[str]]:
+    """A Makefile depfile's targets and their prerequisites."""
+    out: dict[str, list[str]] = {}
+    for rule in text.replace("\\\n", " ").splitlines():
+        target, sep, deps = rule.partition(": ")
+        if sep and not rule.lstrip().startswith("#"):
+            out.setdefault(target.strip(), []).extend(x.replace("\\ ", " ") for x in re.split(r"(?<!\\) +", deps) if x)
+    return out
+
+
+def build_deps(build: Path, path_env: str) -> tuple[dict[str, list[str]], str]:
+    """Each target a build directory has built, with every input its depfiles name (relative to the
+    directory, or absolute), up-to-date ones included; or why they cannot be read."""
+    deps: dict[str, list[str]] = {}
+    if (build / "build.ninja").exists():
+        ninja = shutil.which("ninja", path=path_env)
+        if not ninja:
+            return {}, f"no ninja to read {build}'s deps"
+        p = subprocess.run([ninja, "-C", str(build), "-t", "deps"], capture_output=True, text=True, check=False)
+        q = subprocess.run([ninja, "-C", str(build), "-t", "inputs"], capture_output=True, text=True, check=False)
+        if p.returncode or q.returncode:
+            return {}, f"ninja could not list {build}'s deps"
+        target = ""
+        for line in p.stdout.splitlines():
+            if line.startswith((" ", "\t")):
+                deps.setdefault(target, []).append(line.strip())
+            elif ": #deps" in line:
+                target = line.split(": #deps")[0]
+        deps.setdefault("", []).extend(x for x in q.stdout.splitlines() if x)
+    else:
+        for depfile in [*build.glob("CMakeFiles/**/*.d"), *build.glob("CMakeFiles/**/compiler_depend.make")]:
+            for target, inputs in make_deps(depfile.read_text(errors="replace")).items():
+                deps.setdefault(target, []).extend(inputs)
+    if not any(k for k, v in deps.items() if k and v):
+        return {}, f"{build} has no dependency information"
+    return deps, ""
+
+
+def used_builds(roots: list[Path], cwd: Path, cmd: str) -> list[Path]:
+    """Build directories (build.ninja or CMakeCache.txt) a job used: those its command names, and any
+    within three levels of its checkout or output directory."""
+    found: list[Path] = []
+    for word in re.split(r"[\s;|&()<>=\"'`]+", cmd):
+        if word and (cwd / word).is_dir():
+            found.append((cwd / word).resolve())
+    for root in roots:
+        for top, dirs, files in os.walk(root):
+            if "build.ninja" in files or "CMakeCache.txt" in files:
+                found.append(Path(top).resolve())
+                dirs.clear()
+            elif len(Path(top).relative_to(root).parts) >= 3:
+                dirs.clear()
+            else:
+                dirs[:] = [x for x in dirs if not x.startswith(".") and x != "node_modules"]
+    marked = [d for d in dict.fromkeys(found) if (d / "build.ninja").exists() or (d / "CMakeCache.txt").exists()]
+    return marked
+
+
+def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
+    """The paths a strace log shows the job's processes touching, absolute, with whether each was
+    opened as a directory; or why the log is not a whole trace."""
+    if not log.exists() or not log.stat().st_size:
+        return [], "the trace is missing"
+    cwds: dict[str, str] = {}
+    pending: dict[str, str] = {}
+    out: list[tuple[str, bool]] = []
+    top, ended = "", False
+    for line in log.read_text(errors="replace").splitlines():
+        pid, _, rest = line.partition(" ")
+        rest = rest.strip()
+        top = top or pid
+        if rest.startswith("+++"):
+            ended = ended or (pid == top and rest.startswith("+++ exited with"))
+            continue
+        if rest.endswith("<unfinished ...>"):
+            pending[pid] = rest[: -len("<unfinished ...>")]
+            continue
+        resumed = re.match(r"<\.\.\. \w+ resumed>(.*)", rest)
+        if resumed:
+            rest = pending.pop(pid, "") + resumed.group(1)
+        m = re.match(r"(\w+)\((.*)\)\s+=\s+(-?\d+|\?)", rest)
+        if not m:
+            continue
+        call, args, ret = m.groups()
+        base = cwds.get(pid, cwd)
+        if call in ("clone", "clone3", "fork", "vfork") and ret.isdigit():
+            cwds[ret] = base
+        strings = [
+            codecs.escape_decode(x.encode())[0].decode(errors="surrogateescape")
+            for x in re.findall(r'"((?:[^"\\]|\\.)*)"', args)
+        ]
+        dirfd = re.match(r"(\d+)<([^>]*)>, ", args)
+        if call == "fchdir" and ret == "0" and dirfd is None:
+            fd = re.match(r"\d+<([^>]*)>", args)
+            if fd:
+                cwds[pid] = fd.group(1)
+        if not strings:
+            continue
+        at = dirfd.group(2) if dirfd else base
+        path = os.path.normpath(os.path.join(at, strings[0]))
+        if call == "chdir" and ret == "0":
+            cwds[pid] = path
+        out.append((path, "O_DIRECTORY" in args))
+    if not ended:
+        return out, "the trace ends before its first process exits"
+    return out, ""
+
+
+def record_reads(spec: Json, root: Path, cwd: Path, ad: Path, traced: bool) -> Json:
+    """The read set of a job that ran at its commit: the tracked files, folders and listings its
+    processes read, as keys with what each held, plus the files that always count (build files,
+    `tested_docs`, declared inputs, the paths its command names). "complete" is false when any
+    capture is missing or partial: the job then keeps whole-tree identity."""
+    repo, commit = Path(spec["repo"]), spec["commit"]
+    objects, names = tree_map(repo, commit)
+    tops = list(dict.fromkeys([str(root), os.path.realpath(root)]))
+    keys: set[str] = set()
+    why: list[str] = []
+    builds = used_builds([root, ad / "out"], cwd, spec["cmd"])
+    skip = [str(b) for b in builds] + [os.path.realpath(b) for b in builds]
+
+    def rel(path: str, base: str = str(cwd)) -> str | None:
+        full = os.path.normpath(os.path.join(base, path))
+        if any(full == x or full.startswith(x + "/") for x in skip):
+            return None
+        for top in tops:
+            if full == top:
+                return ""
+            if full.startswith(top + "/"):
+                inner = full[len(top) + 1 :]
+                return None if inner == ".git" or inner.startswith(".git/") or is_meta(inner) else inner
+        return None
+
+    always = [*BUILD_FILES]
+    extra = [*tested_docs(spec), *spec.get("inputs", [])]
+    for path in objects:
+        if any(fnmatch.fnmatchcase(path.rsplit("/", 1)[-1], g) for g in always) or any(
+            fnmatch.fnmatchcase(path, g) for g in extra
+        ):
+            keys.add(path)
+    words = [x for x in re.split(r"[\s;|&()<>=\"'`]+", spec["cmd"]) if x]
+    for x in named_paths(spec["cmd"], spec.get("cwd", "")):
+        if x in objects:
+            keys.add(x + "/**" if objects[x].endswith("/") else x)
+            if not traced and not x.endswith(".py") and not objects[x].endswith("/"):
+                mode = git(repo, "ls-tree", commit, "--", x).split(" ", 1)[0]
+                if mode == "100755" or x.endswith((".sh", ".bash")):
+                    why.append(f"{x} runs, and only a trace sees what it reads")
+    sources = 0
+    if traced:
+        found, problem = strace_paths(ad / "reads" / "strace", str(cwd))
+        if problem:
+            why.append(problem)
+        for path, listed in found:
+            inner = rel(path)
+            if inner is not None:
+                keys.add(inner + "/" if listed else inner)
+        sources += 1
+    for build in builds:
+        deps, problem = build_deps(build, spec.get("path") or os.environ.get("PATH", ""))
+        if problem:
+            why.append(problem)
+            continue
+        sources += 1
+        for inputs in deps.values():
+            for x in inputs:
+                inner = rel(x, str(build))
+                if inner:
+                    keys.add(inner)
+        if not traced:  # a test reads beside its sources: count their folders whole
+            for ctest in build.rglob("CTestTestfile.cmake"):
+                for exe in re.findall(r'add_test\(\S+ "([^"]+)"', ctest.read_text(errors="replace")):
+                    if not os.path.realpath(exe).startswith(os.path.realpath(build) + "/"):
+                        continue
+                    name = os.path.basename(exe)
+                    objs = [t for t in deps if f"CMakeFiles/{name}.dir/" in t]
+                    if not objs:
+                        why.append(f"no dependency information for test {name}")
+                    for t in objs:
+                        for x in deps[t]:
+                            inner = rel(x, str(build)) if x.endswith(SOURCES) else None
+                            if inner is not None:
+                                keys.add(inner.rpartition("/")[0] + "/**")
+    if not builds and any(BUILD_TOOLS.search(w) for w in words):
+        why.append("the command builds, and no build directory with dependency information was found")
+    records = sorted((ad / "reads").glob("py-*.txt"))
+    for record in records:
+        for line in record.read_text(errors="replace").splitlines():
+            kind, _, path = line.partition(" ")
+            if kind == "o" and (inner := rel(path)):
+                keys.add(inner)
+            elif kind == "d" and (inner := rel(path)) is not None:
+                keys.add(inner + "/")
+            elif kind == "g":
+                fixed = re.split(r"[*?\[]", path, maxsplit=1)[0]
+                inner = rel(fixed if fixed.endswith("/") else os.path.dirname(fixed))
+                if inner is not None:
+                    if not inner:
+                        why.append(f"a glob of the whole checkout ({path})")
+                    keys.add(inner + "/**")
+            elif kind == "x" and not traced:
+                exe = os.path.realpath(path)
+                if not PYTHON.search(os.path.basename(path)) and not any(exe.startswith(x + "/") for x in skip):
+                    why.append(f"Python ran {path}, and only a trace sees what it reads")
+    sources += bool(records)
+    if not traced and not records and any(PYTHON.search(w) or w.endswith(".py") for w in words):
+        why.append("the command runs Python and no Python process recorded its reads")
+    if not sources:
+        why.append("nothing recorded what it read")
+    keys.discard("")
+    return {
+        "complete": not why,
+        "why": why,
+        "reads": {k: read_value(objects, names, k) for k in sorted(keys)},
+    }
+
+
+def save_reads(job: Json, reads: Json) -> None:
+    """Keeps a passed job's read set and files it under its reuse key, so job_at finds it."""
+    d = job["dir"]
+    write_json(d / "reads.json", reads)
+    shutil.rmtree(attempt_dir(job) / "reads", ignore_errors=True)
+    rkey = job["spec"].get("rkey")
+    if reads["complete"] and rkey:
+        folder = jobs_dir() / "reads" / rkey
+        folder.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(FileExistsError):
+            (folder / d.name).symlink_to(f"../../{d.name}")
+
+
+def reads_hold(repo: Path, commit: str, d: Path) -> bool:
+    """Whether every file a job read holds the same content at COMMIT."""
+    reads = read_json(d / "reads.json") if (d / "reads.json").exists() else None
+    if not isinstance(reads, dict) or not reads.get("complete"):
+        return False
+    objects, names = tree_map(repo, commit)
+    return all(read_value(objects, names, k) == v for k, v in reads["reads"].items())
+
+
+def read_twin(spec: Json, commit: str) -> Json | None:
+    """The newest passed job with SPEC's identity but other code, whose every read file is unchanged at
+    COMMIT, with "at" (its commit) and "reads" (how many files it read)."""
+    folder = jobs_dir() / "reads" / reuse_key(spec)
+    if not folder.is_dir():
+        return None
+    repo = Path(spec["repo"])
+    for link in sorted(folder.iterdir(), reverse=True):
+        d = jobs_dir() / link.name
+        if not (d / "spec.json").exists():
+            continue
+        job = load_job(d)
+        if job["state"].get("state") != "done" or not job["spec"].get("commit"):
+            continue
+        if on_commits((f"reads:{link.name}", str(repo), commit), lambda d=d: reads_hold(repo, commit, d)):
+            count = len((read_json(d / "reads.json") or {}).get("reads", {}))
+            return {**job, "at": job["spec"]["commit"], "reads": count}
+    return None
+
+
 def prepare(spec: Json, d: Path) -> Path:
     """The job's sources at its exact commits; the agent's own worktree is never used."""
     if not spec.get("commit"):
@@ -4941,7 +5296,17 @@ def cmd_run(a: argparse.Namespace) -> int:
     )
     for name in spec["refs"]:
         env[f"JOB_REF_{name.upper()}"] = str(d / f"ref-{name}")
-    argv = ["bash", "-c", 'date +%s > "$JOB_DIR/began"\n' + spec["cmd"]]
+    script = 'date +%s > "$JOB_DIR/began"\n'
+    traced = ""
+    if spec.get("commit"):  # what it reads decides where its result counts (record_reads)
+        (ad / "reads").mkdir()
+        (ad / "reads" / "sitecustomize.py").write_text(READS_PY)
+        here = shlex.quote(str(ad / "reads"))
+        script += f"export CAMPAIGN_READS_PY={here}\nexport PYTHONPATH={here}${{PYTHONPATH:+:$PYTHONPATH}}\n"
+        traced = tracer() if spec["level"] in ("none", "light") else ""  # never under a timing hold
+    argv = ["bash", "-c", script + spec["cmd"]]
+    if traced:
+        argv = [traced, *STRACE_ARGS, "-o", str(ad / "reads" / "strace"), "--", *argv]
     if spec["level"] != "none":
         argv = [
             *quiet_argv(),
@@ -4987,9 +5352,17 @@ def cmd_run(a: argparse.Namespace) -> int:
             kill_group(child, beat)
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
-    release(spec, d)
     state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "done" if code == 0 else "failed"
-    finish(job, code, state, fence=me)
+    reads: Json | None = None
+    if state == "done" and spec.get("commit"):
+        root = jobs_dir() / "slots" / spec["slot"] if spec.get("slot") else d / "src"
+        try:
+            reads = record_reads(spec, root, cwd, ad, bool(traced))
+        except Exception as e:  # recorded: the job keeps whole-tree identity
+            reads = {"complete": False, "why": [f"recording its reads failed: {e}"], "reads": {}}
+    release(spec, d)
+    if finish(job, code, state, fence=me) and reads is not None:
+        save_reads(job, reads)
     return 0
 
 
@@ -5943,6 +6316,9 @@ def prune(
     keys = jobs_dir() / "keys"
     for link in keys.iterdir() if keys.is_dir() else []:
         if link.is_symlink() and not (jobs_dir() / os.readlink(link)).exists():
+            link.unlink()
+    for link in (jobs_dir() / "reads").glob("*/*"):
+        if not (jobs_dir() / link.name / "spec.json").exists():
             link.unlink()
     print(f"deleted {jobs}, slimmed {slim} and removed {slots} (older than {days:g} days) and {dirs}")
 
