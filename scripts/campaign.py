@@ -285,16 +285,14 @@ def on_branch(repo: Path, commit: str, ref: str) -> bool:
 
 
 def ever_on(repo: Path, commit: str, names: list[str]) -> bool:
-    """Whether COMMIT is or was on one of these branches: in its history, or in that of an earlier
-    head its reflog records (a branch rebased since)."""
+    """Whether COMMIT is or was on one of these branches: in the history of a tip, or of an earlier
+    head their reflogs record (a branch rebased since). One reflog read and one rev-list in all."""
     names = [b for b in names if has_ref(repo, b)]
-    if any(on_branch(repo, commit, b) for b in names):
-        return True
-    for b in names:
-        heads = dict.fromkeys(git(repo, "log", "-g", "--format=%H", f"refs/heads/{b}", check=False).split())
-        if any(ancestor(repo, commit, h) for h in heads):
-            return True
-    return False
+    if not names:
+        return False
+    heads = git(repo, "log", "-g", "--format=%H", *(f"refs/heads/{b}" for b in names), check=False).split()
+    outside = git(repo, "rev-list", "--count", commit, "--not", *names, *dict.fromkeys(heads), check=False)
+    return outside == "0"
 
 
 def merge_base(repo: Path, a: str, b: str) -> str:
@@ -535,8 +533,6 @@ def validate(data: Json) -> list[str]:
         errors.append("ci_later must be a list of CI workflow names")
     if not isinstance(data.get("disk_warn", 0.0), (int, float)) or data.get("disk_warn", 0) < 0:
         errors.append("disk_warn must be GiB of free disk, a number")
-    if not isinstance(data.get("slot_days", 0.0), (int, float)) or data.get("slot_days", 0) < 0:
-        errors.append("slot_days must be days, a number")
     if not isinstance(data.get("tested_docs", []), list):
         errors.append("tested_docs must be a list of path globs")
     quests = data.get("quests")
@@ -808,7 +804,7 @@ def stuck_leads() -> list[Json]:
             surface = str(json.loads(entry.read_text()).get("surface", ""))
             if not surface or surface == me:
                 continue
-            args = [exe, "agent", "inbox", "--surface", surface, "--json"]
+            args = [exe, "agent", "inbox", "--surface", surface, "--state", "queued", "--json"]
             done = subprocess.run(args, capture_output=True, text=True, timeout=10)
             data: Any = json.loads(done.stdout) if done.returncode == 0 else {}
         except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
@@ -821,7 +817,6 @@ def stuck_leads() -> list[Json]:
             str(m.get("id")): now - float(m["created_at"])
             for m in messages
             if isinstance(m, dict)
-            and m.get("delivered_at") is None
             and isinstance(m.get("created_at"), (int, float))
             and now - float(m["created_at"]) > INBOX_STALE
         }
@@ -861,8 +856,8 @@ _inbox_read = [0.0]
 
 
 def watch_leads() -> None:
-    """stuck_warnings at most once per CAMPAIGN_INBOX_SECONDS (60) of a wait; new ones go to stderr."""
-    if time.time() - _inbox_read[0] < float(os.environ.get("CAMPAIGN_INBOX_SECONDS", "60")):
+    """stuck_warnings at most once a minute of a wait; new ones go to stderr."""
+    if time.time() - _inbox_read[0] < 60:
         return
     _inbox_read[0] = time.time()
     for text, new in stuck_warnings():
@@ -1281,7 +1276,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "slot_days", "tested_docs")
+CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "tested_docs")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1308,18 +1303,18 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["outbox"] = value
                 elif key == "tested_docs" and sep:
                     c.state["tested_docs"] = csv(value)
-                elif key in ("disk_warn", "slot_days") and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
-                    c.state.pop(key, None)
+                elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
+                    c.state.pop("disk_warn", None)
                     if value:
-                        c.state[key] = float(value)
+                        c.state["disk_warn"] = float(value)
                 else:
                     die(
                         "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,..., "
-                        f"outbox=REMOTE, disk_warn=GIB|'', slot_days=DAYS|'' and tested_docs=GLOB,..., not {item!r}"
+                        f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     for key in keys or CONFIG:
-        value = c.state.get(key, {"disk_warn": DISK_WARN_GB, "slot_days": SLOT_DAYS}.get(key, "")) or ""
+        value = c.state.get(key, DISK_WARN_GB if key == "disk_warn" else "") or ""
         text = ",".join(value) if isinstance(value, list) else f"{value:g}" if isinstance(value, float) else str(value)
         print(text if keys else f"{key}={text}")
     return 0
@@ -5370,13 +5365,10 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
     for token in dict.fromkeys(PATH_TOKEN.findall(command)):
         path = Path(token).expanduser().resolve()
         if path.is_file() and any(path.is_relative_to(r) for r in roots):
-            with contextlib.suppress(OSError):
-                out[token] = hashlib.sha256(path.read_bytes()).hexdigest()[:24]
+            with contextlib.suppress(OSError), path.open("rb") as f:
+                digest = hashlib.file_digest(f, "sha256") if sys.version_info >= (3, 11) else hashlib.sha256(f.read())
+                out[token] = digest.hexdigest()[:24]
     return out
-
-
-BUILDS = re.compile(r"\bcmake\s+--build\b|\bninja\b|\bmeson\s+compile\b")  # builds a configured build dir
-CONFIGURES = re.compile(r"\bcmake\s+(?!--build\b|--install\b|-E\b|-P\b)\S|\bmeson\s+setup\b|(?:^|[\s;&|(/])configure\b")
 
 
 def cmd_job_submit(a: argparse.Namespace) -> int:
@@ -5446,14 +5438,6 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
                 "a changed script is another job",
                 file=sys.stderr,
             )
-    built = BUILDS.search(command) if spec.get("slot") and spec.get("commit") else None
-    if built and not CONFIGURES.search(command):
-        print(
-            f"warning: slot {spec['slot']}: the command builds ({built.group(0)}) with no configure step in it (a "
-            "cmake call other than --build, meson setup or configure): in a fresh or pruned slot it fails. "
-            "Configure in the command (cmake -S . -B build costs little once configured)",
-            file=sys.stderr,
-        )
     spec["cmux"] = os.environ.get("CMUX_WORKSPACE_ID", "")
     spec["what"] = a.what or command[:60] + (f" at {spec['commit'][:12]}" if spec.get("commit") else "")
     spec.setdefault("quest", "")
@@ -5777,7 +5761,7 @@ SLIM_BYTES = 1 << 20  # a slimmed job keeps its record, its log and its output f
 BUILD_DIRS = ("build", "build-*", ".deps", "_deps")  # regenerable: prune removes them from idle worktrees
 BUILD_DAYS = 3.0  # a build directory nothing changed in for this long is idle
 DISK_WARN_GB = 100.0  # check and the daily prune warn under this much free disk (`config disk_warn`)
-SLOT_DAYS = 7.0  # prune keeps a slot a quest's job ran in within this many days (`config slot_days`)
+SLOT_DAYS = 7  # prune keeps a slot a quest's job ran in within this many days
 
 
 def job_needs() -> Json:
@@ -5880,16 +5864,10 @@ def prune_plan(days: float) -> Json:
     return plan
 
 
-def slot_days() -> float:
-    """How long a slot a quest's job ran in is kept: the largest slot_days of the machine's campaigns."""
-    states = [o["state"] for o in campaigns().values()]
-    return max((float(x.get("slot_days", SLOT_DAYS)) for x in states), default=SLOT_DAYS)
-
-
 def slots_in_use() -> set[str]:
     """The slots prune keeps whatever their age: those a pending job names, and those a quest's job
-    (evidence) ran in within slot_days. A slot's own mtime moves only when its top level changes."""
-    recent = time.time() - slot_days() * 86400
+    (evidence) ran in within SLOT_DAYS. A slot's own mtime moves only when its top level changes."""
+    recent = time.time() - SLOT_DAYS * 86400
     used: set[str] = set()
     for j in all_jobs():
         st, name = j["state"], slot_of(j["spec"])
@@ -6448,9 +6426,7 @@ def parser() -> argparse.ArgumentParser:
         "CI; ci_later=WORKFLOW,... names workflows that do not gate it. peers=NAME=URL,... names campaigns on "
         "other machines and where their outboxes are (a repository they push to); outbox=REMOTE is where this "
         "campaign pushes its own (default origin). disk_warn=GIB is the free disk under which `check` warns "
-        "(default 100; the worker's daily prune uses the largest any campaign sets). slot_days=DAYS keeps a "
-        "build slot that a quest's job ran in within DAYS from `job prune` (default 7; the largest any "
-        "campaign sets).",
+        "(default 100; the worker's daily prune uses the largest any campaign sets).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -6869,8 +6845,8 @@ def parser() -> argparse.ArgumentParser:
         "deferred check, journal or review): their kept checkouts and output files over 1 MiB go, their spec, "
         "state, log and smaller outputs stay, and they are never reused by identity again. Jobs of quests not "
         "landed or dropped, and of campaigns this machine does not know, are kept whole. Build slots no open "
-        "quest uses go too, unless a pending job names one or a quest's job ran in it within slot_days (`campaign "
-        "config`, default 7), and the build directories (build, build-*, .deps, _deps, ignored by git) of worktrees "
+        "quest uses go too, unless a pending job names one or a quest's job ran in it within 7 days, "
+        "and the build directories (build, build-*, .deps, _deps, ignored by git) of worktrees "
         "of the campaigns' repositories that no unfinished quest owns, once nothing in them changed for "
         "--build-days. Each deletion is logged in the job store's prune.log. The worker runs this with its "
         "defaults once a day when its queue empties (CAMPAIGN_AUTO_PRUNE=0 turns that off).",

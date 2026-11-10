@@ -70,14 +70,15 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   GLOBS name everything the command executes, not only what it reads: a check that runs a binary
   the job builds names that binary's sources (an E2E over docs pages names `src/**` too).
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
-  are verified clean at the job's commit before every run (build outputs stay), and one job uses
-  it at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the
-  slot's lock (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify`
-  uses a slot per quest (`<campaign>-<quest>`), except for critical quests and `--fresh`. A light `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>`
-  in another repository) while no pending job of its own is there, else a fresh checkout beside it,
-  so a batch of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing
-  removes the quest's slots; `submit` warns when a slotted command builds with no configure step. A Xapiand build-and-test reused its slot at the next commit in 310 and
-  320 s against 586 and 688 s fresh (47% and 53% less; ccache warm both ways, ctest 160-190 s of each).
+  are verified clean at the job's commit before every run (build outputs stay), and one job uses it
+  at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the slot's
+  lock (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify` uses a
+  slot per quest (`<campaign>-<quest>`), except for critical quests and `--fresh`. A light
+  `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>` in another
+  repository) while no pending job of its own is there, else a fresh checkout beside it, so a batch
+  of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing removes the
+  quest's slots. A Xapiand build-and-test reused its slot at the next commit in 310 and 320 s
+  against 586 and 688 s fresh (47% and 53% less; ccache warm both ways, ctest 160-190 s of each).
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
@@ -129,16 +130,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 Retries are off by default because a command may not be safe to run twice; checks queued by
 `campaign verify` retry once.
 
-`campaign job prune [--days N] [--build-days N] [--dry-run]` acts on finished jobs that ended more than N days ago
-(14). It keeps whole every job of a quest not landed or dropped and every job such a quest's
-journals, reviews, gates or confirmations name, in any campaign, and every job of a
-campaign the machine does not know (a home moved by hand). It slims a job only landed or dropped
-quests name (a landing, acceptance, deferred check, journal or review): its kept checkouts and
-output files over 1 MiB go, its spec, state, log and smaller outputs stay, and it is never reused
-by identity again. It deletes the rest, with their checkouts and identity links, and removes build
-slots no open quest, pending job or recent quest job (`slot_days`, 7) uses. Every deletion and slimming is logged in the job store's `prune.log`.
-The worker runs it with these defaults once a day when its queue empties; `CAMPAIGN_AUTO_PRUNE=0`
-turns that off.
+`campaign job prune [--days N] [--build-days N] [--dry-run]` acts on finished jobs that ended more
+than N days ago (14). It keeps whole every job of a quest not landed or dropped and every job such a
+quest's journals, reviews, gates or confirmations name, in any campaign, and every job of a campaign
+the machine does not know (a home moved by hand). It slims a job only landed or dropped quests name
+(a landing, acceptance, deferred check, journal or review): its kept checkouts and output files over
+1 MiB go, its spec, state, log and smaller outputs stay, and it is never reused by identity again.
+It deletes the rest, with their checkouts and identity links, and removes build slots no open quest,
+pending job or quest job of the last 7 days uses. Every deletion and slimming is logged in the job
+store's `prune.log`. The worker runs it with these defaults once a day when its queue empties;
+`CAMPAIGN_AUTO_PRUNE=0` turns that off.
 
 ## Disk
 

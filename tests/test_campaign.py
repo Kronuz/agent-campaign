@@ -1099,7 +1099,7 @@ class DirectPath(CampaignCase):
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
         self.assertEqual(
             self.ok(self.home, "config").out,
-            "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\nslot_days=7\ntested_docs=\n",
+            "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n",
         )
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
@@ -1876,24 +1876,20 @@ class Messages(CampaignCase):
         fake.chmod(0o755)
         now = time.time()
 
-        def messages(*rows: tuple[str, float, bool]) -> None:
-            listed = [
-                {"id": m, "created_at": now - minutes * 60, "delivered_at": now if seen else None}
-                for m, minutes, seen in rows
-            ]
-            inbox.write_text(json.dumps({"messages": listed}))
+        def messages(*rows: tuple[str, float]) -> None:  # the queued ones cmux lists
+            inbox.write_text(json.dumps({"messages": [{"id": m, "created_at": now - n * 60} for m, n in rows]}))
 
-        messages(("m-old", 20, False), ("m-new", 2, False), ("m-seen", 30, True))
+        messages(("m-old", 20), ("m-new", 2))
         (self.root / "leads").mkdir(exist_ok=True)
         (self.root / "leads" / "other").write_text(json.dumps({"surface": "surface-other", "workspace": "ws"}))
         self.env["CMUX_WORKSPACE_ID"] = "ws-demo"
         out = self.ok(self.home, "check").out
         self.assertIn("1 message to other's lead (cmux surface surface-other) undelivered for up to 20m", out)
-        self.assertIn("agent|inbox|--surface|surface-other|--json|", calls.read_text())
+        self.assertIn("agent|inbox|--surface|surface-other|--state|queued|--json|", calls.read_text())
         self.assertEqual(calls.read_text().count("notify|--title|"), 1)
         self.ok(self.home, "check")
         self.assertEqual(calls.read_text().count("notify|--title|"), 1, "the owner was told twice of one message")
-        messages(("m-old", 20, False), ("m-two", 16, False))
+        messages(("m-old", 20), ("m-two", 16))
         r = self.ok(self.home, "wait", self.submit(self.home, "--", "true"), "--timeout", "60")
         self.assertIn("2 messages to other's lead", r.err)
         self.assertEqual(calls.read_text().count("notify|--title|"), 2)
