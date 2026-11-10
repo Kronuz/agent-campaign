@@ -103,6 +103,27 @@ class Identity(CampaignCase):
         spec = json.loads((self.root / "jobs" / new_second / "spec.json").read_text())
         self.assertEqual(spec["after"], [new_first])
 
+    def test_a_rerun_never_moves_a_commit_the_quests_branch_never_held(self) -> None:
+        """A mutant (a commit only a scratch ref holds) is refused without --commit and kept with it; a
+        commit the branch held before it was rewritten still moves to the head."""
+        wt = self.started("fix", files="app.py")
+        self.git(wt, "checkout", "-q", "--detach")
+        mutant = self.commit(wt, {"app.py": "print('mutant')\n"}, "mutant")
+        self.git(wt, "update-ref", "refs/scratch/mutant", mutant)
+        self.git(wt, "checkout", "-q", "quest/demo/fix")
+        jid = self.submit(wt, "--quest", "fix", "--commit", mutant, "--", 'python3 app.py > "$JOB_OUT/seen"')
+        self.ok(self.home, "wait", jid)
+        self.commit(wt, {"app.py": "print(2)\n"})
+        r = self.fails(self.home, "job", "rerun", jid, match=f"{jid} ran at {mutant[:12]}, which was never on ")
+        self.assertIn(f"Pass --commit {mutant[:12]} to keep it", r.text)
+        self.assertIn(f"{jid} at {mutant[:12]}", self.ok(self.home, "job", "rerun", jid, "--commit", mutant).out)
+        probe = self.submit(wt, "--quest", "fix", "--", "python3 app.py")
+        self.ok(self.home, "wait", probe)
+        (wt / "app.py").write_text("print(3)\n")
+        self.git(wt, "commit", "-q", "--amend", "-am", "rewritten")
+        out = self.ok(self.home, "job", "rerun", probe).out
+        self.assertIn(f"{probe} at {self.git(wt, 'rev-parse', 'HEAD')[:12]}", out)
+
     def test_identical_jobs_are_reused_and_force_reruns(self) -> None:
         jid = self.submit(self.home, "--", "true")
         self.ok(self.home, "wait", jid)

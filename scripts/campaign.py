@@ -284,6 +284,19 @@ def on_branch(repo: Path, commit: str, ref: str) -> bool:
     return commit in _reachable[key] if SHA.fullmatch(commit) else ancestor(repo, commit, ref)
 
 
+def ever_on(repo: Path, commit: str, names: list[str]) -> bool:
+    """Whether COMMIT is or was on one of these branches: in its history, or in that of an earlier
+    head its reflog records (a branch rebased since)."""
+    names = [b for b in names if has_ref(repo, b)]
+    if any(on_branch(repo, commit, b) for b in names):
+        return True
+    for b in names:
+        heads = dict.fromkeys(git(repo, "log", "-g", "--format=%H", f"refs/heads/{b}", check=False).split())
+        if any(ancestor(repo, commit, h) for h in heads):
+            return True
+    return False
+
+
 def merge_base(repo: Path, a: str, b: str) -> str:
     return str(on_commits(("merge-base", str(repo), a, b), lambda: git(repo, "merge-base", a, b)))
 
@@ -5552,18 +5565,45 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
 
     for jid in specs:
         visit(jid)
+    c: Campaign | None = None
+    with contextlib.suppress(CampaignError):
+        c = find_campaign(Path.cwd())
+
+    def quest_code(spec: Json) -> tuple[str, Path | None, list[str]]:
+        """The quest's branch, its repository and every branch its code is on (its tasks', main)."""
+        if a.commit or not spec.get("quest") or c is None:
+            return "", None, []
+        with contextlib.suppress(CampaignError):
+            quest = c.quest(spec["quest"])
+            home = c.repo(quest)
+            return quest.get("branch", ""), home, [b for _, b, _, _ in branches(c, spec["quest"])] + [main_branch(home)]
+        return "", None, []
+
+    for jid in order:  # every job is checked before any is queued
+        spec = specs[jid]
+        if not spec.get("commit"):
+            die(f"{jid} is unversioned: submit it again")
+        branch, home, lines = quest_code(spec)
+        if not branch or home is None:
+            continue
+        mine = same_repo(Path(spec["repo"]), home)
+        moving = (
+            [spec["commit"]]
+            if mine
+            else [r["commit"] for r in spec["refs"].values() if same_repo(Path(r["repo"]), home)]
+        )
+        for x in moving:
+            if not ever_on(home, x, lines):
+                die(
+                    f"{jid} ran at {x[:12]}, which was never on {', '.join(lines)} (a mutant or scratch commit?): "
+                    f"moving it to {branch} would drop that change. Pass --commit {x[:12]} to keep it, or "
+                    f"--commit {branch} to move it"
+                )
     renamed: dict[str, str] = {}
     queued: list[str] = []
     for jid in order:
         spec = specs[jid]
-        if not spec.get("commit"):
-            die(f"{jid} is unversioned: submit it again")
-        branch, home = "", None
-        if not a.commit and spec.get("quest"):
-            with contextlib.suppress(CampaignError):
-                c = find_campaign(Path.cwd())
-                quest = c.quest(spec["quest"])
-                branch, home = quest.get("branch", ""), c.repo(quest)
+        branch, home, _ = quest_code(spec)
         commit = ""
         if branch and home is not None and not same_repo(Path(spec["repo"]), home):
             refs = {k: dict(r) for k, r in spec.get("refs", {}).items()}
@@ -6683,7 +6723,8 @@ def parser() -> argparse.ArgumentParser:
         "rerun",
         "the same jobs at the quest's head",
         "Resubmits jobs with their command, level, directory, environment and other repositories at another "
-        "commit: by default the head of their quest's branch, else of their repository. Each cancels its "
+        "commit: by default the head of their quest's branch, else of their repository; a job whose commit was "
+        "never on the quest's branches or main (a mutant) is refused without --commit. Each cancels its "
         "quest's still-queued jobs it replaces (the same job at other code), unless a pending job waits on one.",
     )
     p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
