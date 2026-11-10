@@ -247,6 +247,25 @@ class Scheduling(CampaignCase):
         go.touch()
         self.ok(self.home, "wait", "--quest", "fix", "--timeout", "60")
 
+    def test_a_job_at_a_sibling_commit_keeps_its_queued_instance(self) -> None:
+        """Mutants off one base are not newer code: only a job at a descendant supersedes one."""
+        wt = self.started("fix", files="app.py")
+        go = self.root / "go"
+        gate = self.submit(wt, "--quest", "fix", "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        m0 = self.commit(wt, {"app.py": "print('m0')\n"})
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")
+        m1 = self.commit(wt, {"app.py": "print('m1')\n"})
+        a = self.submit(wt, "--quest", "fix", "--commit", m0, "--after", gate, "--", "python3 app.py")
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--commit", m1, "--after", gate, "--", "python3 app.py")
+        self.assertNotIn("superseded", r.out)
+        self.assertEqual(self.job(a)["state"], "queued", "a mutant cancelled its sibling")
+        m2 = self.commit(wt, {"app.py": "print('m2')\n"})
+        r2 = self.ok(wt, "job", "submit", "--quest", "fix", "--commit", m2, "--after", gate, "--", "python3 app.py")
+        self.assertIn(f"superseded {r.out.split()[0]}", r2.out)
+        self.assertEqual(self.job(a)["state"], "queued")
+        go.touch()
+        self.ok(self.home, "wait", "--quest", "fix", "--timeout", "60")
+
     def test_priority_orders_the_queue(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
         go = self.root / "go"  # the blocker holds the only slot until both are queued, however slow submits are

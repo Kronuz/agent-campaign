@@ -35,7 +35,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   versions found on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the
   repository, the code (each commit's tree without `.campaign/`), refs, command, directory, level
   and `--env`. An identical job that is pending or succeeded is returned; `--force` reruns, and a
-  quest job at other code cancels its queued older instances (but one a pending job waits on).
+  quest job at newer code cancels its queued older instances (but one a pending job waits on).
   What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |

@@ -2569,8 +2569,8 @@ def evidence(
 
 
 def replaced_citations(journals: dict[str, str], jobs: list[Json]) -> list[Json]:
-    """Evidence rows citing a job that a newer one of its shape (the same job at other code) replaced:
-    submitted later and ended, and cited by no journal of the quest. The row should name that result."""
+    """Evidence rows citing a job a newer one of its shape replaced: at its code or a descendant,
+    submitted later, ended, and cited by no journal of the quest. The row should name that result."""
     by_id = {j["id"]: j for j in jobs}
     shapes = {j["id"]: shape(j["spec"]) for j in jobs}
     cited = {x for text in journals.values() for x in JOB_ID.findall(section(text, "Evidence"))}
@@ -2590,6 +2590,7 @@ def replaced_citations(journals: dict[str, str], jobs: list[Json]) -> list[Json]
                     if shapes[j["id"]] == shapes[jid]
                     and j["spec"].get("submitted", 0) > old["spec"].get("submitted", 0)
                     and j["state"].get("state") in ("done", *FAILED)
+                    and descends(old["spec"], j["spec"])
                 ]
                 if newer and not cited & {j["id"] for j in newer}:
                     n = max(newer, key=lambda j: j["spec"].get("submitted", 0))
@@ -4639,9 +4640,19 @@ def code_of(spec: Json) -> list[Any]:
     return [spec.get("commit"), sorted((name, r.get("commit")) for name, r in spec.get("refs", {}).items())]
 
 
+def descends(old: Json, new: Json) -> bool:
+    """Whether job spec NEW runs OLD's code or newer: each of OLD's commits is an ancestor of NEW's
+    in its repository. A sibling (a mutant, a run at the base) is not newer."""
+    pairs = [(old.get("repo"), old.get("commit"), new.get("commit"))] + [
+        (r.get("repo"), r.get("commit"), new.get("refs", {}).get(k, {}).get("commit"))
+        for k, r in old.get("refs", {}).items()
+    ]
+    return all(repo and a and b and ancestor(Path(repo), a, b) for repo, a, b in pairs)
+
+
 def supersede(ids: list[str]) -> None:
-    """Cancels the still-queued jobs these newly queued quest jobs replace: same shape, other code,
-    submitted earlier. One a pending job waits on (--after) is kept unless that job is replaced too."""
+    """Cancels the still-queued jobs these newly queued quest jobs replace: same shape, older code
+    (descends), submitted earlier. One a pending job waits on (--after) is kept unless that job is replaced too."""
     new = [resolve_job(x) for x in dict.fromkeys(ids)]
     jobs = [j for j in all_jobs() if j["id"] not in ids]
     replaced: dict[str, str] = {}
@@ -4655,6 +4666,7 @@ def supersede(ids: list[str]) -> None:
                 and shape(s) == shape(n["spec"])
                 and code_of(s) != code_of(n["spec"])
                 and s.get("submitted", 0) <= n["spec"].get("submitted", 0)
+                and descends(s, n["spec"])
             ):
                 replaced.setdefault(j["id"], n["id"])
     pending = [j for j in all_jobs() if j["state"].get("state") not in TERMINAL and j["id"] not in replaced]
@@ -6779,7 +6791,7 @@ def parser() -> argparse.ArgumentParser:
         "under quiet at --level. An identical job that is pending or succeeded is returned instead; --sync "
         "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity, "
         "except that a --quest job's identity holds the bytes of each file its command names there. "
-        "A --quest job cancels the quest's still-queued jobs it replaces (the same job at other code).",
+        "A --quest job cancels the quest's still-queued jobs it replaces (the same job at newer code).",
     )
     p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")
     p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
@@ -6842,7 +6854,7 @@ def parser() -> argparse.ArgumentParser:
         "Resubmits jobs with their command, level, directory, environment and other repositories at another "
         "commit: by default the head of their quest's branch, else of their repository; a job whose commit was "
         "never on the quest's branches or main (a mutant) is refused without --commit. Each cancels its "
-        "quest's still-queued jobs it replaces (the same job at other code), unless a pending job waits on one.",
+        "quest's still-queued jobs it replaces (the same job at newer code), unless a pending job waits on one.",
     )
     p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: the quest's branch, else HEAD)")
