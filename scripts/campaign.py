@@ -790,6 +790,84 @@ def notify(title: str, body: str) -> None:
         report.notify(title, body)
 
 
+INBOX_STALE = 15 * 60  # seconds a message to a lead waits undelivered before the owner is told
+
+
+def stuck_leads() -> list[Json]:
+    """The recorded leads (but the caller) whose cmux inbox holds messages undelivered for longer than
+    INBOX_STALE, as a session blocked on a prompt holds them: campaign, surface, message ids and the
+    oldest's age. [] when cmux is absent or does not answer."""
+    exe = shutil.which("cmux")
+    folder = leads()
+    if not exe or not folder.is_dir():
+        return []
+    me = os.environ.get("CMUX_SURFACE_ID", "")
+    out: list[Json] = []
+    for entry in sorted(folder.iterdir()):
+        try:
+            surface = str(json.loads(entry.read_text()).get("surface", ""))
+            if not surface or surface == me:
+                continue
+            args = [exe, "agent", "inbox", "--surface", surface, "--json"]
+            done = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            data = json.loads(done.stdout) if done.returncode == 0 else {}
+        except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+            continue
+        messages = data.get("messages", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        now = time.time()
+        stale = {
+            str(m.get("id")): now - float(m["created_at"])
+            for m in messages
+            if isinstance(m, dict)
+            and m.get("delivered_at") is None
+            and isinstance(m.get("created_at"), (int, float))
+            and now - float(m["created_at"]) > INBOX_STALE
+        }
+        if stale:
+            out.append(
+                {"campaign": entry.name, "surface": surface, "ids": sorted(stale), "oldest": max(stale.values())}
+            )
+    return out
+
+
+def stuck_warnings() -> list[tuple[str, bool]]:
+    """A warning per lead holding stale messages, and whether it names one not reported before: the
+    owner is notified once per message (ids kept in leads-told.json beside the leads' records)."""
+    record = jobs_dir().parent / "leads-told.json"
+    try:
+        told: list[str] = [str(x) for x in json.loads(record.read_text())]
+    except (OSError, ValueError, TypeError):
+        told = []
+    out: list[tuple[str, bool]] = []
+    for lead in stuck_leads():
+        text = (
+            f"{plural(len(lead['ids']), 'message')} to {lead['campaign']}'s lead (cmux surface {lead['surface']}) "
+            f"undelivered for up to {span(lead['oldest'])}: its session may be waiting on a prompt"
+        )
+        fresh = [x for x in lead["ids"] if x not in told]
+        if fresh:
+            notify(f"campaign: {lead['campaign']}'s lead is not reading messages", text)
+            told += fresh
+        out.append((text, bool(fresh)))
+    if any(new for _, new in out):
+        with contextlib.suppress(OSError):
+            atomic_write(record, json.dumps(told[-500:]) + "\n")
+    return out
+
+
+_inbox_read = [0.0]
+
+
+def watch_leads() -> None:
+    """stuck_warnings at most once per CAMPAIGN_INBOX_SECONDS (60) of a wait; new ones go to stderr."""
+    if time.time() - _inbox_read[0] < float(os.environ.get("CAMPAIGN_INBOX_SECONDS", "60")):
+        return
+    _inbox_read[0] = time.time()
+    for text, new in stuck_warnings():
+        if new:
+            print(f"campaign: {text}", file=sys.stderr)
+
+
 def in_flight(counts: dict[str, int]) -> str:
     """ "2 in flight (1 active, 1 blocked)": the quests started and not landed, by stage."""
     stages = [f"{counts[s]} {'in review' if s == 'review' else s}" for s in FLIGHT if counts[s]]
@@ -4137,7 +4215,7 @@ def cmd_check(a: argparse.Namespace) -> int:
     reap()
     c = Campaign(home)
     found = problems(c)
-    notes = [*oversized_checks(c), *housekeeping(c)]
+    notes = [*oversized_checks(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
     for severity, message in [*found, *notes]:
         print_problem(severity, message)
     if not any(s != "note" for s, _ in [*found, *notes]):
@@ -6224,6 +6302,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
     while True:
         reap()
         exchange()
+        watch_leads()
         heads, ended = current()
         waiting = messages()
         moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
@@ -6268,6 +6347,7 @@ def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
     while True:
         reap()
         ensure_worker()
+        watch_leads()
         jobs = {x: load_job(jobs_dir() / x) for x in ids}
         pending = [x for x, j in jobs.items() if j["state"].get("state") not in TERMINAL]
         if not pending or (any_one and len(pending) < len(ids)):
@@ -6498,7 +6578,9 @@ def parser() -> argparse.ArgumentParser:
         "what other campaigns on this machine overlap; exits 1 on an error. Notes report what is left behind: "
         "landed quests not cleaned, what `job prune` would do to jobs, jobs of campaigns this machine does not "
         "know; a warning, free disk under disk_warn (`campaign config`, default 100 GiB), naming the five "
-        "largest consumers the campaigns know and what reclaims each. It changes nothing.",
+        "largest consumers the campaigns know and what reclaims each; a warning, and a notice to the owner once per "
+        "message, when a message to another campaign's lead has sat undelivered in cmux over 15 minutes. It "
+        "changes nothing.",
     )
     p.set_defaults(fn=cmd_check)
 
@@ -6632,7 +6714,8 @@ def parser() -> argparse.ArgumentParser:
         "block until jobs finish, or until anything new happens; no tokens",
         "Blocks until the jobs finish (exit 0 all done, 1 a failure, 3 the timeout). With --commits, until "
         "anything new happens in the campaign since the last such wait: a quest branch moves, a job ends, or "
-        "a message arrives.",
+        "a message arrives. Like `check`, it tells the owner of a message to a lead undelivered in cmux over 15 "
+        "minutes.",
     )
     p.add_argument("jobs", nargs="*", metavar="JOB", help="the jobs to wait for")
     p.add_argument("--quest", metavar="ID", help="every pending job of this quest")

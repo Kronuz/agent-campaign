@@ -1869,6 +1869,37 @@ class Messages(CampaignCase):
         self.fails(elsewhere, "brief", "--campaign", "nope", match="no campaign nope here or on this machine")
         self.fails(elsewhere, "brief", match="pass -C DIR, --campaign NAME, or set CAMPAIGN_HOME")
 
+    def test_check_and_wait_tell_the_owner_of_messages_a_lead_has_not_received(self) -> None:
+        inbox, calls, fake = self.root / "inbox.json", self.root / "cmux-calls", self.root / "bin" / "cmux"
+        script = f'printf "%s|" "$@" >> {calls}; echo >> {calls}\n[ "$1 $2" = "agent inbox" ] && cat {inbox}\n'
+        fake.write_text("#!/bin/sh\n" + script + "exit 0\n")
+        fake.chmod(0o755)
+        now = time.time()
+
+        def messages(*rows: tuple[str, float, bool]) -> None:
+            listed = [
+                {"id": m, "created_at": now - minutes * 60, "delivered_at": now if seen else None}
+                for m, minutes, seen in rows
+            ]
+            inbox.write_text(json.dumps({"messages": listed}))
+
+        messages(("m-old", 20, False), ("m-new", 2, False), ("m-seen", 30, True))
+        (self.root / "leads").mkdir(exist_ok=True)
+        (self.root / "leads" / "other").write_text(json.dumps({"surface": "surface-other", "workspace": "ws"}))
+        self.env["CMUX_WORKSPACE_ID"] = "ws-demo"
+        out = self.ok(self.home, "check").out
+        self.assertIn("1 message to other's lead (cmux surface surface-other) undelivered for up to 20m", out)
+        self.assertIn("agent|inbox|--surface|surface-other|--json|", calls.read_text())
+        self.assertEqual(calls.read_text().count("notify|--title|"), 1)
+        self.ok(self.home, "check")
+        self.assertEqual(calls.read_text().count("notify|--title|"), 1, "the owner was told twice of one message")
+        messages(("m-old", 20, False), ("m-two", 16, False))
+        r = self.ok(self.home, "wait", self.submit(self.home, "--", "true"), "--timeout", "60")
+        self.assertIn("2 messages to other's lead", r.err)
+        self.assertEqual(calls.read_text().count("notify|--title|"), 2)
+        fake.write_text("#!/bin/sh\nexit 1\n")
+        self.assertNotIn("lead (cmux surface", self.ok(self.home, "check").out, "a failing cmux is not silent")
+
     def test_a_leads_message_shows_until_it_is_closed(self) -> None:
         wt = self.started("fix", files="app.py")
         self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
