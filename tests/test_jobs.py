@@ -40,6 +40,25 @@ class Identity(CampaignCase):
         r = self.ok(wt, "job", "submit", "--quest", "fix", "--", 'python3 app.py --out "$JOB_OUT/x"')
         self.assertEqual(r.err, "")
 
+    def test_an_evidence_jobs_script_outside_the_checkout_is_part_of_its_identity(self) -> None:
+        wt = self.started("fix", files="app.py")
+        probe = self.home / ".scratch" / "probe.sh"
+        probe.parent.mkdir()
+        probe.write_text("echo one\n")
+        first = self.submit(wt, "--quest", "fix", "--sync", "--", f"sh {probe}")
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--", f"sh {probe}")
+        self.assertEqual(r.out.split()[0], first)
+        self.assertIn(f"warning: {probe} is outside this job's own checkout", r.err)
+        probe.write_text("echo two\n")
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--sync", "--", f"sh {probe}")
+        second = r.out.split()[0]
+        self.assertNotEqual(second, first, "a changed script reused the old script's result")
+        self.assertIn(f"note: the bytes of {probe} are part of this evidence job's identity", r.err)
+        self.assertIn("two", (self.root / "jobs" / second / "a1" / "log").read_text())
+        probe.write_text("echo three\n")
+        out = self.ok(self.home, "job", "rerun", second).out
+        self.assertNotIn("reused", out, "a rerun kept the script digest it was submitted with")
+
     def test_explicit_head_uses_the_submitting_task_worktree(self) -> None:
         self.started("fix", files="app.py,lib/**")
         self.ok(self.home, "start", "fix", "--task", "index", "--files", "lib/**")

@@ -4373,6 +4373,7 @@ def job_key(spec: Json) -> str:
         spec["cwd"],
         spec["level"],
         sorted(spec["env"].items()),
+        *([sorted(spec["scripts"].items())] if spec.get("scripts") else []),  # an evidence job's outside files
     ]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
 
@@ -5245,19 +5246,41 @@ def parse_ref(top: Path, item: str) -> tuple[str, Json]:
     return name, {"repo": str(repo), "commit": rev(repo, ref if at and Path(where).is_dir() else value)}
 
 
-def outside_inputs(command: str, repo: str) -> list[str]:
-    """Paths in a command into another job's files or a checkout of its repository: inputs that are
-    not part of the job's identity, so a rerun at the same code may see different files."""
+PATH_TOKEN = re.compile(r"(?<![\w.~/-])~?/[^\s'\"`;|&()<>,=]+")  # an absolute or ~ path in a command
+
+
+def outside_roots(repo: str) -> list[Path]:
+    """The job store and every checkout of REPO: where a command's paths are another job's files."""
     roots = [jobs_dir().resolve()]
     if repo:
         listing = git(Path(repo), "worktree", "list", "--porcelain", check=False)
         roots += [Path(x[len("worktree ") :]).resolve() for x in listing.splitlines() if x.startswith("worktree ")]
+    return roots
+
+
+def outside_inputs(command: str, repo: str) -> list[str]:
+    """Paths in a command into another job's files or a checkout of its repository: inputs that are
+    not part of the job's identity, so a rerun at the same code may see different files."""
+    roots = outside_roots(repo)
     found: list[str] = []
-    for token in re.findall(r"(?<![\w.~/-])~?/[^\s'\"`;|&()<>,=]+", command):
+    for token in PATH_TOKEN.findall(command):
         path = Path(token).expanduser().resolve()
         if any(path == r or path.is_relative_to(r) for r in roots):
             found.append(token)
     return list(dict.fromkeys(found))
+
+
+def script_digests(command: str, repo: str) -> dict[str, str]:
+    """The files a command names outside its checkout (in the job store, a checkout of REPO or the
+    user's home), each with a digest of its bytes: what an evidence job's identity adds."""
+    roots = [*outside_roots(repo), Path.home().resolve()]
+    out: dict[str, str] = {}
+    for token in dict.fromkeys(PATH_TOKEN.findall(command)):
+        path = Path(token).expanduser().resolve()
+        if path.is_file() and any(path.is_relative_to(r) for r in roots):
+            with contextlib.suppress(OSError):
+                out[token] = hashlib.sha256(path.read_bytes()).hexdigest()[:24]
+    return out
 
 
 BUILDS = re.compile(r"\bcmake\s+--build\b|\bninja\b|\bmeson\s+compile\b")  # builds a configured build dir
@@ -5323,6 +5346,14 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             "another repository with --ref NAME=PATH@REF",
             file=sys.stderr,
         )
+    if a.quest and spec.get("commit"):
+        spec["scripts"] = script_digests(command, spec["repo"])
+        if spec["scripts"]:
+            print(
+                f"note: the bytes of {', '.join(spec['scripts'])} are part of this evidence job's identity: "
+                "a changed script is another job",
+                file=sys.stderr,
+            )
     built = BUILDS.search(command) if spec.get("slot") and spec.get("commit") else None
     if built and not CONFIGURES.search(command):
         print(
@@ -5613,6 +5644,8 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
             spec["refs"] = refs
             branch = ""  # the job's own repository does not hold the quest's branch
         commit = commit or rev(Path(spec["repo"]), a.commit or branch or "HEAD")
+        if spec.get("quest"):  # an evidence job's outside scripts as they are now
+            spec["scripts"] = script_digests(spec["cmd"], spec["repo"])
         what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
         spec.update(
             commit=commit,
@@ -6661,7 +6694,8 @@ def parser() -> argparse.ArgumentParser:
         "queue a command at an exact commit",
         "Queues CMD to run at an exact commit (the quest's branch with --quest, else HEAD) in its own checkout, "
         "under quiet at --level. An identical job that is pending or succeeded is returned instead; --sync "
-        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity. "
+        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity, "
+        "except that a --quest job's identity holds the bytes of each file its command names there. "
         "A --quest job cancels the quest's still-queued jobs it replaces (the same job at other code).",
     )
     p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")

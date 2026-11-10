@@ -44,7 +44,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | a dataset version, a download, a feature flag | `--env NAME=VERSION` |
   | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
   | a measurement | the key; a strict or exclusive job is self-contained (A and B in one job, `--ref base=`), so its result stands for that code, host and toolchain |
-  | files outside the checkout | not seen: `submit` warns about paths into jobs or worktrees; build them in the job |
+  | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
 
   Upgrading `campaign` can change keys: `campaign verify` again. A journal's Evidence row naming
   a job counts only while that job, or the same job rerun, passed at the quest's current code;
