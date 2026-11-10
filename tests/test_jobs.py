@@ -371,6 +371,8 @@ class Crashes(CampaignCase):
             (d / "state.json").write_text(json.dumps(state))
             (d / "heartbeat").touch()
             os.utime(d / "heartbeat", (0, 0))
+            (d / "a1").mkdir()
+            (d / "a1" / "began").write_text("0\n")  # its command ran: not requeued as unstarted
             self.ok(self.home, "job", "list", "--all")  # reaps
             self.assertEqual(self.job(d.name)["state"], "interrupted")
             self.assertIsNone(bystander.poll(), "the reaper killed a session that is not the job's")

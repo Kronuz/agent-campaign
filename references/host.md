@@ -100,7 +100,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 | Event | What happens |
 |---|---|
 | Timeout (`--minutes` after the hold is granted) | TERM, then KILL after 10 s; state `timeout`, exit 124; never valid evidence |
-| Runner or worker killed, host suspended past a minute | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt's session (only if its leader is gone or is that runner: a reused pid is spared), and requeues it if `--retries` allows, else marks it `interrupted` |
+| Runner or worker killed, host suspended past a minute | The next reader (worker, `status`, `wait`, `check`) sees the stale heartbeat, kills what is left of the attempt's session (only if its leader is gone or is that runner: a reused pid is spared), and requeues it if `--retries` allows or its command never started (up to three attempts; nothing ran), else marks it `interrupted`. Runners start in the job store, never in the submitter's directory |
 | Host rebooted | The same, without killing anything (the boot id changed, so old pids mean nothing) |
 | Command finished but the runner died before recording | The exit code was written first; the reaper records it |
 | An old runner wakes after its attempt was replaced | It no longer owns the attempt and writes nothing |

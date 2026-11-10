@@ -274,7 +274,7 @@ Every session, lead or contributor, starts with `campaign brief` (in a worktree,
 `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
 job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
 completed or cleared by the next state-writing command. A job whose runner died is requeued when it
-allows retries, else marked `interrupted`. Submitting a job again never duplicates one: an
+allows retries or its command never started (up to three tries), else marked `interrupted`. Submitting a job again never duplicates one: an
 identical job that is queued, running or done is returned instead. An interrupted job may have run
 partway: resubmit it when its command is safe to repeat (builds, tests and measurements are);
 otherwise check what it changed first. Never invent a missing decision: write it under "Blocked
