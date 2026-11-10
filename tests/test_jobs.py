@@ -40,8 +40,11 @@ C_FILES = {
     "tests/t.c": "int v(void);\nint main(void) { return v() - 1; }\n",
     "app.py": "from lib import util\n\nprint(util.X)\n",
     "website/guide.mdx": "a page\n",  # a new top-level folder would change what imports list
+    "docs/old.md": "a doc\n",
 }
-CXX = "cmake -S . -B build -G Ninja >/dev/null && cmake --build build >/dev/null && ctest --test-dir build"
+HAS_CMAKE = all(map(shutil.which, ("cmake", "ninja", "cc")))
+BUILD = "cmake -S . -B build -G Ninja >/dev/null && cmake --build build >/dev/null"
+CXX = BUILD + " && ctest --test-dir build"
 FAKE_STRACE = """#!/bin/sh
 out=""
 while [ "$1" != "--" ]; do [ "$1" = "-o" ] && { shift; out=$1; }; shift; done
@@ -57,13 +60,14 @@ exit $code
 
 
 class ReadSets(CampaignCase):
-    """A passed job counts at any commit where every tracked file it read is unchanged."""
+    """A passed job counts at any commit where every tracked file it read, and every tracked path name,
+    is unchanged."""
 
     checkout: Path
 
     def setUp(self) -> None:
         super().setUp()
-        self.checkout = self.started("rs", files="CMakeLists.txt,src/**,tests/**,website/**,app.py,lib/**")
+        self.checkout = self.started("rs", files="CMakeLists.txt,src/**,tests/**,website/**,app.py,lib/**,docs/**")
         self.commit(self.checkout, C_FILES)
 
     def run_job(self, cmd: str, *extra: str) -> tuple[str, bool]:
@@ -75,13 +79,13 @@ class ReadSets(CampaignCase):
         data = json.loads((self.root / "jobs" / jid / "reads.json").read_text())
         return bool(data["complete"]), " ".join(data["why"]), set(data["reads"])
 
-    @unittest.skipUnless(all(map(shutil.which, ("cmake", "ninja", "cc"))), "needs cmake, ninja and a C compiler")
-    def test_cpp_and_python_jobs_count_wherever_what_they_read_is_unchanged(self) -> None:
-        cxx, _ = self.run_job(CXX, "--slot", "rs-build")
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_cpp_builds_and_python_jobs_count_wherever_what_they_read_is_unchanged(self) -> None:
+        cxx, _ = self.run_job(BUILD, "--slot", "rs-build")
         py, _ = self.run_job("python3 app.py")
         for jid in (cxx, py):
             self.assertTrue(self.reads(jid)[0], self.reads(jid)[1])
-        self.assertTrue({"src/lib.h", "src/lib.c", "tests/**", "CMakeLists.txt"} <= self.reads(cxx)[2])
+        self.assertTrue({"src/lib.h", "src/lib.c", "tests/t.c", "CMakeLists.txt", "**"} <= self.reads(cxx)[2])
         self.assertNotIn("src/other.c", self.reads(cxx)[2])
         self.assertTrue({"app.py", "lib/util.py"} <= self.reads(py)[2])
         self.verified("rs")
@@ -89,27 +93,30 @@ class ReadSets(CampaignCase):
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints one: the app run"))
         self.git(self.home, "commit", "-qam", "criteria")
         self.commit(self.checkout, {".campaign/demo/journal/rs.md": f"## Evidence\n\n| A1 | {py} |\n"})
-        self.commit(self.checkout, {"website/guide.mdx": "a page no job reads, edited\n"})
-        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.commit(self.checkout, {"website/guide.mdx": "a page no job reads, edited\n", "docs/new.md": "added\n"})
+        self.assertEqual(self.run_job(BUILD, "--slot", "rs-build"), (cxx, True))
         self.assertEqual(self.run_job("python3 app.py"), (py, True))
         out = self.ok(self.home, "status", "rs").out
         self.assertIn("    A1  met      prints one", out)
         self.assertIn("check unit is not green", self.ok(self.home, "brief", "rs").out)  # the build-test is exact
         self.commit(self.checkout, {"src/other.c": "int unused(void) { return 1; }\n"})
-        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.assertEqual(self.run_job(BUILD, "--slot", "rs-build"), (cxx, True))
         self.commit(self.checkout, {"lib/util.py": "X = 1  # read by the app\n"})
-        self.assertEqual(self.run_job(CXX, "--slot", "rs-build"), (cxx, True))
+        self.assertEqual(self.run_job(BUILD, "--slot", "rs-build"), (cxx, True))
         self.assertNotEqual(self.run_job("python3 app.py")[0], py)  # an imported module changed
         self.commit(self.checkout, {"src/lib.h": "#define V 1  /* a header the depfile lists */\n"})
-        rebuilt, reused = self.run_job(CXX, "--slot", "rs-build")
+        rebuilt, reused = self.run_job(BUILD, "--slot", "rs-build")
         self.assertFalse(reused)
         # an incremental build in the slot still records the up-to-date objects' deps
         self.assertTrue({"src/lib.h", "tests/t.c"} <= self.reads(rebuilt)[2])
+        self.commit(self.checkout, {"src/new.c": "int added(void) { return 0; }\n"})  # any new path voids reuse
+        self.assertFalse(self.run_job(BUILD, "--slot", "rs-build")[1])
 
     def test_partial_capture_keeps_whole_tree_identity(self) -> None:
         nodeps, _ = self.run_job("mkdir -p build && touch build/CMakeCache.txt && python3 app.py", "--fresh")
         self.assertFalse(self.reads(nodeps)[0])
-        self.assertIn("has no dependency information", self.reads(nodeps)[1])
+        self.assertIn("is not a Ninja build", self.reads(nodeps)[1])
+        self.assertIn("mkdir runs, and only a trace sees what it reads", self.reads(nodeps)[1])
         fake = self.root / "bin" / "fake-strace"
         fake.write_text(FAKE_STRACE)
         fake.chmod(0o755)
@@ -159,6 +166,136 @@ class ReadSets(CampaignCase):
                 ("/r/tool", False),
             ],
         )
+
+    def test_a_child_traced_before_its_clone_returns_starts_in_its_parents_directory(self) -> None:
+        log = self.root / "trace"
+        log.write_text(
+            '10 chdir("sub") = 0\n'
+            "10 clone(child_stack=NULL, flags=SIGCHLD <unfinished ...>\n"
+            '11 chdir("deeper") = 0\n'
+            '11 openat(AT_FDCWD, "a.h", O_RDONLY) = 3</r/sub/deeper/a.h>\n'
+            "10 <... clone resumed>) = 11\n"
+            "11 +++ exited with 0 +++\n"
+            "10 +++ exited with 0 +++\n"
+        )
+        paths, problem = campaign_module().strace_paths(log, "/r")
+        self.assertEqual((paths[-1], problem), (("/r/sub/deeper/a.h", False), ""))
+        log.write_text('10 openat(AT_FDCWD, "a.h", O_RDONLY) = 3</r/a.h>\n11 openat(AT_FDCWD, "b.h", O_RDONLY) = 3\n')
+        self.assertEqual(
+            campaign_module().strace_paths(log, "/r")[1], "a process starts where the trace cannot tell its directory"
+        )
+
+    def test_python_that_skips_its_site_hook_is_seen_as_unrecorded(self) -> None:
+        hooked = campaign_module().hooked
+        for argv, expected in (
+            (["python3", "app.py"], True),
+            (["python3", "-X", "dev", "-W", "error", "app.py"], True),
+            (["python3", "-c", "import sys; -I"], True),
+            (["python3", "-I", "app.py"], False),
+            (["/usr/bin/python3.14", "-sE", "app.py"], False),
+            (["python3", "-S", "app.py"], False),
+            (["pypy3", "app.py"], False),
+        ):
+            self.assertEqual(hooked(argv, ""), expected, argv)
+
+
+CM = "cmake_minimum_required(VERSION 3.16)\nproject(p C)\nenable_testing()\n"
+GEN = (
+    "add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/gen.h COMMAND cp ${CMAKE_SOURCE_DIR}/tools/v.h "
+    "${CMAKE_BINARY_DIR}/gen.h DEPENDS ${CMAKE_SOURCE_DIR}/tools/v.h)\n"
+    "add_executable(t tests/t.c ${CMAKE_BINARY_DIR}/gen.h)\n"
+    "target_include_directories(t PRIVATE ${CMAKE_BINARY_DIR})\nadd_test(NAME t COMMAND t)\n"
+)
+GEN_FILES = {"tests/t.c": '#include "gen.h"\nint main(void) { return V - 1; }\n', "tools/v.h": "#define V 1\n"}
+
+
+class FalseReuse(CampaignCase):
+    """Each case passes, commits a change that breaks the same command, and checks the job reruns there."""
+
+    checkout: Path
+
+    def assert_reruns(
+        self, files: dict[str, str], cmd: str, broken: dict[str, str], *extra: str, links: dict[str, str] | None = None
+    ) -> None:
+        self.checkout = self.started("rs", files="**")
+        self.commit(self.checkout, files)
+        for link, target in (links or {}).items():
+            os.symlink(target, self.checkout / link)
+            self.git(self.checkout, "add", link)
+            self.git(self.checkout, "commit", "-qm", "link")
+        self.ok(self.checkout, "job", "submit", "--quest", "rs", "--sync", *extra, "--", cmd)
+        self.commit(self.checkout, broken)
+        r = self.run_cli(self.checkout, "job", "submit", "--quest", "rs", "--sync", *extra, "--", cmd)
+        self.assertNotIn("(reused", r.out)
+        self.assertNotEqual(r.code, 0, "the change breaks the command")
+
+    def test_a_symlink_counts_by_its_target(self) -> None:
+        files = {"real/data.txt": "ok\n", "app.py": "import sys\nsys.exit(open('data.txt').read() != 'ok\\n')\n"}
+        self.assert_reruns(
+            files, "python3 app.py", {"real/data.txt": "bad\n"}, "--fresh", links={"data.txt": "real/data.txt"}
+        )
+
+    def test_a_file_only_looked_up_voids_reuse_when_added(self) -> None:
+        files = {"conf/a": "x\n", "app.py": "import os, sys\nsys.exit(os.path.exists('conf/off'))\n"}
+        self.assert_reruns(files, "python3 app.py", {"conf/off": "1\n"}, "--fresh")
+
+    def test_a_python_child_without_the_site_hook_is_unrecorded(self) -> None:
+        files = {
+            "tools/child.py": "raise SystemExit(0)\n",
+            "app.py": "import subprocess, sys\nsys.exit(subprocess.run([sys.executable, '-I', 'tools/child.py']).returncode)\n",
+        }
+        self.assert_reruns(files, "python3 app.py", {"tools/child.py": "raise SystemExit(1)\n"}, "--fresh")
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_compiled_test_reads_untraced_data(self) -> None:
+        cm = CM + "add_executable(t tests/t.c)\nadd_test(NAME t COMMAND t WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})\n"
+        t = '#include <stdio.h>\nint main(void) { FILE *f = fopen("data/expected.txt", "r"); return !f || fgetc(f) != \'o\'; }\n'
+        files = {"CMakeLists.txt": cm, "tests/t.c": t, "data/expected.txt": "ok\n"}
+        self.assert_reruns(files, CXX, {"data/expected.txt": "no\n"}, "--slot", "p-data")
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_new_source_a_glob_finds(self) -> None:
+        cm = (
+            CM
+            + "file(GLOB SRC src/*.c)\nadd_library(lib ${SRC})\nadd_executable(t tests/t.c)\ntarget_link_libraries(t lib)\n"
+        )
+        files = {"CMakeLists.txt": cm, "src/lib.c": "int v(void) { return 1; }\n", "tests/t.c": C_FILES["tests/t.c"]}
+        self.assert_reruns(files, BUILD, {"src/bad.c": "#error broken\n"}, "--slot", "p-glob")
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_ctest_script(self) -> None:
+        cm = CM + "add_test(NAME s COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/check.sh)\n"
+        self.assert_reruns(
+            {"CMakeLists.txt": cm, "scripts/check.sh": "exit 0\n"},
+            CXX,
+            {"scripts/check.sh": "exit 1\n"},
+            "--slot",
+            "p-sh",
+        )
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_configure_file_template(self) -> None:
+        cm = (
+            CM
+            + "configure_file(cfg.h.in cfg.h)\nadd_executable(t tests/t.c)\ntarget_include_directories(t PRIVATE ${CMAKE_BINARY_DIR})\n"
+        )
+        files = {
+            "CMakeLists.txt": cm,
+            "cfg.h.in": "#define C 1\n",
+            "tests/t.c": '#include "cfg.h"\nint main(void) { return C - 1; }\n',
+        }
+        self.assert_reruns(files, BUILD, {"cfg.h.in": "#error broken\n"}, "--slot", "p-cfg")
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_custom_commands_input_under_ninja(self) -> None:
+        files = {"CMakeLists.txt": CM + GEN, **GEN_FILES}
+        self.assert_reruns(files, CXX, {"tools/v.h": "#define V 2\n"}, "--slot", "p-gen")
+
+    @unittest.skipUnless(HAS_CMAKE, "needs cmake, ninja and a C compiler")
+    def test_a_custom_commands_input_under_makefiles(self) -> None:
+        files = {"CMakeLists.txt": CM + GEN, **GEN_FILES}
+        make = BUILD.replace("-G Ninja", '-G "Unix Makefiles"') + " && ./build/t"
+        self.assert_reruns(files, make, {"tools/v.h": "#define V 2\n"}, "--slot", "p-mk")
 
 
 class Identity(CampaignCase):

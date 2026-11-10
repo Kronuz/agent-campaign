@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Generator, Sequence
+from collections.abc import Callable, Collection, Generator, Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
@@ -4379,10 +4379,14 @@ INPUTS_HELP = (
 )
 
 
+def shell_words(cmd: str) -> list[str]:
+    return [x for x in re.split(r"[\s;|&()<>=\"'`]+", cmd) if x]
+
+
 def named_paths(cmd: str, cwd: str) -> list[str]:
     """The repository paths a command names (its scripts, and folders it enters), relative to the root."""
     out: list[str] = []
-    for token in re.split(r"[\s;|&()<>=\"'`]+", cmd):
+    for token in shell_words(cmd):
         word = token[2:] if token.startswith("./") else token
         if not word or word.startswith(("-", "/", "$", "~")) or set(word) & set("*?[") or word in (".", ".."):
             continue
@@ -4855,9 +4859,24 @@ if _out and hasattr(sys, "addaudithook"):
         elif event == "glob.glob":
             _note("g", args[0])
         elif event == "subprocess.Popen":
-            _note("x", args[0] if args[0] is not None else list(args[1])[0] if args[1] else "-")
+            _ran(args[0], args[1], args[3], args[2])
         elif event in ("os.exec", "os.posix_spawn"):
-            _note("x", args[0])
+            _ran(args[0], args[1], args[2])
+        elif event == "os.system":
+            _ran("sh", ["sh"], None)
+
+    def _ran(exe, argv, env, cwd=None):
+        """Notes a program it starts (argv joined by \\x1f), and whether this job's hook loads in it."""
+        try:
+            env = os.environ if env is None else env
+            hooked = env.get("CAMPAIGN_READS_PY") == _out and _out in str(env.get("PYTHONPATH", "")).split(os.pathsep)
+            exe = os.fsdecode(exe)
+            if os.sep in exe:
+                exe = os.path.abspath(os.path.join(os.fsdecode(cwd or ""), exe))
+            line = "\\x1f".join([exe, *map(os.fsdecode, list(argv)[1:])])
+        except (TypeError, ValueError):
+            hooked, line = False, "-"
+        _fh.write("x %d%s\\n" % (hooked, line.replace("\\n", " ")))
 
     sys.addaudithook(_hook)
 
@@ -4878,9 +4897,6 @@ if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(importlib.util.module_from_spec(_spec))
 '''
 STRACE_ARGS = ("-f", "-q", "-y", "-s", "65535", "-e", "trace=%file,%process,fchdir")
-SOURCES = (".c", ".cc", ".cpp", ".cxx", ".c++", ".m", ".mm", ".cu")
-BUILD_TOOLS = re.compile(r"(?:^|/)(?:cmake|ninja|make|gmake|ctest)$")
-PYTHON = re.compile(r"(?:^|/)(?:python[\d.]*|pytest|py\.test)$")
 _tracers: dict[str, bool] = {}
 
 
@@ -4916,66 +4932,70 @@ def tree_map(repo: Path, commit: str) -> tuple[dict[str, str], dict[str, list[st
 _maps: dict[tuple[str, str], tuple[dict[str, str], dict[str, list[str]]]] = {}
 
 
-def read_value(objects: dict[str, str], names: dict[str, list[str]], key: str) -> str:
-    """What a read-set key holds at a commit: PATH its object ("dir" for a folder), PATH/ the names a
-    listing of it returns, PATH/** everything under it; "-" when it is not there."""
-    if key.endswith("/**"):
-        path = key[:-3]
-        return objects.get(path, "-") if path else "-"
-    if key.endswith("/"):
-        path = key[:-1]
-        if path and not objects.get(path, "").endswith("/"):
-            return "-"
-        listing = sorted(names.get(path, []))
-        return hashlib.sha256("\0".join(listing).encode()).hexdigest()[:24]
-    found = objects.get(key, "-")
-    return "dir" if found.endswith("/") else found
-
-
-def make_deps(text: str) -> dict[str, list[str]]:
-    """A Makefile depfile's targets and their prerequisites."""
-    out: dict[str, list[str]] = {}
-    for rule in text.replace("\\\n", " ").splitlines():
-        target, sep, deps = rule.partition(": ")
-        if sep and not rule.lstrip().startswith("#"):
-            out.setdefault(target.strip(), []).extend(x.replace("\\ ", " ") for x in re.split(r"(?<!\\) +", deps) if x)
+def read_values(repo: Path, commit: str, spec: Json, keys: Iterable[str]) -> dict[str, str]:
+    """What each read-set key holds at COMMIT: PATH its object ("dir" for a folder), PATH/ the names a
+    listing of it returns, PATH/** everything under it, "-" when it is not there; and "**" the tree's
+    path names, less the documentation the job's command does not name and `tested_docs` does not match."""
+    objects, names = tree_map(repo, commit)
+    out: dict[str, str] = {}
+    for key in keys:
+        if key == "**":
+            tested = tested_docs(spec)
+            paths = [p for p, o in objects.items() if not o.endswith("/") and not doc_path(p, spec["cmd"], tested)]
+            out[key] = hashlib.sha256("\0".join(sorted(paths)).encode()).hexdigest()[:24]
+        elif key.endswith("/**"):
+            out[key] = objects.get(key[:-3], "-") if key[:-3] else "-"
+        elif key.endswith("/"):
+            path = key[:-1]
+            listed = not path or objects.get(path, "").endswith("/")
+            out[key] = (
+                hashlib.sha256("\0".join(sorted(names.get(path, []))).encode()).hexdigest()[:24] if listed else "-"
+            )
+        else:
+            found = objects.get(key, "-")
+            out[key] = "dir" if found.endswith("/") else found
     return out
 
 
-def build_deps(build: Path, path_env: str) -> tuple[dict[str, list[str]], str]:
-    """Each target a build directory has built, with every input its depfiles name (relative to the
-    directory, or absolute), up-to-date ones included; or why they cannot be read."""
-    deps: dict[str, list[str]] = {}
-    if (build / "build.ninja").exists():
-        ninja = shutil.which("ninja", path=path_env)
-        if not ninja:
-            return {}, f"no ninja to read {build}'s deps"
-        p = subprocess.run([ninja, "-C", str(build), "-t", "deps"], capture_output=True, text=True, check=False)
-        q = subprocess.run([ninja, "-C", str(build), "-t", "inputs"], capture_output=True, text=True, check=False)
-        if p.returncode or q.returncode:
-            return {}, f"ninja could not list {build}'s deps"
-        target = ""
-        for line in p.stdout.splitlines():
-            if line.startswith((" ", "\t")):
-                deps.setdefault(target, []).append(line.strip())
-            elif ": #deps" in line:
-                target = line.split(": #deps")[0]
-        deps.setdefault("", []).extend(x for x in q.stdout.splitlines() if x)
-    else:
-        for depfile in [*build.glob("CMakeFiles/**/*.d"), *build.glob("CMakeFiles/**/compiler_depend.make")]:
-            for target, inputs in make_deps(depfile.read_text(errors="replace")).items():
-                deps.setdefault(target, []).extend(inputs)
-    if not any(k for k, v in deps.items() if k and v):
-        return {}, f"{build} has no dependency information"
-    return deps, ""
+def build_deps(build: Path, path_env: str, traced: bool) -> tuple[list[str], str]:
+    """Every input of a Ninja build directory (relative to it, or absolute): what the depfiles of every
+    target built there name, up-to-date ones included, the declared inputs and what configuring read;
+    or why that is not all its build read."""
+    if not (build / "build.ninja").exists():
+        return [], f"{build} is not a Ninja build, whose deps name every input"
+    ninja = shutil.which("ninja", path=path_env)
+    if not ninja:
+        return [], f"no ninja to read {build}'s deps"
+    tools = (["deps"], ["inputs"], ["query", "build.ninja"], ["targets", "all"])
+    runs = [
+        subprocess.run([ninja, "-C", str(build), "-t", *t], capture_output=True, text=True, check=False) for t in tools
+    ]
+    if any(r.returncode for r in runs):
+        return [], f"ninja could not list {build}'s deps"
+    deps, inputs, query, targets = (r.stdout.splitlines() for r in runs)
+    found = [x.strip() for x in deps if x.startswith((" ", "\t"))]
+    if not found:
+        return [], f"{build} has no dependency information"
+    section = ""
+    for line in query:  # build.ninja's inputs: what configuring read (CMakeLists, configure_file sources)
+        if line.startswith("    ") and section == "input:":
+            found.append(line.strip().lstrip("|").strip())
+        elif not line.startswith("    "):
+            section = line.strip().split(" ")[0]
+    custom = {x.rpartition(": ")[0] for x in targets if x.endswith(": CUSTOM_COMMAND")}
+    log = build / ".ninja_log"
+    built = {x.split("\t")[3] for x in log.read_text(errors="replace").splitlines()[1:]} if log.exists() else set()
+    if not traced and (ran := sorted(built & custom)):
+        return [], f"{build} ran custom commands ({', '.join(ran[:3])}), and only a trace sees what they read"
+    return found + inputs, ""
 
 
 def used_builds(roots: list[Path], cwd: Path, cmd: str) -> list[Path]:
     """Build directories (build.ninja or CMakeCache.txt) a job used: those its command names, and any
     within three levels of its checkout or output directory."""
     found: list[Path] = []
-    for word in re.split(r"[\s;|&()<>=\"'`]+", cmd):
-        if word and (cwd / word).is_dir():
+    for word in shell_words(cmd):
+        if (cwd / word).is_dir():
             found.append((cwd / word).resolve())
     for root in roots:
         for top, dirs, files in os.walk(root):
@@ -4986,8 +5006,71 @@ def used_builds(roots: list[Path], cwd: Path, cmd: str) -> list[Path]:
                 dirs.clear()
             else:
                 dirs[:] = [x for x in dirs if not x.startswith(".") and x != "node_modules"]
-    marked = [d for d in dict.fromkeys(found) if (d / "build.ninja").exists() or (d / "CMakeCache.txt").exists()]
-    return marked
+    return [d for d in dict.fromkeys(found) if (d / "build.ninja").exists() or (d / "CMakeCache.txt").exists()]
+
+
+def hooked(argv: list[str], path_env: str, cwd: str = "") -> bool:
+    """Whether ARGV runs CPython, itself or by a script's #!, without -I, -E or -S: the job's
+    sitecustomize then records its reads."""
+    if not argv:
+        return False
+    if not re.fullmatch(r"python[\d.]*", os.path.basename(argv[0])):
+        found = shutil.which(os.path.join(cwd, argv[0]) if os.sep in argv[0] else argv[0], path=path_env)
+        try:
+            with open(found or os.devnull, "rb") as fh:
+                line = fh.readline(512).decode()
+        except (OSError, UnicodeDecodeError):
+            return False
+        words: list[str] = line[2:].split() if line.startswith("#!") else []
+        if words[:1] and os.path.basename(words[0]) == "env":
+            words = [w for w in words[1:] if w != "-S"]
+        return bool(re.fullmatch(r"python[\d.]*", os.path.basename(words[0]) if words else "")) and hooked(words, "")
+    for word in argv[1:]:
+        if word[:1] != "-" or word in ("-", "--"):
+            return True
+        for flag in word[1:]:
+            if flag in "IES":
+                return False
+            if flag in "cmWX":  # the rest is its argument
+                break
+    return True
+
+
+SHELL_BUILTINS = {"cd", "echo", "printf", "true", "false", ":", "test", "[", "export", "set", "unset", "exit"}
+BUILD_TOOLS = re.compile(r"(?:^|/)(?:cmake|ninja|make|gmake)$")
+
+
+def shell_programs(cmd: str, path_env: str, cwd: str) -> tuple[list[str], list[str]]:
+    """The programs a command's shell starts whose reads are recorded without a trace (Python with the
+    job's hook; cmake, ninja and make through the build's deps), and the rest; builtins that read no
+    file are in neither."""
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return [], [cmd]
+    commands: list[list[str]] = [[]]
+    redirect = False
+    for token in tokens:
+        if redirect:
+            redirect = False
+        elif set(token) <= set("();<>|&"):
+            redirect = bool(set(token) & set("<>"))
+            commands += [] if redirect else [[]]
+        elif commands[-1] or not re.fullmatch(r"\w+=.*", token, re.S):
+            commands[-1].append(token)
+    seen: list[str] = []
+    unseen: list[str] = []
+    for argv in filter(None, commands):
+        if argv[0] in SHELL_BUILTINS:
+            continue
+        built = BUILD_TOOLS.search(argv[0]) and not {"-E", "-P"} & set(argv)
+        (seen if built or hooked(argv, path_env, cwd) else unseen).append(argv[0])
+    return seen, unseen
+
+
+FORKS = ("clone(", "clone3(", "fork(", "vfork(")
 
 
 def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
@@ -4998,11 +5081,15 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
     cwds: dict[str, str] = {}
     pending: dict[str, str] = {}
     out: list[tuple[str, bool]] = []
-    top, ended = "", False
+    top, ended, unknown = "", False, False
     for line in log.read_text(errors="replace").splitlines():
         pid, _, rest = line.partition(" ")
         rest = rest.strip()
         top = top or pid
+        if pid not in cwds:  # a child seen before its parent's clone returns starts where the parent is
+            parents = {cwds.get(p, cwd) for p, call in pending.items() if call.startswith(FORKS)}
+            unknown = unknown or (pid != top and len(parents) != 1)
+            cwds[pid] = cwd if pid == top or len(parents) != 1 else parents.pop()
         if rest.startswith("+++"):
             ended = ended or (pid == top and rest.startswith("+++ exited with"))
             continue
@@ -5016,9 +5103,9 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
         if not m:
             continue
         call, args, ret = m.groups()
-        base = cwds.get(pid, cwd)
-        if call in ("clone", "clone3", "fork", "vfork") and ret.isdigit():
-            cwds[ret] = base
+        base = cwds[pid]
+        if call + "(" in FORKS and ret.isdigit():
+            cwds.setdefault(ret, base)
         strings = [
             codecs.escape_decode(x.encode())[0].decode(errors="surrogateescape")
             for x in re.findall(r'"((?:[^"\\]|\\.)*)"', args)
@@ -5030,11 +5117,12 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
                 cwds[pid] = fd.group(1)
         if not strings:
             continue
-        at = dirfd.group(2) if dirfd else base
-        path = os.path.normpath(os.path.join(at, strings[0]))
+        path = os.path.normpath(os.path.join(dirfd.group(2) if dirfd else base, strings[0]))
         if call == "chdir" and ret == "0":
             cwds[pid] = path
         out.append((path, "O_DIRECTORY" in args))
+    if unknown:
+        return out, "a process starts where the trace cannot tell its directory"
     if not ended:
         return out, "the trace ends before its first process exits"
     return out, ""
@@ -5042,19 +5130,19 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[tuple[str, bool]], str]:
 
 def record_reads(spec: Json, root: Path, cwd: Path, ad: Path, traced: bool) -> Json:
     """The read set of a job that ran at its commit: the tracked files, folders and listings its
-    processes read, as keys with what each held, plus the files that always count (build files,
-    `tested_docs`, declared inputs, the paths its command names). "complete" is false when any
-    capture is missing or partial: the job then keeps whole-tree identity."""
+    processes read (a symlink's target too), the tree's path names ("**"), and the files that always
+    count (build files, `tested_docs`, declared inputs, the paths its command names). It is complete
+    only when every source of reads reports itself whole; otherwise the job keeps whole-tree identity."""
     repo, commit = Path(spec["repo"]), spec["commit"]
-    objects, names = tree_map(repo, commit)
+    objects, _ = tree_map(repo, commit)
     tops = list(dict.fromkeys([str(root), os.path.realpath(root)]))
-    keys: set[str] = set()
+    keys: set[str] = {"**"}
     why: list[str] = []
+    path_env = spec.get("path") or os.environ.get("PATH", "")
     builds = used_builds([root, ad / "out"], cwd, spec["cmd"])
     skip = [str(b) for b in builds] + [os.path.realpath(b) for b in builds]
 
-    def rel(path: str, base: str = str(cwd)) -> str | None:
-        full = os.path.normpath(os.path.join(base, path))
+    def inside(full: str) -> str | None:
         if any(full == x or full.startswith(x + "/") for x in skip):
             return None
         for top in tops:
@@ -5065,88 +5153,56 @@ def record_reads(spec: Json, root: Path, cwd: Path, ad: Path, traced: bool) -> J
                 return None if inner == ".git" or inner.startswith(".git/") or is_meta(inner) else inner
         return None
 
-    always = [*BUILD_FILES]
+    def rels(path: str, base: str = str(cwd)) -> list[str]:
+        """PATH inside the checkout, as spelled and as resolved."""
+        full = os.path.normpath(os.path.join(base, path))
+        return [x for x in dict.fromkeys([inside(full), inside(os.path.realpath(full))]) if x is not None]
+
     extra = [*tested_docs(spec), *spec.get("inputs", [])]
     for path in objects:
-        if any(fnmatch.fnmatchcase(path.rsplit("/", 1)[-1], g) for g in always) or any(
+        if any(fnmatch.fnmatchcase(path.rsplit("/", 1)[-1], g) for g in BUILD_FILES) or any(
             fnmatch.fnmatchcase(path, g) for g in extra
         ):
             keys.add(path)
-    words = [x for x in re.split(r"[\s;|&()<>=\"'`]+", spec["cmd"]) if x]
     for x in named_paths(spec["cmd"], spec.get("cwd", "")):
         if x in objects:
             keys.add(x + "/**" if objects[x].endswith("/") else x)
-            if not traced and not x.endswith(".py") and not objects[x].endswith("/"):
-                mode = git(repo, "ls-tree", commit, "--", x).split(" ", 1)[0]
-                if mode == "100755" or x.endswith((".sh", ".bash")):
-                    why.append(f"{x} runs, and only a trace sees what it reads")
-    sources = 0
+    records = sorted((ad / "reads").glob("py-*.txt"))
     if traced:
         found, problem = strace_paths(ad / "reads" / "strace", str(cwd))
-        if problem:
-            why.append(problem)
-        for path, listed in found:
-            inner = rel(path)
-            if inner is not None:
-                keys.add(inner + "/" if listed else inner)
-        sources += 1
+        why += [problem] if problem else []
+        keys.update(x + "/" if listed else x for path, listed in found for x in rels(path))
+    else:
+        seen, unseen = shell_programs(spec["cmd"], path_env, str(cwd))
+        why += [f"{x} runs, and only a trace sees what it reads" for x in unseen]
+        if not builds and any(BUILD_TOOLS.search(x) for x in seen):
+            why.append("the command builds, and no build directory with dependency information was found")
+        if not records and any(not BUILD_TOOLS.search(x) for x in seen):
+            why.append("the command runs Python and no Python process recorded its reads")
     for build in builds:
-        deps, problem = build_deps(build, spec.get("path") or os.environ.get("PATH", ""))
-        if problem:
-            why.append(problem)
-            continue
-        sources += 1
-        for inputs in deps.values():
-            for x in inputs:
-                inner = rel(x, str(build))
-                if inner:
-                    keys.add(inner)
-        if not traced:  # a test reads beside its sources: count their folders whole
-            for ctest in build.rglob("CTestTestfile.cmake"):
-                for exe in re.findall(r'add_test\(\S+ "([^"]+)"', ctest.read_text(errors="replace")):
-                    if not os.path.realpath(exe).startswith(os.path.realpath(build) + "/"):
-                        continue
-                    name = os.path.basename(exe)
-                    objs = [t for t in deps if f"CMakeFiles/{name}.dir/" in t]
-                    if not objs:
-                        why.append(f"no dependency information for test {name}")
-                    for t in objs:
-                        for x in deps[t]:
-                            inner = rel(x, str(build)) if x.endswith(SOURCES) else None
-                            if inner is not None:
-                                keys.add(inner.rpartition("/")[0] + "/**")
-    if not builds and any(BUILD_TOOLS.search(w) for w in words):
-        why.append("the command builds, and no build directory with dependency information was found")
-    records = sorted((ad / "reads").glob("py-*.txt"))
+        inputs, problem = build_deps(build, path_env, traced)
+        why += [problem] if problem else []
+        keys.update(x for path in inputs for x in rels(path, str(build)) if x)
     for record in records:
         for line in record.read_text(errors="replace").splitlines():
             kind, _, path = line.partition(" ")
-            if kind == "o" and (inner := rel(path)):
-                keys.add(inner)
-            elif kind == "d" and (inner := rel(path)) is not None:
-                keys.add(inner + "/")
+            if kind == "o":
+                keys.update(x for x in rels(path) if x)
+            elif kind == "d":
+                keys.update(x + "/" for x in rels(path))
             elif kind == "g":
                 fixed = re.split(r"[*?\[]", path, maxsplit=1)[0]
-                inner = rel(fixed if fixed.endswith("/") else os.path.dirname(fixed))
-                if inner is not None:
-                    if not inner:
-                        why.append(f"a glob of the whole checkout ({path})")
+                for inner in rels(fixed if fixed.endswith("/") else os.path.dirname(fixed)):
+                    why += [] if inner else [f"a glob of the whole checkout ({path})"]
                     keys.add(inner + "/**")
             elif kind == "x" and not traced:
-                exe = os.path.realpath(path)
-                if not PYTHON.search(os.path.basename(path)) and not any(exe.startswith(x + "/") for x in skip):
-                    why.append(f"Python ran {path}, and only a trace sees what it reads")
-    sources += bool(records)
-    if not traced and not records and any(PYTHON.search(w) or w.endswith(".py") for w in words):
-        why.append("the command runs Python and no Python process recorded its reads")
-    if not sources:
+                argv = path[1:].split("\x1f")
+                if path[:1] != "1" or not hooked(argv, path_env):
+                    why.append(f"Python ran {argv[0]}, and only a trace sees what it reads")
+    if not traced and not records and not builds:
         why.append("nothing recorded what it read")
     keys.discard("")
-    return {
-        "complete": not why,
-        "why": why,
-        "reads": {k: read_value(objects, names, k) for k in sorted(keys)},
-    }
+    return {"complete": not why, "why": why, "reads": read_values(repo, commit, spec, sorted(keys))}
 
 
 def save_reads(job: Json, reads: Json) -> None:
@@ -5162,13 +5218,13 @@ def save_reads(job: Json, reads: Json) -> None:
             (folder / d.name).symlink_to(f"../../{d.name}")
 
 
-def reads_hold(repo: Path, commit: str, d: Path) -> bool:
+def reads_hold(repo: Path, commit: str, job: Json) -> bool:
     """Whether every file a job read holds the same content at COMMIT."""
+    d = job["dir"]
     reads = read_json(d / "reads.json") if (d / "reads.json").exists() else None
     if not isinstance(reads, dict) or not reads.get("complete"):
         return False
-    objects, names = tree_map(repo, commit)
-    return all(read_value(objects, names, k) == v for k, v in reads["reads"].items())
+    return read_values(repo, commit, job["spec"], reads["reads"]) == reads["reads"]
 
 
 def read_twin(spec: Json, commit: str) -> Json | None:
@@ -5185,7 +5241,7 @@ def read_twin(spec: Json, commit: str) -> Json | None:
         job = load_job(d)
         if job["state"].get("state") != "done" or not job["spec"].get("commit"):
             continue
-        if on_commits((f"reads:{link.name}", str(repo), commit), lambda d=d: reads_hold(repo, commit, d)):
+        if on_commits((f"reads:{link.name}", str(repo), commit), lambda job=job: reads_hold(repo, commit, job)):
             count = len((read_json(d / "reads.json") or {}).get("reads", {}))
             return {**job, "at": job["spec"]["commit"], "reads": count}
     return None
