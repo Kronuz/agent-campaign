@@ -66,11 +66,10 @@ the plan challenge, a reviewer from another model family when the harness offers
 
 The **frontier** tier, the most capable model a harness offers above strong, is for targeted hard
 or sensitive work only: research, a critical quest's review, and the design or review of a format,
-wire protocol, durability or concurrency mechanism about to freeze. Name the task it is for at each
-launch, run one at a time, and never make it a role's default. Whether it beats strong on a kind
-of work is measured, not assumed: run both on the same commit from fresh contexts and compare the
-material findings each alone made. Each
-harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
+wire protocol, durability or concurrency mechanism about to freeze. Name its task at each launch,
+run one at a time, never make it a role's default, and measure whether it beats strong: both on one
+commit from fresh contexts, compared by the material findings each alone made. Each harness's
+models for the tiers are in `references/harness.md`. Change a default on outcomes
 (`campaign usage`, criteria met, rework), not on price alone. The lead does small edits itself
 (a five-line fix, a trivial conflict): a launch costs more.
 
@@ -104,15 +103,17 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   the part the review exists for.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
-  never atomic: each intermediate state must work. The campaign's records stay in the home: a quest
-  in another repository has its code worktree there and its journal in a sparse worktree of the
-  home on a branch of the same name (`campaign get ID journal`); landing merges the journal into the
-  home's `main`, so the other repository's history holds only its code and docs.
+  never atomic: each intermediate state must work. Such a quest's journal stays in the home, in a
+  sparse worktree on a branch of its name (`campaign get ID journal`), merged into the home's `main`
+  on landing: the other repository's history holds only its code and docs.
 - **Messages:** an agent with a finding for a quest it is not working on, in any campaign on the
   machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
   msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing. Details,
   and other machines: `references/host.md`, Messages.
+- **Docs areas:** with `tested_docs` set, a page edit voids the docs E2E's evidence: split the docs
+  into one quest per area up front and chain them with `--after`; docs of an in-flight format
+  change stay in its quest.
 - **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
   can land alone), then to the contributor; superseded work is `campaign set ID status=dropped
   reason=...`.
@@ -160,6 +161,10 @@ runs shorter jobs first, but a batch of hour-long jobs still delays everyone: pl
    (Risk and review); it commits the review file with the acceptance. Then `campaign land ID`, which
    also removes the quest's worktrees, merged branches and build slot, and names what it kept.
 
+**The final stretch.** Merge `main` once, right before the final reruns, and order landings with
+`--after` so a quest about to land is not re-merged for a sibling. Once they are queued the branch
+is frozen: text-only nits go to a follow-up.
+
 ## Exploration batches
 
 For a list worth hunting (a fresh benchmark's losing rows, a profile's hotspots, thinly proven
@@ -202,8 +207,8 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 - **Two fix rounds, then stop.** A third means the quest or design is wrong: re-plan or ask the
   owner. Non-blocking findings become a follow-up quest or a hunt-list row, or are dropped with a
   reason.
-- **A design is reviewed once.** Settle disputed behavior with an executable model or test, not
-  another text round.
+- **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
+  what is still disputed, never another text round.
 - **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
   lowers its risk, removes a lens, or removes, changes, defers or scopes a check; it is kept in its
   history, shown by `campaign status ID`, and voids its acceptances. The review a risk needs (a code
@@ -230,7 +235,8 @@ row per criterion, and landing checks each row at the code being landed:
 Proof is proportional to the claim (`references/review.md`): tests check values, not counts; a fix
 has a test that fails without it; a claim has a mutant a test kills; sanitizers in separate builds.
 Performance claims follow `references/measurement.md`: before and after at named commits,
-`exclusive` for numbers that decide anything, honest magnitude.
+`exclusive` for numbers that decide anything, honest magnitude, and a decision rule written in the
+quest file before the first run (changed after data, it is a recorded weakening).
 
 ## Machine work
 
@@ -276,8 +282,8 @@ Every session, lead or contributor, starts with `campaign brief` (in a worktree,
 `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
 job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
 completed or cleared by the next state-writing command. A job whose runner died is requeued when it
-allows retries or its command never started (up to three tries), else marked `interrupted`. Submitting a job again never duplicates one: an
-identical job that is queued, running or done is returned instead. An interrupted job may have run
+allows retries or its command never started (up to three tries), else marked `interrupted`.
+Submitting an identical job returns the one queued, running or done. An interrupted job may have run
 partway: resubmit it when its command is safe to repeat (builds, tests and measurements are);
 otherwise check what it changed first. Never invent a missing decision: write it under "Blocked
 on" and ask.

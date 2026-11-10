@@ -63,7 +63,10 @@ offers one (`references/harness.md`).
    finding's probe at the fixed commit (`campaign accept --confirm`), with no second review.
    Build once with the sanitizer the risk needs; CI covers other platforms.
 3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
-   blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
+   blocking gap, not a reason to keep digging. List non-blocking notes in a line each. Once the
+   quest's final reruns are queued, a text-only nit is non-blocking: it goes to a follow-up.
+   A design review gets one text fix round; what is still disputed after it goes to your probes,
+   run as jobs (an executable model, a test), never to a second text round.
 4. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
    `Verdict:` (APPROVE, CHANGES or REJECT), the evidence relied on, what was checked, a findings
    table (ID, Blocking yes or no, Kind defect, gap or nit), and "Not run". An APPROVE has no

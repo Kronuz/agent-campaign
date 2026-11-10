@@ -15,6 +15,11 @@ exists to catch that.
 | Screen | 10-15 min | `strict` | One run per arm with short phases, to find the direction and drop clear losers |
 | Confirm | full length, repeated, ≤ 30 min per job | `exclusive` | Only the arms and claims that will be quoted. The only stage that decides anything. |
 
+**Pre-register the decision rule.** Before the first run, the quest file states what decides:
+metric, arms, runs per arm, noise floor and threshold. A rule changed after data is a weakening:
+a Decisions row with the reason, the earlier result kept where it lives, every cell rerun under the
+new rule.
+
 Chain them with `--after` so the confirm job runs only when the screen passed, and compare exact
 commits with `--ref base=<commit>` (`$JOB_REF_BASE` is the baseline checkout). Soaks and recovery
 tails keep their length by running several 30-minute jobs, never one long one.
@@ -41,6 +46,9 @@ tails keep their length by running several 30-minute jobs, never one long one.
   is caught at the change that caused it, not in a bisect later.
 - An optimization has a budget of about five experiments; stop at the target or the third loser in
   a row, and record losers with their numbers.
+- Final confirm runs go once: after the branch's last merge of `main`, with its text frozen. A
+  bench check scoped with `--inputs` (`references/host.md`) keeps its result across commits that
+  change nothing it reads.
 - Milestone and published numbers are measured on `main` (or the exact landed commit) as
   `exclusive` jobs, never quoted from a branch.
 - Measure the other platforms once, on the version that will land, as deferred checks (`--later`):
