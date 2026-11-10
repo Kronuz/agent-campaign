@@ -67,6 +67,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   --confirm` and `land` count it. Only checks the quest file declares carry inputs; adding or
   narrowing them needs `--weaken`. A quest keeps at least one gate check without inputs, the
   build-test, which `land` needs at the exact code.
+  GLOBS name everything the command executes, not only what it reads: a check that runs a binary
+  the job builds names that binary's sources (an E2E over docs pages names `src/**` too).
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (untracked build outputs stay, which is
   the point), and one job uses it at a time: the worker starts no job whose slot a running job
