@@ -513,6 +513,34 @@ class Prune(CampaignCase):
         self.assertTrue((self.root / "jobs" / tagged).exists(), "prune deleted an unknown campaign's job")
         self.assertIn("no campaign on this machine is there", out)
 
+    def test_prune_keeps_a_slot_a_pending_job_names_or_evidence_used_lately(self) -> None:
+        self.started("fix", files="app.py")
+        go = self.root / "go"
+        blocker = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        slots = self.root / "jobs" / "slots"
+        ran = {}
+        for name in ("named", "lately", "idle"):
+            quest = ("--quest", "fix") if name == "lately" else ()
+            ran[name] = self.submit(self.home, *quest, "--slot", name, "--sync", "--", f"true {name}")
+        self.age(ran["named"], 30)
+        self.age(ran["idle"], 30)
+        self.age(ran["lately"], 3)
+        waiting = self.submit(self.home, "--slot", "named", "--after", blocker, "--", "true again")
+        old = time.time() - 30 * 86400
+        for name in ran:
+            os.utime(slots / name, (old, old))  # a slot's mtime stays put while builds change what is inside
+        self.ok(self.home, "job", "prune", "--days", "14")
+        self.assertEqual(sorted(x.name for x in slots.iterdir() if x.is_dir()), ["lately", "named"])
+        self.age(ran["lately"], 10)
+        self.ok(self.home, "config", "slot_days=20")
+        self.ok(self.home, "job", "prune", "--days", "14")
+        self.assertTrue((slots / "lately").is_dir(), "a slot evidence used within slot_days was pruned")
+        self.ok(self.home, "config", "slot_days=")
+        self.ok(self.home, "job", "prune", "--days", "14")
+        self.assertFalse((slots / "lately").exists())
+        go.touch()
+        self.ok(self.home, "wait", blocker, waiting, "--timeout", "60")
+
     def test_the_worker_prunes_once_a_day_when_its_queue_empties(self) -> None:
         self.env["CAMPAIGN_AUTO_PRUNE"] = "1"
         self.env["CAMPAIGN_DISK_WARN_GB"] = str(10**9)
@@ -577,6 +605,16 @@ class Slots(CampaignCase):
         self.assertEqual(slot("--quest", "fix", "--level", "strict"), "")
         self.assertEqual(slot("--quest", "risky"), "")
         self.assertEqual(slot(), "")
+
+    def test_a_slotted_build_without_a_configure_step_is_warned_about(self) -> None:
+        warning = "warning: slot s: the command builds (cmake --build) with no configure step in it"
+        r = self.ok(self.home, "job", "submit", "--level", "none", "--slot", "s", "--", "cmake --build b")
+        self.assertIn(warning, r.err)
+        configured = "cmake -S . -B b && cmake --build b"
+        r = self.ok(self.home, "job", "submit", "--level", "none", "--slot", "s", "--", configured)
+        self.assertNotIn("configure step", r.err)
+        r = self.ok(self.home, "job", "submit", "--level", "none", "--", "cmake --build b")
+        self.assertNotIn("configure step", r.err, "a fresh checkout fails at once without one: nothing to warn")
 
     def test_runners_breaking_a_dead_lock_at_once_take_the_slot_one_at_a_time(self) -> None:
         slot, go = self.root / "jobs" / "slots" / "s", self.root / "go"

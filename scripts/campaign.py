@@ -522,6 +522,8 @@ def validate(data: Json) -> list[str]:
         errors.append("ci_later must be a list of CI workflow names")
     if not isinstance(data.get("disk_warn", 0.0), (int, float)) or data.get("disk_warn", 0) < 0:
         errors.append("disk_warn must be GiB of free disk, a number")
+    if not isinstance(data.get("slot_days", 0.0), (int, float)) or data.get("slot_days", 0) < 0:
+        errors.append("slot_days must be days, a number")
     if not isinstance(data.get("tested_docs", []), list):
         errors.append("tested_docs must be a list of path globs")
     quests = data.get("quests")
@@ -1186,7 +1188,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "tested_docs")
+CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "slot_days", "tested_docs")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1213,18 +1215,18 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["outbox"] = value
                 elif key == "tested_docs" and sep:
                     c.state["tested_docs"] = csv(value)
-                elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
-                    c.state.pop("disk_warn", None)
+                elif key in ("disk_warn", "slot_days") and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
+                    c.state.pop(key, None)
                     if value:
-                        c.state["disk_warn"] = float(value)
+                        c.state[key] = float(value)
                 else:
                     die(
                         "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,..., "
-                        f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
+                        f"outbox=REMOTE, disk_warn=GIB|'', slot_days=DAYS|'' and tested_docs=GLOB,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     for key in keys or CONFIG:
-        value = c.state.get(key, DISK_WARN_GB if key == "disk_warn" else "") or ""
+        value = c.state.get(key, {"disk_warn": DISK_WARN_GB, "slot_days": SLOT_DAYS}.get(key, "")) or ""
         text = ",".join(value) if isinstance(value, list) else f"{value:g}" if isinstance(value, float) else str(value)
         print(text if keys else f"{key}={text}")
     return 0
@@ -5200,6 +5202,10 @@ def outside_inputs(command: str, repo: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+BUILDS = re.compile(r"\bcmake\s+--build\b|\bninja\b|\bmeson\s+compile\b")  # builds a configured build dir
+CONFIGURES = re.compile(r"\bcmake\s+(?!--build\b|--install\b|-E\b|-P\b)\S|\bmeson\s+setup\b|(?:^|[\s;&|(/])configure\b")
+
+
 def cmd_job_submit(a: argparse.Namespace) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
@@ -5257,6 +5263,14 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             f"warning: {', '.join(outside)} {'is' if len(outside) == 1 else 'are'} outside this job's own checkout, so "
             "not part of its identity: a rerun at the same code may see other files. Build it in this job, or pass "
             "another repository with --ref NAME=PATH@REF",
+            file=sys.stderr,
+        )
+    built = BUILDS.search(command) if spec.get("slot") and spec.get("commit") else None
+    if built and not CONFIGURES.search(command):
+        print(
+            f"warning: slot {spec['slot']}: the command builds ({built.group(0)}) with no configure step in it (a "
+            "cmake call other than --build, meson setup or configure): in a fresh or pruned slot it fails. "
+            "Configure in the command (cmake -S . -B build costs little once configured)",
             file=sys.stderr,
         )
     spec["cmux"] = os.environ.get("CMUX_WORKSPACE_ID", "")
@@ -5553,6 +5567,7 @@ SLIM_BYTES = 1 << 20  # a slimmed job keeps its record, its log and its output f
 BUILD_DIRS = ("build", "build-*", ".deps", "_deps")  # regenerable: prune removes them from idle worktrees
 BUILD_DAYS = 3.0  # a build directory nothing changed in for this long is idle
 DISK_WARN_GB = 100.0  # check and the daily prune warn under this much free disk (`config disk_warn`)
+SLOT_DAYS = 7.0  # prune keeps a slot a quest's job ran in within this many days (`config slot_days`)
 
 
 def job_needs() -> Json:
@@ -5641,16 +5656,37 @@ def prune_plan(days: float) -> Json:
             continue
         plan["delete"].append(j)
     root = jobs_dir() / "slots"
+    used = slots_in_use()
     plan["slots"] = [
         x
         for x in (sorted(root.iterdir()) if root.is_dir() else [])
         if x.is_dir()
         and not x.name.endswith(".lock")
         and x.name.partition("@")[0] not in needs["slots"]  # NAME@REPO: an open quest's other repository
+        and x.name not in used
         and slot_idle(x)
         and (mtime(x) or 0) < cutoff
     ]
     return plan
+
+
+def slot_days() -> float:
+    """How long a slot a quest's job ran in is kept: the largest slot_days of the machine's campaigns."""
+    states = [o["state"] for o in campaigns().values()]
+    return max((float(x.get("slot_days", SLOT_DAYS)) for x in states), default=SLOT_DAYS)
+
+
+def slots_in_use() -> set[str]:
+    """The slots prune keeps whatever their age: those a pending job names, and those a quest's job
+    (evidence) ran in within slot_days. A slot's own mtime moves only when its top level changes."""
+    recent = time.time() - slot_days() * 86400
+    used: set[str] = set()
+    for j in all_jobs():
+        st, name = j["state"], slot_of(j["spec"])
+        ran = st.get("ended") or st.get("started") or 0
+        if name and (st.get("state") not in TERMINAL or (j["spec"].get("quest") and ran > recent)):
+            used.add(name)
+    return used
 
 
 def drop_checkouts(j: Json) -> None:
@@ -6200,7 +6236,9 @@ def parser() -> argparse.ArgumentParser:
         "CI; ci_later=WORKFLOW,... names workflows that do not gate it. peers=NAME=URL,... names campaigns on "
         "other machines and where their outboxes are (a repository they push to); outbox=REMOTE is where this "
         "campaign pushes its own (default origin). disk_warn=GIB is the free disk under which `check` warns "
-        "(default 100; the worker's daily prune uses the largest any campaign sets).",
+        "(default 100; the worker's daily prune uses the largest any campaign sets). slot_days=DAYS keeps a "
+        "build slot that a quest's job ran in within DAYS from `job prune` (default 7; the largest any "
+        "campaign sets).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -6614,7 +6652,8 @@ def parser() -> argparse.ArgumentParser:
         "deferred check, journal or review): their kept checkouts and output files over 1 MiB go, their spec, "
         "state, log and smaller outputs stay, and they are never reused by identity again. Jobs of quests not "
         "landed or dropped, and of campaigns this machine does not know, are kept whole. Build slots no open "
-        "quest uses go too, and the build directories (build, build-*, .deps, _deps, ignored by git) of worktrees "
+        "quest uses go too, unless a pending job names one or a quest's job ran in it within slot_days (`campaign "
+        "config`, default 7), and the build directories (build, build-*, .deps, _deps, ignored by git) of worktrees "
         "of the campaigns' repositories that no unfinished quest owns, once nothing in them changed for "
         "--build-days. Each deletion is logged in the job store's prune.log. The worker runs this with its "
         "defaults once a day when its queue empties (CAMPAIGN_AUTO_PRUNE=0 turns that off).",

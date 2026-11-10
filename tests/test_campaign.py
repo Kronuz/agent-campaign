@@ -1078,7 +1078,8 @@ class DirectPath(CampaignCase):
 
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
         self.assertEqual(
-            self.ok(self.home, "config").out, "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n"
+            self.ok(self.home, "config").out,
+            "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\nslot_days=7\ntested_docs=\n",
         )
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
