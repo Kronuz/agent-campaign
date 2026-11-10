@@ -13,12 +13,7 @@ exists to catch that.
 |---|---|---|---|
 | Smoke | ≤ 3 min | `strict` | Every arm runs end to end; the effective configuration is printed and asserted (the arm's settings applied, the server under test is the one named, counters non-zero). Any failed assertion aborts. |
 | Screen | 10-15 min | `strict` | One run per arm with short phases, to find the direction and drop clear losers |
-| Confirm | full length, repeated, ≤ 30 min per job | `exclusive` | Only the arms and claims that will be quoted. The only stage that decides anything. |
-
-**Pre-register the decision rule.** Before the first run, the quest file states what decides:
-metric, arms, runs per arm, noise floor and threshold. A rule changed after data is a weakening:
-a Decisions row with the reason, the earlier result kept where it lives, every cell rerun under the
-new rule.
+| Confirm | full length, repeated, ≤ 30 min per job | `exclusive` | Only the arms and claims that will be quoted. The only stage that decides, by the rule (metric, arms, runs, noise floor, threshold) the quest file fixed before the first run; a rule changed after data is a Decisions row, every cell rerun under it. |
 
 Chain them with `--after` so the confirm job runs only when the screen passed, and compare exact
 commits with `--ref base=<commit>` (`$JOB_REF_BASE` is the baseline checkout). Soaks and recovery
@@ -41,14 +36,10 @@ tails keep their length by running several 30-minute jobs, never one long one.
 
 ## Who measures what
 
-- A contributor screens and confirms its own candidates as jobs; nothing waits on the machine.
 - A hot-path change runs one smoke A/B job against its parent before review, so a large regression
   is caught at the change that caused it, not in a bisect later.
 - An optimization has a budget of about five experiments; stop at the target or the third loser in
   a row, and record losers with their numbers.
-- Final confirm runs go once: after the branch's last merge of `main`, with its text frozen. A
-  bench check scoped with `--inputs` (`references/host.md`) keeps its result across commits that
-  change nothing it reads.
 - Milestone and published numbers are measured on `main` (or the exact landed commit) as
   `exclusive` jobs, never quoted from a branch.
 - Measure the other platforms once, on the version that will land, as deferred checks (`--later`):
@@ -56,6 +47,6 @@ tails keep their length by running several 30-minute jobs, never one long one.
 
 ## Results
 
-A results note (`docs/perf/<topic>.md`, or the quest's journal for small ones) names the
-job ids, commits, host and verdict. A result later shown invalid is labelled where it lives, with
-the reason, and every claim citing it is corrected in the same change.
+A results note (`docs/perf/<topic>.md`, or the quest's journal for small ones) names the job ids,
+commits, host and verdict. A result later shown invalid is labelled where it lives, with the reason,
+and every claim citing it is corrected in the same change.

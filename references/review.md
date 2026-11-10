@@ -50,23 +50,19 @@ offers one (`references/harness.md`).
 | `correctness` | Does the code do what the quest file says on every path? Error paths free what they allocate and leave data consistent; tests fail without what they test; limits are load-bearing; scope stays inside the quest file; no second mechanism where one exists (one shape everywhere). |
 | `security` | Who is the attacker (network peer, authenticated client, local user, malicious file, compromised dependency) and what do they gain? Input validated before use; bounds on lengths, depth, connections, memory; integer overflow in sizes and offsets; secrets out of logs and with tight modes; TLS and certificate checks; pinned dependencies. Probes feed truncated, oversized and malformed input to the real decoder; fuzz evidence is read, not assumed. |
 | `durability` | What survives a crash at every step? Ordering of writes, flushes and renames; recovery from torn writes and partial files; behavior on full disk and I/O errors; concurrency of readers with writers; a crash matrix or executable model for the protocol, run as a job. |
-| `design` | Before the code: is the shape right, are the decisions that are expensive to reverse (bytes on disk, wire format, public API, ordering protocol) settled and justified, is there a simpler mechanism, does every criterion have a rerunnable check? Rule once; an executable model settles disputes. |
+| `design` | Before the code: is the shape right, are the decisions that are expensive to reverse (bytes on disk, wire format, public API, ordering protocol) settled and justified, is there a simpler mechanism, does every criterion have a rerunnable check? Rule once, with one text fix round; then probes run as jobs (an executable model, a test) settle disputes. |
 | `system` | One question `campaign check` raised: two quests defining one contract differently, a contract changing under its consumers, one file with two writers, sequencing that assumes something unlanded. Name who acts. |
 
 ## How a review runs
 
 1. **Start from the evidence.** `campaign status <ID>` lists each criterion with the jobs behind
-   it; list the criteria successful jobs already prove at the reviewed commit. Reuse those results:
-   an identical job returns the same record, so do not rebuild what one shows.
+   it; list the criteria passed jobs already prove at the reviewed commit, and do not rebuild them.
 2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
    `.scratch/review-<ID>-<lens>/` in the home checkout: the lead confirms each fix by rerunning its
    finding's probe at the fixed commit (`campaign accept --confirm`), with no second review.
    Build once with the sanitizer the risk needs; CI covers other platforms.
 3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
-   blocking gap, not a reason to keep digging. List non-blocking notes in a line each. Once the
-   quest's final reruns are queued, a text-only nit is non-blocking: it goes to a follow-up.
-   A design review gets one text fix round; what is still disputed after it goes to your probes,
-   run as jobs (an executable model, a test), never to a second text round.
+   blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
 4. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
    `Verdict:` (APPROVE, CHANGES or REJECT), the evidence relied on, what was checked, a findings
    table (ID, Blocking yes or no, Kind defect, gap or nit), and "Not run". An APPROVE has no

@@ -111,9 +111,8 @@ models for the tiers are in `references/harness.md`. Change a default on outcome
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
   msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing. Details,
   and other machines: `references/host.md`, Messages.
-- **Docs areas:** with `tested_docs` set, a page edit voids the docs E2E's evidence: split the docs
-  into one quest per area up front and chain them with `--after`; docs of an in-flight format
-  change stay in its quest.
+- **Docs areas** under `tested_docs` are separate quests from the start, chained with `--after`;
+  docs of an in-flight format change stay in its quest.
 - **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
   can land alone), then to the contributor; superseded work is `campaign set ID status=dropped
   reason=...`.
@@ -132,10 +131,10 @@ model for durability) is always a gate. Slow CI workflows can be made non-gating
 **CI first.** With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`),
 met by that CI job passing at the exact commit; it queues no local job, and an Evidence row cites it
 as `` `ci:ThreadSanitizer` ``. Local jobs are for what CI cannot run: other platforms, mutants,
-probes, measurements. **Expensive runs go once:** sanitizers, VMs and soaks run at the candidate
-head, when the journal says "ready for review", never at intermediate commits; a fix round reruns
-only the probe or test of its finding. The job worker shares the slots fairly across campaigns and
-runs shorter jobs first, but a batch of hour-long jobs still delays everyone: plan it.
+probes, measurements. **Expensive runs go once:** at the candidate head, after its one merge of
+`main`, never at intermediate commits; then the branch's text is frozen (nits go to a follow-up),
+the lead orders landings so it is not re-merged, and a fix round reruns only its finding's probe.
+The worker shares slots fairly across campaigns, shorter jobs first; plan hour-long batches.
 
 ## Run a quest
 
@@ -160,10 +159,6 @@ runs shorter jobs first, but a batch of hour-long jobs still delays everyone: pl
 5. `campaign accept ID LENS` once a review approves, or after CHANGES with the confirming jobs
    (Risk and review); it commits the review file with the acceptance. Then `campaign land ID`, which
    also removes the quest's worktrees, merged branches and build slot, and names what it kept.
-
-**The final stretch.** Merge `main` once, right before the final reruns, and order landings with
-`--after` so a quest about to land is not re-merged for a sibling. Once they are queued the branch
-is frozen: text-only nits go to a follow-up.
 
 ## Exploration batches
 
@@ -235,8 +230,7 @@ row per criterion, and landing checks each row at the code being landed:
 Proof is proportional to the claim (`references/review.md`): tests check values, not counts; a fix
 has a test that fails without it; a claim has a mutant a test kills; sanitizers in separate builds.
 Performance claims follow `references/measurement.md`: before and after at named commits,
-`exclusive` for numbers that decide anything, honest magnitude, and a decision rule written in the
-quest file before the first run (changed after data, it is a recorded weakening).
+`exclusive` for numbers that decide, by a rule the quest file fixed before the first run.
 
 ## Machine work
 
@@ -249,11 +243,10 @@ quest file before the first run (changed after data, it is a recorded weakening)
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
-host and toolchain: name a mutable input (a dataset version) with `--env`, and rerun with
-`--force` what depends on more. Evidence outlives commits that change only documentation (`docs/**`,
-`*.md`) its command does not name and `tested_docs` does not match. A check the lead scopes with
-`--inputs NAME=GLOBS` is identified by the files under them, the build files and the paths its
-command names; `land` still needs the build-test, a gate check without inputs, at the exact code.
+host and toolchain; across commits that change only docs (`docs/**`, `*.md`) it does not name and
+`tested_docs` does not match; and wherever every tracked file it read is unchanged (its read set),
+except the build-test, a gate check without `--inputs`, which `land` needs at the exact code. Name a
+mutable input with `--env`; rerun with `--force` what depends on more.
 A strict or exclusive job lasts at most 30 minutes and is stopped at its deadline. Every process a
 job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
 daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
@@ -282,24 +275,22 @@ Every session, lead or contributor, starts with `campaign brief` (in a worktree,
 `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
 job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
 completed or cleared by the next state-writing command. A job whose runner died is requeued when it
-allows retries or its command never started (up to three tries), else marked `interrupted`.
-Submitting an identical job returns the one queued, running or done. An interrupted job may have run
-partway: resubmit it when its command is safe to repeat (builds, tests and measurements are);
-otherwise check what it changed first. Never invent a missing decision: write it under "Blocked
-on" and ask.
+allows retries or its command never started (up to three tries), else marked `interrupted`: it
+may have run partway, so resubmit it when its command is safe to repeat (builds, tests and
+measurements are), else check what it changed first. Never invent a missing decision: write it
+under "Blocked on" and ask.
 
 ## Cost
 
-- No minimum number of agents, no utilization target. `pace` is advice: check it, report it,
-  and launch by the work.
+- No minimum number of agents, no utilization target; `pace` is advice, launch by the work.
 - The lead coordinates; it does not re-derive what the state holds. It reads this file and
   `references/prompts.md`, and other references only when the table below says; it orients with
   `campaign brief` and learns what changed from `campaign wait --commits`, not by rereading
   journals, diffs or code.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
-- Report to the owner on events (a landing, a blocker, a decision); any periodic report is built
-  from `campaign status` and `campaign map`, never by waking agents.
+- Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
+  `campaign map`, never by waking agents.
 
 ## Writing
 
