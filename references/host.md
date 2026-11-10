@@ -79,6 +79,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.
+  Drains are what light work waits behind most: on a 16-CPU host on 2026-11-10, 319 light jobs
+  waited 213 hours in all, 61% of it while a drain ran, 29% with the light slots full and 10% on
+  dependencies, busy slots and fair share (median 36 minutes at priority 0, 6 at priority 1).
 - **Build parallelism.** Several light jobs run at once, so each keeps to 4 build jobs
   (`CAMPAIGN_LIGHT_BUILD_JOBS`): a light job gets `CMAKE_BUILD_PARALLEL_LEVEL` unless its `--env`
   names one, so `cmake --build` needs no `-j`. `campaign check` warns about a light check asking for
