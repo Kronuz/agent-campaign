@@ -810,10 +810,12 @@ def stuck_leads() -> list[Json]:
                 continue
             args = [exe, "agent", "inbox", "--surface", surface, "--json"]
             done = subprocess.run(args, capture_output=True, text=True, timeout=10)
-            data = json.loads(done.stdout) if done.returncode == 0 else {}
+            data: Any = json.loads(done.stdout) if done.returncode == 0 else {}
         except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
             continue
-        messages = data.get("messages", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        messages: list[Any] = (
+            data.get("messages", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        )
         now = time.time()
         stale = {
             str(m.get("id")): now - float(m["created_at"])
@@ -2862,7 +2864,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
             "next": next_step(journal),
         }
-    view["replaced"] = replaced_citations(texts, mine) if texts else []
+    view["replaced"] = replaced_citations(texts, mine)
     ended = ended_at_head(c, pid, mine)
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
     view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
