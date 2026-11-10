@@ -189,6 +189,24 @@ class Scheduling(CampaignCase):
         self.ok(self.home, "wait", blocker, low, high, "--timeout", "60")
         self.assertLess(self.job(high)["started"], self.job(low)["started"])
 
+    def test_a_light_job_of_a_quest_in_flight_is_on_the_direct_path(self) -> None:
+        """A light job of an active or in-review quest runs at 1, as gate checks do; a measurement,
+        an explicit --priority, and a job of a planned quest keep theirs."""
+        wt = self.started("fix")
+        self.ok(self.home, "new", "later", "--title", "later", "--risk", "low", "--check", "unit=true")
+
+        def priority(*args: str) -> int:
+            jid = self.submit(wt, *args, "--force", "--", "true")
+            return int(json.loads((self.root / "jobs" / jid / "spec.json").read_text())["priority"])
+
+        self.assertEqual(priority("--quest", "fix"), 1)
+        self.assertEqual(priority("--quest", "fix", "--level", "strict"), 0)
+        self.assertEqual(priority("--quest", "fix", "--level", "exclusive"), 0)
+        self.assertEqual(priority("--quest", "fix", "--priority", "0"), 0)
+        self.assertEqual(priority("--quest", "fix", "--priority", "-1"), -1)
+        self.assertEqual(priority("--quest", "later"), 0)
+        self.assertEqual(priority(), 0)
+
     def test_deferred_work_never_takes_every_light_slot(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "2"
         late = [self.submit(self.home, "--priority", "-1", "--force", "--", "sleep 4") for _ in range(2)]

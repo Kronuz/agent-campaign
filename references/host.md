@@ -75,8 +75,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   `--minutes`: drains plan around them.
   `campaign worker --restart` (after updating the tool) has the worker finish its tick and
   re-execute in place on the new code; running jobs keep running. SIGINT or SIGTERM stops it
-  between ticks, never mid-claim. Priorities: gate checks from `verify` run at 1, ordinary jobs at 0, deferred
-  checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
+  between ticks, never mid-claim. Priorities: gate checks from `verify` and light jobs
+  submitted with `--quest` for an active or in-review quest (probes, mutants, sanitizer runs: the
+  direct path) run at 1 unless `--priority` says otherwise, other jobs and measurements (strict,
+  exclusive) at 0, deferred checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
   deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
   behind completeness work.
   Drains are what light work waits behind most: on a 16-CPU host on 2026-11-10, 319 light jobs

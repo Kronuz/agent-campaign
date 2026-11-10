@@ -5009,7 +5009,7 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         "cmd": command,
         "level": a.level,
         "minutes": a.minutes,
-        "priority": a.priority,
+        "priority": a.priority or 0,
         "after": csv(a.after),
         "retries": a.retries,
         "keep": a.keep,
@@ -5025,6 +5025,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec.update(quest=a.quest, campaign=c.ident)
         repo = Path(a.repo).resolve() if a.repo else c.repo(p)
         default_ref = p.get("branch") or "HEAD"
+        if a.priority is None and a.level == "light" and p["status"] in ("active", "review"):
+            spec["priority"] = 1  # direct-path evidence, as verify's gate checks; measurements keep 0
     if a.unversioned or not git_ok(repo, "rev-parse", "--git-dir"):
         spec.update(repo="", commit="", refs={}, cwd=str(Path(a.cwd or cwd).resolve()))
     else:
@@ -6331,7 +6333,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", metavar="DIR", help="the directory to run in, inside the checkout")
     p.add_argument("--level", choices=LEVELS, default="light", help="its quiet level (default light)")
     p.add_argument("--minutes", type=int, default=30, metavar="N", help="its bound once it runs (default 30)")
-    p.add_argument("--priority", type=int, default=0, metavar="N", help="higher runs first (default 0)")
+    p.add_argument(
+        "--priority",
+        type=int,
+        metavar="N",
+        help="higher runs first (default 0; 1 for a light job of an active or in-review --quest)",
+    )
     p.add_argument("--after", metavar="JOBS", help="jobs that must succeed first")
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
     p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (incremental builds)")
