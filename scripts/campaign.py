@@ -2173,9 +2173,13 @@ def clean_quest(c: Campaign, pid: str, *, force: bool = False, keep: bool = Fals
                 else:
                     kept.append(f"{branch}{' (its journal, in the home)' if owner != repo else ''}: not merged")
     if busy:
-        kept.append(f"its build slot: jobs {', '.join(busy)} use it")
+        kept.append(f"its build slots: jobs {', '.join(busy)} use them")
     else:
-        worktree_remove(str(repo), jobs_dir() / "slots" / f"{c.state['campaign']}-{pid}")
+        worktree_remove(str(repo), jobs_dir() / "slots" / quest_slot(c, pid, repo))
+        for slot in (jobs_dir() / "slots").glob(f"{quest_slot(c, pid, repo)}@*"):  # its other repositories'
+            if slot.is_dir():
+                common = git(slot, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+                worktree_remove(str(Path(common).parent) if common else str(slot), slot)
     return kept
 
 
@@ -4099,6 +4103,12 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
     return out
 
 
+def quest_slot(c: Campaign, pid: str, repo: Path) -> str:
+    """The build slot of a quest's jobs in REPO; the one in the quest's own repository is verify's."""
+    name = f"{c.state['campaign']}-{pid}"
+    return name if same_repo(repo, c.repo(c.quests[pid])) else f"{name}@{repo.name}"
+
+
 def submit_checks(
     c: Campaign, qid: str, checks: list[Json], commit: str, *, priority: int, fresh: bool = False, force: bool = False
 ) -> list[str]:
@@ -4120,7 +4130,7 @@ def submit_checks(
             "quest": qid,
             "campaign": c.ident,
             "what": f"{qid} {'deferred ' if check.get('later') else ''}check {check['name']} at {commit[:12]}",
-            "slot": "" if fresh or p["risk"] == "critical" else f"{c.state['campaign']}-{qid}",
+            "slot": "" if fresh or p["risk"] == "critical" else quest_slot(c, qid, repo),
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
             "priority": priority,
             "retries": 1,
@@ -5051,6 +5061,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     cwd = Path.cwd()
     default_ref = "HEAD"
     repo = Path(a.repo).resolve() if a.repo else cwd
+    c: Campaign | None = None
+    p: Json = {}
     if a.quest:
         c = find_campaign(cwd)
         p = c.quest(a.quest)
@@ -5072,6 +5084,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec["refs"] = dict(parse_ref(top, x) for x in a.ref)
         rel = a.cwd if a.cwd is not None else (os.path.relpath(cwd, invoking) if cwd.is_relative_to(invoking) else "")
         spec["cwd"] = "" if rel == "." else rel
+        if c and a.level == "light" and not (a.slot or a.fresh or a.keep) and p["risk"] != "critical":
+            name = quest_slot(c, a.quest, top)
+            # a free slot builds incrementally; with a job of its own pending, a fresh checkout runs beside it
+            if not any(slot_of(j["spec"]) == name and j["state"].get("state") not in TERMINAL for j in all_jobs()):
+                spec["slot"] = name
         if not a.commit and not a.quest and git(top, "status", "--porcelain", "--untracked-files=no"):
             print(
                 f"note: uncommitted changes in {top} are not in the job; it runs {spec['commit'][:12]}", file=sys.stderr
@@ -5465,7 +5482,7 @@ def prune_plan(days: float) -> Json:
         for x in (sorted(root.iterdir()) if root.is_dir() else [])
         if x.is_dir()
         and not x.name.endswith(".lock")
-        and x.name not in needs["slots"]
+        and x.name.partition("@")[0] not in needs["slots"]  # NAME@REPO: an open quest's other repository
         and slot_idle(x)
         and (mtime(x) or 0) < cutoff
     ]
@@ -6377,7 +6394,10 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--after", metavar="JOBS", help="jobs that must succeed first")
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
-    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (incremental builds)")
+    p.add_argument(
+        "--slot", metavar="NAME", help="reuse a named checkout (incremental builds; default for a --quest light job)"
+    )
+    p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
     p.add_argument(
         "--retries", type=int, default=0, metavar="N", help="requeues after a lost runner (only for jobs safe to rerun)"

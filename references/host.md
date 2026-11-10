@@ -61,7 +61,12 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   the point), and one job uses it at a time: the worker starts no job whose slot a running job
   holds, in any campaign, and starts the jobs behind it instead; the runner holds the slot's lock
   (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify` uses a slot
-  per quest, except for critical quests and `--fresh`, which check out afresh.
+  per quest (`<campaign>-<quest>`), except for critical quests and `--fresh`, which check out
+  afresh. A light `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>`
+  in another repository) while no pending job of its own is there, else a fresh checkout beside it,
+  so a batch of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing
+  removes the quest's slots. A Xapiand build-and-test reused its slot at the next commit in 310 and
+  320 s against 586 and 688 s fresh (47% and 53% less; ccache warm both ways, ctest 160-190 s of each).
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,

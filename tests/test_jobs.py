@@ -437,7 +437,8 @@ class Prune(CampaignCase):
         self.assertIn("2 jobs", out)
         gone = {j for j in (tagged, cited, loose, recent, kept) if not (self.root / "jobs" / j).exists()}
         self.assertEqual(gone, {loose, kept})
-        self.assertNotIn(str(self.root / "jobs"), self.git(self.home, "worktree", "list"))  # kept checkouts too
+        listed = self.git(self.home, "worktree", "list").replace(str(self.root / "jobs" / "slots" / "demo-open"), "")
+        self.assertNotIn(str(self.root / "jobs"), listed)  # kept checkouts too; the open quest keeps its slot
         keys = self.root / "jobs" / "keys"
         self.assertTrue(
             all((keys.parent / os.readlink(k)).exists() for k in keys.iterdir()), "a key names a pruned job"
@@ -518,6 +519,36 @@ class Slots(CampaignCase):
         go.touch()
         self.ok(self.home, "wait", first, second, "--timeout", "60")
         self.assertGreaterEqual(self.job(second)["started"], self.job(first)["ended"])
+
+    def test_a_quests_light_jobs_build_in_its_slot_while_it_is_free(self) -> None:
+        """A light job of a quest reuses the quest's build slot (verify's, or NAME@REPO in another
+        repository) while no job of its own is pending there, else checks out afresh beside it."""
+        wt = self.started("fix")
+        self.ok(self.home, "new", "risky", "--title", "risky", "--risk", "critical", "--check", "unit=true")
+        lib = self.repo("lib", {"lib.py": "X = 1\n"})
+        go = self.root / "go"
+
+        def slot(*args: str, cmd: str = "true") -> str:
+            jid = self.submit(wt, *args, "--force", "--", cmd)
+            return str(json.loads((self.root / "jobs" / jid / "spec.json").read_text())["slot"])
+
+        self.assertEqual(slot("--quest", "fix", cmd=f"while [ ! -e {go} ]; do sleep 0.1; done"), "demo-fix")
+        self.assertEqual(slot("--quest", "fix"), "", "a second job waited for a busy slot")
+        go.touch()
+        self.wait_until(
+            lambda: (
+                not any(
+                    json.loads((d / "state.json").read_text())["state"] in ("queued", "running")
+                    for d in (self.root / "jobs").glob("2*")
+                )
+            )
+        )
+        self.assertEqual(slot("--quest", "fix"), "demo-fix")
+        self.assertEqual(slot("--quest", "fix", "--repo", str(lib), "--commit", "HEAD"), "demo-fix@lib")
+        self.assertEqual(slot("--quest", "fix", "--fresh"), "")
+        self.assertEqual(slot("--quest", "fix", "--level", "strict"), "")
+        self.assertEqual(slot("--quest", "risky"), "")
+        self.assertEqual(slot(), "")
 
     def test_runners_breaking_a_dead_lock_at_once_take_the_slot_one_at_a_time(self) -> None:
         slot, go = self.root / "jobs" / "slots" / "s", self.root / "go"
