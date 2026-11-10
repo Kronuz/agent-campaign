@@ -55,14 +55,21 @@ at every launch, choosing by the work, never by habit:
 |---|---|---|
 | implementation | features and fixes with concrete criteria | economical, medium for low and normal risk; strong, high for high and critical, or after an economical attempt stalls |
 | design | quest lists for consequential plans; formats, protocols, durability, concurrency | strong, high; max for a design about to freeze |
-| research | rarely: the mechanism itself is the limit | strong, max |
+| research | rarely: the mechanism itself is the limit | frontier, max (strong where the harness has none) |
 | performance | profiling and optimization | strong, high |
 | exploration | one target of an exploration batch, or a quick question | economical, medium |
 | documentation | docs, guides, READMEs | economical, medium |
 | maintenance | one mechanical change across repositories | economical, medium |
 
 Reviewers use the strong tier at high effort (max for critical quests); for critical quests and
-the plan challenge, a reviewer from another model family when the harness offers one. Each
+the plan challenge, a reviewer from another model family when the harness offers one.
+
+The **frontier** tier, the most capable model a harness offers above strong, is for targeted hard
+or sensitive work only: research, a critical quest's review, and the design or review of a format,
+wire protocol, durability or concurrency mechanism about to freeze. Name the task it is for at each
+launch, run one at a time, and never make it a role's default. Whether it beats strong on a kind
+of work is measured, not assumed: run both on the same commit from fresh contexts and compare the
+material findings each alone made. Each
 harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
 (`campaign usage`, criteria met, rework), not on price alone. The lead does small edits itself
 (a five-line fix, a trivial conflict): a launch costs more.

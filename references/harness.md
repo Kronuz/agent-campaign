@@ -35,6 +35,7 @@ at every launch: the agent files default to the strong tier at high effort.
 
 | Tier | Claude Code | Copilot CLI | Codex |
 |---|---|---|---|
+| frontier (targeted hard or sensitive work only) | Fable class | none: use strong | none: use strong |
 | strong | Opus class | `claude-opus-5.5` | Astra |
 | economical | Sonnet class | `claude-sonnet-5.5` | Sol |
 | another family, for critical reviews | (another harness) | `gpt-6.1-sol` | (the session's GPT models) |
