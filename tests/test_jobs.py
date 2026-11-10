@@ -209,11 +209,15 @@ class Scheduling(CampaignCase):
 
     def test_deferred_work_never_takes_every_light_slot(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "2"
-        late = [self.submit(self.home, "--priority", "-1", "--force", "--", "sleep 4") for _ in range(2)]
+        go = self.root / "go"  # the deferred jobs hold their slot until the gate check ends, however slow
+        hold = f"while [ ! -e {go} ]; do sleep 0.1; done"
+        late = [self.submit(self.home, "--priority", "-1", "--force", "--", hold) for _ in range(2)]
         self.wait_until(lambda: self.job(late[0])["state"] == "running")
         gate = self.submit(self.home, "--priority", "1", "--", "true")
         self.ok(self.home, "wait", gate, "--timeout", "30")
-        self.assertLess(self.job(gate)["ended"], max(self.job(x).get("started", 1e18) for x in late))
+        self.assertEqual(self.job(late[1])["state"], "queued", "deferred work took every slot")
+        go.touch()
+        self.ok(self.home, "wait", *late, "--timeout", "30")
 
     def test_a_job_that_takes_no_hold_never_waits_for_a_light_slot(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
