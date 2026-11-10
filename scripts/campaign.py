@@ -969,6 +969,28 @@ def gates(p: Json) -> list[Json]:
     return [x for x in p["checks"] if not x.get("later")]
 
 
+def declare_inputs(p: Json, pid: str, items: list[str]) -> None:
+    """Applies `--inputs NAME=GLOBS` to the quest's checks: a job of that check is identified by the
+    files under GLOBS (and the build files and paths its command names), not by the whole tree. An
+    empty GLOBS clears them. At least one gate check keeps whole-tree identity: the build-test."""
+    for item in items:
+        name, sep, globs = item.partition("=")
+        check = next((x for x in p["checks"] if x["name"] == name), None)
+        if not sep or not name:
+            die(f"--inputs NAME=GLOBS, not {item!r}")
+        if check is None:
+            die(f"--inputs {name}: {pid} has no check {name}")
+        if check["cmd"].startswith(CI_CHECK):
+            die(f"--inputs {name}: a CI check runs on GitHub at the exact commit; inputs scope jobs")
+        check.pop("inputs", None)
+        if csv(globs):
+            check["inputs"] = csv(globs)
+    if any(x.get("inputs") for x in p["checks"]) and all(x.get("inputs") for x in gates(p)):
+        die(
+            f"{pid}: every gate check declares --inputs; keep one without them, the build-test `land` runs at the exact code"
+        )
+
+
 def deferred(p: Json) -> list[Json]:
     return [x for x in p["checks"] if x.get("later")]
 
@@ -999,6 +1021,8 @@ def weakening(before: Json, after: Json) -> list[str]:
             out.append(f"gate check {old['name']} deferred")
         elif (now["cmd"], now["level"]) != (old["cmd"], old["level"]):
             out.append(f"{kind} {old['name']} changed")
+        elif now.get("inputs") and not set(old.get("inputs") or ["**"]) <= set(now["inputs"]):
+            out.append(f"{kind} {old['name']} inputs narrowed to {','.join(now['inputs'])}")
     return out
 
 
@@ -1236,6 +1260,7 @@ def cmd_new(a: argparse.Namespace) -> int:
             "landed": [],
             "updated": stamp(),
         }
+        declare_inputs(c.quests[a.id], a.id, a.inputs)
         brief = f"{c.meta}/quests/{a.id}.md"
         if not (c.home / brief).exists():
             atomic_write(c.home / brief, template("quest.md", id=a.id, title=a.title, risk=a.risk))
@@ -1245,7 +1270,8 @@ def cmd_new(a: argparse.Namespace) -> int:
 
 
 QUEST_KEYS = ("title", "status", "risk", "reason", "repo", "milestone", "needs", "after", "provides", "consumes")
-QUEST_KEYS += ("files", "lenses", "check", "later", "branch", "worktree", "journal", "base", "tasks", "landed")
+QUEST_KEYS += ("files", "lenses", "check", "later", "inputs", "branch", "worktree", "journal", "base", "tasks")
+QUEST_KEYS += ("landed",)
 TASK_KEYS = ("files", "status", "reason", "branch", "worktree", "journal", "base")
 
 
@@ -1259,6 +1285,8 @@ def fields(record: Json, keys: tuple[str, ...]) -> list[tuple[str, str]]:
                 for c in record.get("checks", [])
                 if c.get("later", False) == (key == "later")
             ]
+        elif key == "inputs":
+            out += [(key, f"{c['name']}={','.join(c['inputs'])}") for c in record.get("checks", []) if c.get("inputs")]
         elif key == "tasks":
             out.append((key, ",".join(record.get("tasks", {}))))
         elif key == "landed":
@@ -1294,7 +1322,7 @@ def cmd_set(a: argparse.Namespace) -> int:
             if task is None:
                 die(f"{a.id} has no task {a.task}")
             given = dict(x.partition("=")[::2] for x in a.assignments)
-            if not given or set(given) - {"files", "status", "reason"} or a.check or a.later:
+            if not given or set(given) - {"files", "status", "reason"} or a.check or a.later or a.inputs:
                 die("set --task takes files=GLOBS, or status=dropped reason=R (status=active undoes it)")
             if "files" in given:
                 files = csv(given["files"])
@@ -1339,12 +1367,14 @@ def cmd_set(a: argparse.Namespace) -> int:
             else:
                 die(
                     f"no field {key} to set; the fields are title, status, risk, reason, repo, milestone, needs, "
-                    f"after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check and --later"
+                    f"after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, --later and --inputs"
                 )
         if a.check:
             p["checks"] = [parse_check(x) for x in a.check] + deferred(p)
         if a.later:
             p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later]
+        if a.check or a.later or a.inputs:
+            declare_inputs(p, a.id, a.inputs)
         if RISKS.index(p["risk"]) > RISKS.index(before["risk"]):  # a raised risk brings its reviews
             p["lenses"] = list(dict.fromkeys(p["lenses"] + DEFAULT_LENSES[p["risk"]]))
         need = lens_floor(p["risk"], p["lenses"])
@@ -1377,7 +1407,12 @@ def cmd_set(a: argparse.Namespace) -> int:
         p["updated"] = stamp()
         c.save(
             f"campaign: set {a.id} "
-            + " ".join(a.assignments + [f"check={x}" for x in a.check] + [f"later={x}" for x in a.later])
+            + " ".join(
+                a.assignments
+                + [f"check={x}" for x in a.check]
+                + [f"later={x}" for x in a.later]
+                + [f"inputs={x}" for x in a.inputs]
+            )
             + (f" (weakened: {'; '.join(weakened)}; why: {a.weaken})" if weakened else "")
         )
         if any(x == "status=blocked" for x in a.assignments):
@@ -1750,6 +1785,8 @@ def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[J
     repo = c.repo(p)
     missing: list[str] = []
     evidence: list[Json] = []
+    if gates(p) and all(x.get("inputs") for x in gates(p)):
+        missing.append("build-test: every gate check declares inputs; one without them must pass at the exact code")
     for check in gates(p):
         if check["cmd"].startswith(CI_CHECK):
             state = ci_job(repo, target, check["cmd"][len(CI_CHECK) :].strip())
@@ -4134,14 +4171,22 @@ def submit_checks(
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
             "priority": priority,
             "retries": 1,
+            **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
         earlier = None if force else job_at(spec, commit)
         if earlier is not None and earlier.get("docs"):
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
             continue
+        if spec.get("inputs") and not matches_inputs(repo, commit, spec["inputs"]):
+            print(
+                f"campaign: {check['name']}'s inputs {','.join(spec['inputs'])} match no file at {commit[:12]}",
+                file=sys.stderr,
+            )
         jid, reused = submit(spec, force=force)
-        print(f"{check['name']}: {jid}" + (" (reused)" if reused else ""))
+        at = load_job(jobs_dir() / jid)["spec"]["commit"] if reused and spec.get("inputs") else commit
+        note = f" (reused: its inputs are unchanged since {at[:12]})" if at != commit else " (reused)" if reused else ""
+        print(f"{check['name']}: {jid}{note}")
         ids.append(jid)
     ensure_worker()
     return ids
@@ -4187,15 +4232,79 @@ def jobs_dir() -> Path:
     return d
 
 
+BUILD_FILES = ("CMakeLists*", "*.cmake", "CMakePresets*.json", "*toolchain*", "Makefile", "GNUmakefile", "*.mk")
+BUILD_FILES += ("meson.build", "meson_options.txt", "pyproject.toml", "setup.py", "setup.cfg", ".gitmodules")
+INPUTS_HELP = (
+    "the files a check's jobs depend on (GLOBS comma-separated; empty clears): its evidence then survives "
+    "commits that change nothing under them, the build files (CMakeLists*, *.cmake, toolchain files) and "
+    "the paths its command names"
+)
+
+
+def named_paths(cmd: str, cwd: str) -> list[str]:
+    """The repository paths a command names (its scripts, and folders it enters), relative to the root."""
+    out: list[str] = []
+    for token in re.split(r"[\s;|&()<>=\"'`]+", cmd):
+        word = token[2:] if token.startswith("./") else token
+        if not word or word.startswith(("-", "/", "$", "~")) or set(word) & set("*?[") or word in (".", ".."):
+            continue
+        out += [os.path.normpath(os.path.join(cwd, word)).rstrip("/")] if cwd else [word.rstrip("/")]
+    return [x for x in dict.fromkeys(out) if x and not x.startswith("..")]
+
+
+def input_files(repo: Path, commit: str, spec: Json) -> list[str]:
+    """The `mode sha path` entries of COMMIT that a job with declared inputs depends on: what its
+    globs match, the build files, and the paths its command names (a named folder, all of it)."""
+    globs, named = spec["inputs"], named_paths(spec["cmd"], spec.get("cwd", ""))
+
+    def wanted(path: str) -> bool:
+        if is_meta(path):
+            return False
+        name = path.rsplit("/", 1)[-1]
+        return (
+            any(fnmatch.fnmatchcase(path, g) for g in globs)
+            or any(fnmatch.fnmatchcase(name, g) for g in BUILD_FILES)
+            or any(path == x or path.startswith(x + "/") for x in named)
+        )
+
+    listing = git(repo, "ls-tree", "-r", "-z", "--full-tree", commit).split("\0")
+    return [
+        f"{meta.split()[0]} {meta.split()[2]} {path}"
+        for meta, _, path in (x.partition("\t") for x in listing if x)
+        if wanted(path)
+    ]
+
+
+def matches_inputs(repo: Path, commit: str, globs: list[str]) -> bool:
+    listing = git(repo, "ls-tree", "-r", "-z", "--name-only", "--full-tree", commit).split("\0")
+    return any(fnmatch.fnmatchcase(x, g) for x in listing if x and not is_meta(x) for g in globs)
+
+
+def input_digest(repo: Path, commit: str, spec: Json) -> str:
+    """What identifies the code of a job with declared inputs: the blobs input_files lists."""
+    scope = json.dumps([spec["inputs"], spec["cmd"], spec.get("cwd", "")])
+    tag = "inputs:" + hashlib.sha256(scope.encode()).hexdigest()[:16]
+    digest: str = on_commits(
+        (tag, str(repo), commit),
+        lambda: hashlib.sha256("\n".join(input_files(repo, commit, spec)).encode()).hexdigest(),
+    )
+    return digest
+
+
 def job_key(spec: Json) -> str:
     """The identity of a result: same key, same evidence. Host and toolchain are part of it, and
-    the code is identified by its tree, not its commit."""
+    the code is identified by its tree, not its commit; a job of a check with declared inputs, by
+    the blobs under them."""
     refs = sorted((name, code_tree(Path(r["repo"]), r["commit"])) for name, r in spec["refs"].items())
+    repo = Path(spec["repo"])
+    code = (
+        ["inputs", input_digest(repo, spec["commit"], spec)] if spec.get("inputs") else code_tree(repo, spec["commit"])
+    )
     identity = [
         HOST,
         fingerprint(),
         spec["repo"],
-        code_tree(Path(spec["repo"]), spec["commit"]),
+        code,
         refs,
         spec["cmd"],
         spec["cwd"],
@@ -4233,6 +4342,7 @@ def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = 
         "cwd": "",
         "level": check["level"],
         "env": nothing,
+        **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
     return job_at(spec, commit, tested)
 
@@ -4327,6 +4437,7 @@ def job_summary(job: Json) -> Json:
         "exit": st.get("exit"),
         "seconds": round(st["ended"] - st["began"], 1) if st.get("ended") and st.get("began") else None,
         **({"docs": job["docs"]} if job.get("docs") else {}),
+        **({"inputs": s["inputs"]} if s.get("inputs") else {}),
     }
 
 
@@ -6070,6 +6181,7 @@ def parser() -> argparse.ArgumentParser:
         metavar=check,
         help="a deferred check: runs on the landed code at low priority; gates the milestone",
     )
+    p.add_argument("--inputs", action="append", default=[], metavar="NAME=GLOBS", help=INPUTS_HELP)
     p.set_defaults(fn=cmd_new)
 
     p = command(
@@ -6088,7 +6200,8 @@ def parser() -> argparse.ArgumentParser:
         "change a quest's fields",
         "Sets a quest's fields: title, status, risk, reason, repo, milestone, needs, after, provides, consumes, "
         "files, lenses, and with --check or --later its checks. A blocked or dropped status needs reason=R. "
-        "Lowering the risk, removing a lens, or removing, changing or deferring a check needs --weaken REASON: "
+        "Lowering the risk, removing a lens, or removing, changing, deferring or narrowing the inputs of a check "
+        "needs --weaken REASON: "
         "the change is recorded in the quest's history and voids its review acceptances; any risk change voids "
         "them too. A risk's minimum reviews (a code review above low, a design review for critical) stay. "
         "With --task T: the task's files=GLOBS, or status=dropped reason=R. `campaign get ID` prints them.",
@@ -6098,10 +6211,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="the fields to set (lists comma-separated)")
     p.add_argument("--check", action="append", default=[], metavar=check, help="replace the gate checks")
     p.add_argument("--later", action="append", default=[], metavar=check, help="replace the deferred checks")
+    p.add_argument("--inputs", action="append", default=[], metavar="NAME=GLOBS", help=INPUTS_HELP)
     p.add_argument(
         "--weaken",
         metavar="REASON",
-        help="needed to lower the risk, remove a lens, or remove, change or defer a check: recorded, voids acceptances",
+        help="needed to lower the risk, remove a lens, or remove, change, defer or narrow a check: recorded, voids acceptances",
     )
     p.set_defaults(fn=cmd_set)
 

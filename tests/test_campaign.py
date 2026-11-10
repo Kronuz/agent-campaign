@@ -381,6 +381,87 @@ class Evidence(CampaignCase):
         self.commit(wt, {".campaign/demo/journal/fix.md": f"## Evidence\n\n| A1 | {probe} |\n"})
         self.assertIn("    A1  met      prints two: a probe\n", self.ok(self.home, "status", "fix").out)
 
+    def scoped(self) -> Path:
+        """A quest with a whole-tree build-test (unit) and a bench check whose inputs are lib/**."""
+        self.ok(self.home, "config", "tested_docs=docs/**")  # docs the tests run: whole-tree evidence ignores none
+        wt = self.started("fast", files="app.py,lib/**,docs/**,CMakeLists.txt", check="unit=python3 app.py")
+        self.fails(self.home, "set", "fast", "--inputs", "bench=lib/**", match="has no check bench")
+        self.ok(self.home, "set", "fast", "--check", "unit=python3 app.py", "--check", "bench=test -f lib/util.py")
+        self.fails(self.home, "set", "fast", "--inputs", "bench=lib/**", match="inputs narrowed to lib/**")
+        self.ok(self.home, "set", "fast", "--inputs", "bench=lib/**", "--weaken", "bench reads only lib/")
+        self.assertEqual(self.ok(self.home, "get", "fast", "inputs").out, "bench=lib/**\n")
+        brief = self.home / ".campaign/demo/quests/fast.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 the bench holds: the bench check"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        return wt
+
+    def test_input_scoped_evidence_outlives_commits_outside_its_inputs(self) -> None:
+        wt = self.scoped()
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fast")
+        bench = self.ok(self.home, "get", "fast", "check").out  # the checks still read as before
+        self.assertIn("bench:light:30=test -f lib/util.py", bench)
+        (jid,) = [
+            j.name for j in (self.root / "jobs").glob("2*") if "check bench" in j.joinpath("spec.json").read_text()
+        ]
+        self.commit(wt, {".campaign/demo/journal/fast.md": f"## Evidence\n\n| A1 | {jid} |\n"})
+        tested = self.commit(wt, {"docs/guide.md": "a page the e2e runs\n"})
+        jobs = len(list((self.root / "jobs").glob("2*")))
+        out = self.ok(self.home, "verify", "fast").out
+        self.assertIn(f"bench: {jid} (reused: its inputs are unchanged since", out)
+        self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs + 1, "only the build-test reruns")
+        self.ok(self.home, "wait", "--quest", "fast", "--timeout", "90", timeout=120)
+        self.assertIn("    A1  met      the bench holds", self.ok(self.home, "status", "fast").out)
+        self.commit(wt, {"app.py": "print(3)\n"})  # code outside the inputs: the bench holds, the build-test not
+        brief = self.ok(self.home, "brief", "fast").out
+        self.assertNotIn("check bench is not green", brief)
+        self.assertIn("check unit is not green", brief)
+        self.fails(self.home, "land", "fast", match="check unit is not green")
+        self.verified("fast")
+        self.ok(self.home, "land", "fast")
+        (landing,) = self.quest("fast")["landed"]
+        scoped = [e for e in landing["evidence"] if e.get("inputs")]
+        self.assertEqual(
+            [(e["job"], e["inputs"], e["commit"]) for e in scoped], [(jid, ["lib/**"], scoped[0]["commit"])]
+        )
+        self.assertNotEqual(scoped[0]["commit"], tested)
+
+    def test_input_scoped_evidence_is_void_when_an_input_or_build_file_changes(self) -> None:
+        wt = self.scoped()
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fast")
+        for files in ({"lib/util.py": "X = 2\n"}, {"lib/new.py": "Y = 1\n"}, {"CMakeLists.txt": "project(x)\n"}):
+            self.commit(wt, files)
+            self.assertIn("check bench is not green", self.ok(self.home, "brief", "fast").out, files)
+            self.verified("fast")
+        named = self.started("named", files="tools/**", check="unit=python3 app.py")
+        self.ok(self.home, "set", "named", "--check", "unit=python3 app.py", "--check", "probe=sh tools/probe.sh")
+        self.ok(self.home, "set", "named", "--inputs", "probe=lib/**", "--weaken", "the probe reads lib/")
+        self.commit(named, {"tools/probe.sh": "true\n"})
+        self.verified("named")
+        self.commit(named, {"tools/probe.sh": "true  # the script the command runs\n"})
+        self.assertIn("check probe is not green", self.ok(self.home, "brief", "named").out)
+
+    def test_inputs_never_replace_the_whole_tree_build_test(self) -> None:
+        self.ok(self.home, "new", "solo", "--title", "solo", "--check", "unit=true")
+        self.fails(self.home, "set", "solo", "--inputs", "unit=lib/**", "--weaken", "x", match="keep one without them")
+        self.fails(
+            self.home,
+            "new",
+            "ci",
+            "--title",
+            "ci",
+            "--check",
+            "unit=ci:build",
+            "--check",
+            "b=true",
+            "--inputs",
+            "unit=x",
+        )
+        self.ok(self.home, "set", "solo", "--later", "slow=true", "--inputs", "slow=lib/**")
+        self.ok(self.home, "set", "solo", "--inputs", "slow=")  # cleared: whole-tree again, a stronger check
+        self.assertNotIn("inputs", self.quest("solo")["checks"][1])
+
     def test_land_needs_green_checks_at_the_exact_head(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})

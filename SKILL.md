@@ -205,7 +205,7 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 - **A design is reviewed once.** Settle disputed behavior with an executable model or test, not
   another text round.
 - **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
-  lowers its risk, removes a lens, or removes, changes or defers a check; the change is kept in its
+  lowers its risk, removes a lens, or removes, changes, defers or scopes a check; it is kept in its
   history, shown by `campaign status ID`, and voids its acceptances. The review a risk needs (a code
   review above low, a design review for critical) cannot be removed, and a waiver is refused once a
   review exists.
@@ -244,12 +244,14 @@ Performance claims follow `references/measurement.md`: before and after at named
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
 host and toolchain: name a mutable input (a dataset version) with `--env`, and rerun with
-`--force` what depends on more. Evidence also outlives later commits that change only
-documentation (`docs/**`, `*.md`) its command does not name; the brief lists what it ignored. A strict or exclusive job lasts at most 30 minutes and is stopped at
-its deadline. Every process a job starts dies with it. A worker starts by itself and exits when
-the queue is empty, pruning once a day: jobs nothing names go after 14 days, and jobs evidence
-names keep their record and lose only bulky outputs (`campaign job prune`). The same prune deletes
-build directories idle 3 days in worktrees no open quest owns; `campaign sweep` removes clean
+`--force` what depends on more. Evidence outlives commits that change only documentation (`docs/**`,
+`*.md`) its command does not name and `tested_docs` does not match. A check the lead scopes with
+`--inputs NAME=GLOBS` is identified by the files under them, the build files and the paths its
+command names; `land` still needs the build-test, a gate check without inputs, at the exact code.
+A strict or exclusive job lasts at most 30 minutes and is stopped at its deadline. Every process a
+job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
+daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
+directories of worktrees no open quest owns after 3 days); `campaign sweep` removes clean
 worktrees of merged or finished work; `campaign check` warns under `disk_warn` free GiB (100) with
 the largest consumers. Mechanics: `references/host.md`.
 

@@ -55,7 +55,18 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   criteria, confirmations, `verify` (which reuses such a job instead of rerunning it), `land` and
   `status` accept it; the brief names each such job and the documentation paths it ignores, and
   the landing records them. The search follows first parents back at most 20 commits and stops at
-  the first commit that changes code.
+  the first commit that changes code. A `tested_docs` glob (`campaign config`) marks documentation
+  that tests execute: changing it voids evidence like code does.
+- **Input-scoped checks.** `campaign new|set ID --inputs NAME=GLOBS` scopes the quest check NAME
+  (an empty GLOBS clears it). Its jobs' code is then the blobs of the paths that match GLOBS, the
+  build files (`CMakeLists*`, `*.cmake`, `CMakePresets*.json`, `*toolchain*`, Makefiles, `*.mk`,
+  `meson.build`, `pyproject.toml`, `setup.py`, `setup.cfg`, `.gitmodules`) and every path or folder
+  the command names, instead of the whole tree; refs, `--env`, host, toolchain, command, directory
+  and level stay in the key. A job of the check at an older commit with the same inputs is the same
+  job, so `verify` reuses it ("its inputs are unchanged since ..."), and Evidence rows, `accept
+  --confirm` and `land` count it. Only checks the quest file declares carry inputs; adding or
+  narrowing them needs `--weaken`. A quest keeps at least one gate check without inputs, the
+  build-test, which `land` needs at the exact code.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (untracked build outputs stay, which is
   the point), and one job uses it at a time: the worker starts no job whose slot a running job
