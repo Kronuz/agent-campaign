@@ -4753,10 +4753,18 @@ def drains(job: Json) -> bool:
     return level == "exclusive" or (level == "strict" and not SPLITS)
 
 
+def window_info() -> Json:
+    """The drain window's record: until, for and opened ({} when none was opened)."""
+    with contextlib.suppress(OSError, ValueError):
+        info = json.loads((jobs_dir() / ".window").read_text())
+        return info if isinstance(info, dict) else {}
+    return {}
+
+
 def window_until() -> float:
     """When the open drain window closes (0 when none is open)."""
-    with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
-        until = float(json.loads((jobs_dir() / ".window").read_text())["until"])
+    with contextlib.suppress(ValueError, KeyError, TypeError):
+        until = float(window_info()["until"])
         return until if until > time.time() else 0.0
     return 0.0
 
@@ -4906,6 +4914,24 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and states[j["id"]] != "queued"),
                 default=0.0,
             )
+            turn = window_info()
+            starved = [
+                j
+                for j in queued
+                if j["spec"].get("level") not in (*HEAVY, "none")
+                and int(j["spec"].get("priority", 0)) >= 1
+                and now - float(j["spec"].get("submitted") or now) > drain_turn
+                and all(states.get(x) == "done" for x in j["spec"].get("after", []))
+            ]
+            if (
+                starved
+                and turn.get("for") == "drain turn"
+                and not any(drains(j) for j in running)
+                and last_drain >= float(turn.get("opened") or now)
+            ):
+                # direct-path work that waited a whole turn ends it once its running drain ends: light
+                # work has DRAIN_WAIT from that drain's end, so a long drain queue cannot hold it for hours
+                (jobs_dir() / ".window").unlink(missing_ok=True)
             window = window_until() > now  # an open window: every ready drain is due, back to back
             overdue = [
                 j

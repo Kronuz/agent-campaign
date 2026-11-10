@@ -70,6 +70,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   waits, so drains and light work take turns: a drain starts in a lull (no runnable light work, and
   the running light jobs end within 10 minutes by their `--minutes`), or once it has waited an hour
   since the last drain ended (`CAMPAIGN_DRAIN_WAIT`), when no new light job starts until it runs.
+  An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`, an hour) in which the queued drains run
+  back to back; a priority-1 light job that has waited longer than a turn ends it once the running
+  drain ends, so a long queue of drains never holds the direct path for hours, and no light job
+  starts beside a drain.
   `campaign window --minutes N --for TEXT` lets queued drains run back to back for a batch of
   measurements (light jobs wait); it closes by itself or with `--close`. Give long jobs accurate
   `--minutes`: drains plan around them.

@@ -1106,6 +1106,21 @@ class Campaigns(CampaignCase):
         self.assertLess(self.job(second)["started"], self.job(theirs)["started"], "light work cut into the turn")
         self.assertIn("window open until", self.ok(self.home, "window").out)
 
+    def test_direct_path_work_that_waited_a_turn_ends_it_after_the_running_drain(self) -> None:
+        """A priority-1 light job queued longer than a drain turn ends the turn once the running drain
+        ends, so it runs before the drains queued behind; it never starts beside a drain."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="6", CAMPAIGN_DRAIN_TURN="10")
+        ours = self.submit(self.home, "--level", "light", "--force", "--", "sleep 8")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        gate = self.submit(self.other, "--level", "light", "--priority", "1", "--", "true")
+        first = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "sleep 4")
+        second = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--force", "--", "sleep 4")
+        self.ok(self.home, "wait", ours, first, second, "--timeout", "120", timeout=150)
+        self.ok(self.other, "wait", gate, "--timeout", "120", timeout=150)
+        self.assertLess(self.job(first)["started"], self.job(gate)["started"], "the running turn went first")
+        self.assertGreaterEqual(self.job(gate)["started"], self.job(first)["ended"], "light work beside a drain")
+        self.assertLess(self.job(gate)["started"], self.job(second)["started"], "the turn held direct-path work")
+
     def test_a_window_runs_drains_back_to_back(self) -> None:
         """Inside a window, queued drains go before light work; without one, light work goes first."""
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
