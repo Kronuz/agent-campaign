@@ -2176,11 +2176,8 @@ def cmd_land(a: argparse.Namespace) -> int:
         if not ancestor(repo, target, head):
             die(f"{a.upto} is not on {p['branch']}")
         if not final:
-            early = section(c.quest_file(a.id), "May land early").strip()
-            if not early or early.startswith("<") or re.match(r"none\b", early, re.I):
-                die(
-                    f"{a.id}'s quest file names nothing under 'May land early': the lead writes what may, before it lands"
-                )
+            if re.match(r"none\b", section(c.quest_file(a.id), "May land early").strip(), re.I):
+                die(f"{a.id}'s quest file says None under 'May land early': it all waits for the review")
             if code_tree(repo, target) == code_tree(repo, head):
                 die(f"{a.upto} has the whole quest's code: land it without --upto")
         if git(checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) != main:

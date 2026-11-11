@@ -1056,12 +1056,14 @@ class Increments(CampaignCase):
         self.ok(self.home, "wait", "--quest", "big", "--timeout", "60")
         self.fails(self.home, "land", "big", "--upto", first, match="--reason")
         why = "behavior-preserving refactor"
-        self.fails(self.home, "land", "big", "--upto", first, "--reason", why, match="May land early")
         brief = self.home / ".campaign/demo/quests/big.md"
         text = brief.read_text()
         start = text.index("## May land early")
-        brief.write_text(text[:start] + "## May land early\n\nThe lib/ refactor.\n")
-        self.git(self.home, "commit", "-qam", "may land early")
+        brief.write_text(text[:start] + "## May land early\n\nNone.\n")
+        self.git(self.home, "commit", "-qam", "nothing lands early")
+        self.fails(self.home, "land", "big", "--upto", first, "--reason", why, match="says None under 'May land early'")
+        brief.write_text(text)  # the template's placeholder: internal code behind tests may land early
+        self.git(self.home, "commit", "-qam", "the default")
         self.verified("big")
         self.fails(self.home, "land", "big", "--upto", "quest/demo/big", "--reason", why, match="the whole quest")
         self.ok(self.home, "land", "big", "--upto", first, "--reason", why)
