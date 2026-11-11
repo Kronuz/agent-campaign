@@ -1056,6 +1056,19 @@ def parse_check(spec: str, later: bool = False) -> Json:
     return check
 
 
+MILESTONE_RUN = re.compile(r"asan|ubsan|tsan|crash|fuzz|mutant", re.I)
+
+
+def placed(spec: str, risk: str) -> Json:
+    """A --check: sanitizer, crash, fuzz and mutant runs are milestone checks, save on CI and, at high
+    risk, crash and TSan runs, which gate a format, durability or concurrency claim."""
+    runs = {x.lower() for x in MILESTONE_RUN.findall(spec)}
+    gate = spec.partition("=")[2].strip().startswith(CI_CHECK) or (
+        risk in ("high", "critical") and runs <= {"crash", "tsan"}
+    )
+    return parse_check(spec, later=bool(runs) and not gate)
+
+
 def gates(p: Json) -> list[Json]:
     return [x for x in p["checks"] if not x.get("later")]
 
@@ -1277,7 +1290,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "peers", "outbox", "disk_warn", "tested_docs")
+CONFIG = ("ci", "ci_later", "suite", "peers", "outbox", "disk_warn", "tested_docs")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1300,8 +1313,8 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["ci_later"] = csv(value)
                 elif key == "peers" and sep and all(re.fullmatch(r"[\w.-]+=\S+", x) for x in csv(value)):
                     c.state["peers"] = csv(value)
-                elif key == "outbox" and sep:
-                    c.state["outbox"] = value
+                elif key in ("outbox", "suite") and sep:
+                    c.state[key] = value
                 elif key == "tested_docs" and sep:
                     c.state["tested_docs"] = csv(value)
                 elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
@@ -1310,7 +1323,7 @@ def cmd_config(a: argparse.Namespace) -> int:
                         c.state["disk_warn"] = float(value)
                 else:
                     die(
-                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., peers=NAME=URL,..., "
+                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., suite=CMD, peers=NAME=URL,..., "
                         f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
@@ -1334,6 +1347,13 @@ def cmd_new(a: argparse.Namespace) -> int:
         need = lens_floor(a.risk, lenses)
         if need:
             die(f"{a.risk} risk needs {' and '.join(need)}: --lenses {','.join(lenses + DEFAULT_LENSES[a.risk])}")
+        checks = [placed(x, a.risk) for x in a.check]
+        moved = [x["name"] for x in checks if x.get("later")]
+        checks += [parse_check(x, later=True) for x in a.later]
+        if not gates({"checks": checks}):
+            if not c.state.get("suite"):
+                die("no gate: --check NAME=CMD, or `campaign config suite=CMD` (the native build plus tests)")
+            checks.insert(0, parse_check(f"suite={c.state['suite']}"))
         c.quests[a.id] = {
             "title": a.title,
             "status": "planned",
@@ -1344,7 +1364,7 @@ def cmd_new(a: argparse.Namespace) -> int:
             "provides": csv(a.provides),
             "consumes": csv(a.consumes),
             "files": csv(a.files),
-            "checks": [parse_check(x) for x in a.check] + [parse_check(x, later=True) for x in a.later],
+            "checks": checks,
             "lenses": list(dict.fromkeys(lenses)),
             "milestone": a.milestone or "",
             "accepted": {},
@@ -1357,6 +1377,8 @@ def cmd_new(a: argparse.Namespace) -> int:
             atomic_write(c.home / brief, template("quest.md", id=a.id, title=a.title, risk=a.risk))
         c.save(f"campaign: new {a.id} ({a.risk}): {a.title}", (brief,))
     print(f"{a.id}: planned; write its outcome and criteria in {brief}")
+    for name in moved:
+        print(f"{name}: a milestone check (a sanitizer, crash, fuzz or mutant run)")
     return 0
 
 
@@ -1461,7 +1483,7 @@ def cmd_set(a: argparse.Namespace) -> int:
                     f"after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, --later and --inputs"
                 )
         if a.check:
-            p["checks"] = [parse_check(x) for x in a.check] + deferred(p)
+            p["checks"] = [placed(x, p["risk"]) for x in a.check] + deferred(p)
         if a.later:
             p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later]
         if a.check or a.later or a.inputs:
@@ -6605,13 +6627,13 @@ def parser() -> argparse.ArgumentParser:
 
     p = command(
         "config",
-        "show or set campaign-wide settings: ci, ci_later, peers, outbox, disk_warn",
-        "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE "
-        "assignments, sets them (from the home's main checkout). ci=github makes landing wait for green GitHub "
-        "CI; ci_later=WORKFLOW,... names workflows that do not gate it. peers=NAME=URL,... names campaigns on "
-        "other machines and where their outboxes are (a repository they push to); outbox=REMOTE is where this "
-        "campaign pushes its own (default origin). disk_warn=GIB is the free disk under which `check` warns "
-        "(default 100; the worker's daily prune uses the largest any campaign sets).",
+        "show or set campaign-wide settings: ci, ci_later, suite, peers, outbox",
+        "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE, sets "
+        "them (in the home's main checkout). ci=github makes landing wait for green GitHub CI but its "
+        "ci_later=WORKFLOW,... workflows. suite=CMD, the native build plus tests, gates a quest `new` gives no "
+        "gate check. peers=NAME=URL,... names other machines' campaigns and their outbox repositories; "
+        "outbox=REMOTE is where this one pushes its own (default origin). disk_warn=GIB is the free disk under "
+        "which `check` warns (default 100; the worker's daily prune uses the largest set).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -6619,8 +6641,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "new",
         "plan a quest",
-        "Records a quest in state.json and writes its quest file (.campaign/NAME/quests/ID.md) from the "
-        "template. The lead fills in its outcome, acceptance criteria and contracts before it starts.",
+        "Records a quest and writes .campaign/NAME/quests/ID.md. Its gate is `config suite` or --check; "
+        "sanitizer, crash, fuzz, mutant checks go --later, save crash and TSan at high risk.",
     )
     p.add_argument("id", metavar="ID", help="the quest's id: lowercase letters, digits and single dashes")
     p.add_argument("--title", required=True, help="what it delivers, in a few words")

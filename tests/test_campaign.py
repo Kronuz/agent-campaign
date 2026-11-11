@@ -996,9 +996,7 @@ class RiskPolicy(CampaignCase):
         self.fails(self.home, "land", "dur", match="correctness review not accepted")
 
     def test_the_review_a_risk_needs_cannot_be_removed(self) -> None:
-        self.fails(
-            self.home, "new", "x", "--title", "x", "--risk", "high", "--lenses", "", match="needs a code review"
-        )
+        self.fails(self.home, "new", "x", "--title", "x", "--risk", "high", "--lenses", "", match="needs a code review")
         self.fails(
             self.home, "new", "y", "--title", "y", "--risk", "critical", "--lenses", "correctness", match="design"
         )
@@ -1059,6 +1057,33 @@ class Increments(CampaignCase):
 
 
 class DirectPath(CampaignCase):
+    def test_a_new_quest_gates_on_the_suite_unless_a_check_names_another_gate(self) -> None:
+        def checks(pid: str) -> list[tuple[str, bool]]:
+            return [(x["name"], x.get("later", False)) for x in self.quest(pid)["checks"]]
+
+        self.ok(self.home, "new", "plain", "--title", "plain")
+        self.assertEqual(self.quest("plain")["checks"][0]["cmd"], "python3 app.py")
+        self.ok(self.home, "new", "own", "--title", "own", "--check", "unit=true")
+        self.assertEqual(checks("own"), [("unit", False)])
+        self.ok(self.home, "config", "suite=")
+        self.fails(self.home, "new", "none", "--title", "none", match="no gate")
+
+    def test_sanitizer_crash_fuzz_and_mutant_checks_are_milestone_checks(self) -> None:
+        def checks(pid: str) -> list[tuple[str, bool]]:
+            return [(x["name"], x.get("later", False)) for x in self.quest(pid)["checks"]]
+
+        runs = ["--check", "asan=make asan", "--check", "crash=./crash-matrix", "--check", "tsan=make tsan"]
+        runs += ["--check", "unit=./fuzz_decoder -runs=100", "--check", "mutants=true", "--check", "ci=ci:UBSan"]
+        r = self.ok(self.home, "new", "norm", "--title", "norm", *runs)
+        self.assertIn("asan: a milestone check", r.out)
+        later = [("asan", True), ("crash", True), ("tsan", True), ("unit", True), ("mutants", True)]
+        self.assertEqual(checks("norm"), [*later, ("ci", False)])  # a CI check gates, so no suite
+        self.ok(self.home, "new", "high", "--title", "high", "--risk", "high", "--lenses", "durability", *runs)
+        gated = [("asan", True), ("crash", False), ("tsan", False), ("unit", True), ("mutants", True), ("ci", False)]
+        self.assertEqual(checks("high"), gated)  # high risk keeps the crash model and TSan as gates
+        self.ok(self.home, "new", "only", "--title", "only", "--check", "asan=make asan")
+        self.assertEqual(checks("only"), [("suite", False), ("asan", True)])
+
     def test_deferred_checks_never_block_landing_and_report_on_the_landed_code(self) -> None:
         self.ok(
             self.home,
@@ -1109,7 +1134,7 @@ class DirectPath(CampaignCase):
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
         self.assertEqual(
             self.ok(self.home, "config").out,
-            "ci=\nci_later=\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n",
+            "ci=\nci_later=\nsuite=python3 app.py\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n",
         )
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
@@ -1408,7 +1433,7 @@ class Campaigns(CampaignCase):
     def test_a_campaign_registers_again_on_its_next_write(self) -> None:
         (self.root / "campaigns" / "other").unlink()  # one from before the registry, or a wiped ~/.scratch
         self.assertNotIn("other", self.ok(self.home, "status", "--all").out)
-        self.ok(self.other, "new", "x", "--title", "x", "--risk", "low")
+        self.ok(self.other, "new", "x", "--title", "x", "--risk", "low", "--check", "unit=true")
         self.assertIn("other", self.ok(self.home, "status", "--all").out)
 
     def test_landing_waits_for_a_repository_another_campaign_is_writing(self) -> None:
@@ -1802,7 +1827,21 @@ class SharedHome(CampaignCase):
         self.ok(self.home, "init", "--name", "perf")
         self.fails(self.home, "status", match="pass --campaign NAME")
         for name in ("demo", "perf"):
-            self.ok(self.home, "new", "fix", "--title", name, "--risk", "low", "--files", "app.py", "--campaign", name)
+            self.ok(
+                self.home,
+                "new",
+                "fix",
+                "--title",
+                name,
+                "--risk",
+                "low",
+                "--files",
+                "app.py",
+                "--campaign",
+                name,
+                "--check",
+                "unit=true",
+            )
             started = self.ok(self.home, "start", "fix", "--campaign", name)
         self.assertIn("may overlap demo:fix", started.err)  # neighbors in one home still see each other
         self.assertEqual(self.quest("fix")["branch"], "quest/demo/fix")
@@ -1825,7 +1864,21 @@ class SharedHomeMessages(CampaignCase):
     def test_messages_and_outboxes_stay_apart_in_a_shared_home(self) -> None:
         self.ok(self.home, "init", "--name", "perf")
         for name in ("demo", "perf"):
-            self.ok(self.home, "new", "fix", "--title", name, "--risk", "low", "--files", "app.py", "--campaign", name)
+            self.ok(
+                self.home,
+                "new",
+                "fix",
+                "--title",
+                name,
+                "--risk",
+                "low",
+                "--files",
+                "app.py",
+                "--campaign",
+                name,
+                "--check",
+                "unit=true",
+            )
             self.ok(self.home, "start", "fix", "--campaign", name)
         demo, perf = self.wt("fix"), self.root / "app-wt" / "perf" / "fix"
         elsewhere = self.root / "elsewhere"

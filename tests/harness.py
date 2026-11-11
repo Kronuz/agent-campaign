@@ -132,6 +132,7 @@ class CampaignCase(unittest.TestCase):
         (self.root / "bin" / "quiet").symlink_to(QUIET)  # this checkout's quiet, not the installed one
         self.home = self.repo("app", {"app.py": "print(1)\n", "lib/util.py": "X = 1\n", "README.md": "app\n"})
         self.ok(self.home, "init", "--name", "demo")
+        self.ok(self.home, "config", "suite=python3 app.py")
 
     def tearDown(self) -> None:
         sids = set()
