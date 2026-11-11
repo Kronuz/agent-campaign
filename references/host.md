@@ -54,7 +54,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Tags** (`for.json`). `--for A1` records that the job proves criterion A1 of its quest by
   passing; a later run of the same job (same command, level, directory, environment) carries the
   tag, and `land` reads the newest that counts at the head. `--fails-without` marks a mutant or
-  revert that exits 0 because the test fails; one job never carries both for one criterion. A
+  revert that exits 0 because the test fails; submit refuses both for one criterion. A
   criterion no job is tagged for falls back to the journal's Evidence rows.
 - **Read sets** (`reads.json`). A `none` or `light` job on Linux runs under `strace -f`
   (`$CAMPAIGN_STRACE` names another, `""` none); if it passes and the trace ends cleanly, its read

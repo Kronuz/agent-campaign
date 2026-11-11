@@ -133,9 +133,7 @@ on-disk or wire format or changes a durability mechanism, which gates it. Slow C
 (`campaign config ci_later=NAME,...`).
 
 With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`), met by that CI
-job passing at the exact commit; it queues no local job. **Evidence survives merges from `main`:** a
-job counts for the head when it ran at a commit of the quest's branch whose own changes equal the
-head's, and CI at the exact head tests the merge (without CI, the suite reruns there).
+job passing at the exact commit; it queues no local job.
 
 ## Run a quest
 
@@ -221,7 +219,7 @@ Each criterion names its test or other evidence, and landing reads it from the r
 
 `campaign brief` generates the journal's Evidence table; an untagged criterion of a journal written
 before tags is read from its row. The quality bar (`references/review.md`): tests check values; a
-fix's test is shown failing without it once; one review for high and critical risk; a performance
+fix's test is shown failing without it once; a performance
 claim has one short before/after run (`references/measurement.md`).
 
 ## Machine work
@@ -281,7 +279,7 @@ under "Blocked on" and ask.
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
 - Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
   `campaign map`, never by waking agents. The periodic report quotes `status`'s host and waste
-  lines; the lead owns the queue, and a stall `campaign check` reports is fixed within the hour.
+  lines; the lead owns the queue.
 
 ## Writing
 
