@@ -5710,7 +5710,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
             return 0
     (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
-    drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", "3600"))
+    # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
+    drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
     try:
