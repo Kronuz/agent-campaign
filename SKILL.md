@@ -128,7 +128,7 @@ Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **m
 (`--later`): queued at low priority on the landed code, run once per milestone on `main`, green
 before it closes. A red one is an error in `campaign check`: fix forward or revert, then `campaign
 verify ID --deferred` reruns them. The exception is the crash model of a quest that writes a new
-on-disk or wire format, which gates it. Slow CI workflows are made non-gating the same way
+on-disk or wire format or changes a durability mechanism, which gates it. Slow CI workflows are made non-gating the same way
 (`campaign config ci_later=NAME,...`).
 
 With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`), met by that CI
