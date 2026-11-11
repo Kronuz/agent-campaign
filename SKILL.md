@@ -77,8 +77,8 @@ five-line fix, a trivial conflict): a launch costs more.
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
    writes Goals, Non-goals, Constraints and Reserved decisions in `.campaign/<campaign>/PLAN.md`.
 2. Split the goals into quests: `campaign new ID --title T --risk R --files GLOBS [--needs IDS]
-   [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is one suite check, the
-   native build plus its tests, unless `--check NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each
+   [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is the campaign's suite
+   (`campaign config suite=CMD`), unless `--check NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each
    quest file (`.campaign/<campaign>/quests/ID.md`): outcome, three to five criteria at outcome
    level, each naming its test (Evidence, below), contracts, decisions, what may land early.
 3. When the architecture is consequential, one reviewer (lens `design`) challenges the plan and the
