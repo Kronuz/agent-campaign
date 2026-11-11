@@ -10,9 +10,8 @@ An exploration assignment takes one target of an exploration batch, or one quick
 - Confirm the target still exists on current `main` before anything else; then at most three
   experiments, one hypothesis each. Time things only as strict or exclusive jobs, so the batch never
   fights over the machine.
-- A question with no fix expected needs no quest: run jobs at `main`'s commit (`campaign job submit
-  --commit main ...`) and report.
+- A question, or a target in files an active quest holds, gets no quest: an `explore/` branch whose
+  note the lead lands, planning its fix as a quest.
 - A verified fix continues as its quest, finished by the same contributor while its context is
-  small; a cause without a fix goes to a stronger contributor with the notes; an empty hunt is
-  dropped with reason "nothing found". Two empty hunts in an area send the next batch elsewhere.
-- The prompt is in `references/prompts.md`, "Exploration".
+  small; a cause without a fix goes to a stronger contributor; an empty hunt is dropped ("nothing
+  found"). Two empty hunts in an area send the next batch elsewhere. Prompt: `references/prompts.md`.

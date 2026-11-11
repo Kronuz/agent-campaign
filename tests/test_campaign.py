@@ -817,7 +817,7 @@ class Evidence(CampaignCase):
         later = self.run_cli(self.home, "land", "san")
         self.assertNotIn("check asan", later.out + later.err)
 
-    def test_ci_at_the_same_code_speaks_for_a_journal_commit(self) -> None:
+    def test_ci_at_the_same_code_speaks_for_a_journal_or_docs_commit(self) -> None:
         tested = self.root / "ci-commit"
         jobs = '{"jobs": [{"name": "AddressSanitizer + UBSan", "status": "completed", "conclusion": "success"}]}'
         fake = self.root / "bin" / "gh"
@@ -829,6 +829,8 @@ class Evidence(CampaignCase):
         journal = next((wt / ".campaign").rglob("san.md"))
         journal.write_text(journal.read_text() + "\nA note.\n")
         self.git(wt, "commit", "-qam", "journal")
+        self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
+        self.commit(wt, {"docs/note.md": "CI skips documentation-only pushes\n"})
         self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
         (wt / "more.py").write_text("print(2)\n")
         self.git(wt, "add", "more.py")

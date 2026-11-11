@@ -1849,16 +1849,16 @@ def all_passed(items: Any) -> bool:
 
 
 def ci_commit(repo: Path, commit: str) -> str:
-    """The commit whose CI speaks for COMMIT: itself, or its nearest first-parent ancestor with the
-    same code (only campaign files differ), since a journal commit changes nothing CI tests."""
-    tree = code_tree(repo, commit)
+    """The commit whose CI speaks for COMMIT: itself, or, when it has no runs, its nearest
+    first-parent ancestor that differs only in campaign files or documentation, which CI workflows
+    skip (`paths-ignore`)."""
     log = subprocess.run(
         ["git", "-C", str(repo), "rev-list", "--first-parent", "--max-count=20", commit],
         capture_output=True,
         text=True,
     ).stdout.split()
     for k in log:
-        if code_tree(repo, k) != tree:
+        if not all(is_meta(x) or doc_path(x, "") for x in changed(repo, k, commit)):
             break
         code, runs = gh_json(repo, ["run", "list", "--commit", k, "--json", "databaseId", "--limit", "1"], bool)
         if code == 0 and runs:  # a commit's runs, once there, stay

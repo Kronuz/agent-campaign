@@ -227,8 +227,8 @@ claim has one short before/after run (`references/measurement.md`).
 | Level | For | Isolation (`quiet`) |
 |---|---|---|
 | `none` | tiny single-threaded probes | no hold |
-| `light` | builds, test suites, fuzzing | half the CPUs at once, nice 19, while memory lasts |
-| `strict` | every other timing, behavioral runs | own cores on Linux; alone on macOS |
+| `light` | builds, suites, fuzzing, at most 4 processes each | half the CPUs, nice 19 |
+| `strict` | other timings, load and race repros | own cores on Linux; alone on macOS |
 | `exclusive` | numbers that decide or get published | the machine to itself |
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
