@@ -188,8 +188,8 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
   a second only for a question that needs separate expertise or independence.
 - **A review is bound to what it saw.** It names the commit it reviewed (`Commit:`), a verdict, and
   a findings table with an ID, Blocking (yes or no) and Kind (defect, gap, nit) per row. An APPROVE
-  covers that commit's code; commits that touch only `.campaign/` keep it. A CHANGES whose findings
-  are all nits is an APPROVE. Editing the review after acceptance voids the acceptance.
+  covers the quest's changed lines; main's merges and untested docs keep it. A CHANGES whose findings
+  are all nits is an APPROVE. Editing the review after acceptance voids it.
 - **Fixes are confirmed by tests, not re-reviews.** Each blocking finding's fix adds a test; the
   suite job that passes it at the fixed commit confirms it: `campaign accept ID LENS --confirm
   C1=JOB --confirm C2=JOB`. A job confirms only if it passed at the accepted code in the quest's

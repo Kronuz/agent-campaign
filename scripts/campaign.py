@@ -1634,6 +1634,22 @@ def own_blobs(repo: Path, main_head: str, commit: str) -> dict[str, str]:
     return blobs(repo, commit, [x for x in changed(repo, base, commit) if not is_meta(x)])
 
 
+def own_diffs(repo: Path, main_head: str, commit: str) -> dict[str, str]:
+    """The quest's own changes at COMMIT (path -> hash of its changed lines against the merge base
+    with main): unlike its blob, a path's hash survives main's lines merged into the same file."""
+    base = merge_base(repo, main_head, commit)
+    paths = [x for x in changed(repo, base, commit) if not is_meta(x)]
+    text = git(repo, "diff", "--no-color", "--no-ext-diff", "-U0", base, commit, "--", *paths) if paths else ""
+    out: dict[str, str] = {}
+    for part in text.split("diff --git ")[1:]:
+        lines = part.splitlines()
+        path = next((x[6:] for x in lines if x.startswith("+++ b/")), "")
+        path = path or next((x[6:] for x in lines if x.startswith("--- a/")), "")
+        body = [x for x in lines[1:] if not x.startswith(("index ", "@@"))]  # no positions, no blob ids
+        out[path] = hashlib.sha256("\n".join(body).encode()).hexdigest()[:16]
+    return out
+
+
 def cmd_accept(a: argparse.Namespace) -> int:
     with writing() as c:
         p = c.quest(a.id)
@@ -1670,12 +1686,13 @@ def cmd_accept(a: argparse.Namespace) -> int:
         if r["verdict"] == "APPROVE" and a.confirm:
             die("an APPROVE needs no --confirm")
         seen: dict[str, str] = {}
+        docs = c.state.get("tested_docs", [])
         if a.lens != "design":  # a design is reviewed before the code exists
             if not r["commit"] or not git_ok(repo, "cat-file", "-e", f"{r['commit']}^{{commit}}"):
                 die(f"{rel}: no 'Commit:' line naming the reviewed commit in {repo}")
             reviewed = rev(repo, r["commit"])
             seen = own_blobs(repo, main_head, reviewed)
-            since = drift(repo, main_head, commit, seen)
+            since = drift(repo, main_head, commit, seen, diffs=own_diffs(repo, main_head, reviewed), tested=docs)
             if r["verdict"] == "APPROVE" and since:
                 die(
                     f"the review approved {reviewed[:12]}; {commit[:12]} changes {', '.join(since[:8])} since: "
@@ -1710,6 +1727,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
             "findings": findings,
             **({"fix_scope": fix_scope} if fix_scope else {}),
             "blobs": own_blobs(repo, main_head, commit),
+            "diffs": own_diffs(repo, main_head, commit),
             "at": stamp(),
         }
         if a.lens not in p["lenses"]:
@@ -1772,14 +1790,26 @@ def failed_at(job: Json, commit: str) -> bool:
     return False
 
 
-def drift(repo: Path, main_head: str, target: str, accepted: dict[str, str]) -> list[str]:
-    """Quest paths whose content at target differs from what was accepted. Only the quest's own
-    changes count, the paths accept records; what main changed is the rebase's business."""
+def drift(
+    repo: Path,
+    main_head: str,
+    target: str,
+    accepted: dict[str, str],
+    *,
+    diffs: dict[str, str] | None = None,
+    tested: Sequence[str] = (),
+) -> list[str]:
+    """Quest paths whose own changes at target differ from what was accepted: a path's blob, or with
+    DIFFS its changed lines, so main's lines merged into a quest file keep it. Only the quest's own
+    changes count, and documentation no TESTED glob matches never does."""
     base = merge_base(repo, main_head, target)
-    now_paths = [x for x in changed(repo, base, target) if not is_meta(x)]
+    now_paths = [x for x in changed(repo, base, target) if not is_meta(x) and not doc_path(x, "", tested)]
     at_target = blobs(repo, target, now_paths)
     out = [x for x in now_paths if accepted.get(x) != at_target[x]]
-    rest = [x for x in accepted if x not in at_target]
+    if diffs is not None and out:
+        own = own_diffs(repo, main_head, target)
+        out = [x for x in out if diffs.get(x) is None or diffs[x] != own.get(x)]
+    rest = [x for x in accepted if x not in at_target and not doc_path(x, "", tested)]
     at_main = blobs(repo, main_head, rest)
     return out + [x for x in rest if at_main[x] != accepted[x]]
 
@@ -2088,7 +2118,9 @@ def review_gaps(c: Campaign, pid: str, target: str, main_head: str) -> list[str]
                 f"`campaign accept {pid} {lens}` again"
             )
         elif lens != "design":  # design approves the approach before the code exists
-            moved_since = drift(repo, main_head, target, acc["blobs"])
+            moved_since = drift(
+                repo, main_head, target, acc["blobs"], diffs=acc.get("diffs"), tested=c.state.get("tested_docs", [])
+            )
             upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
             if moved_since:
                 gaps.append(f"{lens} was accepted at {acc['commit'][:12]}; changed since: {', '.join(moved_since[:8])}")

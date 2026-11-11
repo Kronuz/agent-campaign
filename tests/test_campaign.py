@@ -886,6 +886,19 @@ class Reviews(CampaignCase):
         self.verified("feat")
         self.fails(self.home, "land", "feat", match="changed since")
 
+    def test_main_lines_merged_into_a_quest_file_keep_its_acceptance(self) -> None:
+        wt = self.started("feat", files="lib.py,docs/**", risk="normal", lenses="correctness")
+        self.commit(self.home, {"lib.py": "A = 1\n\n\n\n\nB = 2\n"})
+        self.git(wt, "merge", "-q", "main")
+        self.commit(wt, {"lib.py": "A = 10\n\n\n\n\nB = 2\n"})
+        self.review("feat", "correctness", "APPROVE")
+        self.ok(self.home, "accept", "feat", "correctness")
+        self.commit(self.home, {"lib.py": "A = 1\n\n\n\n\nB = 20\n"})  # main's own line, same file
+        self.git(wt, "merge", "-q", "--no-edit", "main")
+        self.commit(wt, {"docs/note.md": "how it works\n"})  # documentation no test runs
+        self.verified("feat")
+        self.ok(self.home, "land", "feat")
+
     def test_main_moving_elsewhere_asks_for_a_rebase_not_a_new_review(self) -> None:
         self.normal()
         self.review("feat", "correctness", "APPROVE")
