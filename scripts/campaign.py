@@ -2836,7 +2836,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         head = rev(repo, p["branch"])
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
-        view["missing"] = landing_gaps(c, pid, head, final=True, ci=False)
+        view["missing"] = landing_gaps(c, pid, head, final=True, ci=True)
         view["docs_only"] = [
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)

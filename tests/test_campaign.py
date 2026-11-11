@@ -1163,6 +1163,20 @@ class DirectPath(CampaignCase):
         gh.chmod(0o755)
         self.ok(self.home, "land", "fix")
 
+    def test_brief_lists_the_ci_a_landing_waits_for(self) -> None:
+        self.ok(self.home, "config", "ci=github")
+        wt = self.started("fix", files="app.py", check="unit=true")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        gh = self.root / "bin" / "gh"
+        gh.write_text('#!/bin/sh\necho \'[{"name": "linux", "status": "queued", "conclusion": ""}]\'\n')
+        gh.chmod(0o755)
+        self.assertIn("CI at", self.ok(wt, "brief").out)
+        self.assertIn("running: linux", self.ok(self.home, "status", "fix").out)
+        gh.write_text('#!/bin/sh\necho \'[{"name": "linux", "status": "completed", "conclusion": "success"}]\'\n')
+        self.assertNotIn("CI at", self.ok(wt, "brief").out)
+        self.ok(self.home, "land", "fix")
+
 
 class Campaigns(CampaignCase):
     """Several campaigns on one machine, sharing a library."""
