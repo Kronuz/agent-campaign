@@ -690,12 +690,19 @@ class Evidence(CampaignCase):
 
 class Reviews(CampaignCase):
     def normal(self) -> str:
-        wt = self.started("feat", files="app.py", risk="normal")
+        wt = self.started("feat", files="app.py", risk="normal", lenses="correctness")
         self.commit(wt, {"app.py": "print('feature')\n"})
         self.verified("feat")
         return self.git(wt, "rev-parse", "HEAD")
 
-    def test_normal_risk_needs_an_accepted_review(self) -> None:
+    def test_normal_risk_lands_on_green_checks_without_a_review(self) -> None:
+        wt = self.started("plain", files="app.py", risk="normal")
+        self.assertEqual(self.quest("plain")["lenses"], [])
+        self.commit(wt, {"app.py": "print('plain')\n"})
+        self.verified("plain")
+        self.ok(self.home, "land", "plain")
+
+    def test_a_named_lens_needs_an_accepted_review(self) -> None:
         self.normal()
         self.fails(self.home, "land", "feat", match="correctness review not accepted")
         self.fails(self.home, "accept", "feat", "correctness", match="no review")
@@ -787,7 +794,7 @@ class ReviewBinding(CampaignCase):
     blocking finding is confirmed by jobs that passed at the fixed code."""
 
     def feature(self) -> tuple[Path, str]:
-        wt = self.started("feat", files="app.py,tests/**", risk="normal")
+        wt = self.started("feat", files="app.py,tests/**", risk="normal", lenses="correctness")
         self.commit(wt, {"app.py": "print('feature')\n"})
         self.verified("feat")
         return wt, self.git(wt, "rev-parse", "HEAD")
@@ -990,12 +997,12 @@ class RiskPolicy(CampaignCase):
 
     def test_the_review_a_risk_needs_cannot_be_removed(self) -> None:
         self.fails(
-            self.home, "new", "x", "--title", "x", "--risk", "normal", "--lenses", "", match="needs a code review"
+            self.home, "new", "x", "--title", "x", "--risk", "high", "--lenses", "", match="needs a code review"
         )
         self.fails(
             self.home, "new", "y", "--title", "y", "--risk", "critical", "--lenses", "correctness", match="design"
         )
-        self.started("z", files="app.py", risk="normal", check="unit=true")
+        self.started("z", files="app.py", risk="high", check="unit=true")
         self.fails(self.home, "set", "z", "lenses=design", "--weaken", "why", match="needs a code review")
         state = self.home / ".campaign/demo/state.json"
         data = json.loads(state.read_text())

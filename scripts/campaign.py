@@ -52,7 +52,7 @@ ROLES = ("contributor", "reviewer")
 LEVELS = ("none", "light", "strict", "exclusive")
 DEFAULT_LENSES: dict[str, list[str]] = {
     "low": [],
-    "normal": ["correctness"],
+    "normal": [],
     "high": ["correctness"],
     "critical": ["correctness", "design"],
 }
@@ -1087,10 +1087,10 @@ def deferred(p: Json) -> list[Json]:
 
 
 def lens_floor(risk: str, lenses: list[str]) -> list[str]:
-    """The reviews RISK requires that LENSES lack: any risk above low a code review, critical a design."""
+    """The reviews RISK requires that LENSES lack: high and critical a code review, critical a design."""
     need = (
         []
-        if risk == "low" or set(lenses) & set(CODE_LENSES)
+        if risk in ("low", "normal") or set(lenses) & set(CODE_LENSES)
         else ["a code review (correctness, security or durability)"]
     )
     return need + (["a design review"] if risk == "critical" and "design" not in lenses else [])
@@ -6667,7 +6667,7 @@ def parser() -> argparse.ArgumentParser:
         "Lowering the risk, removing a lens, or removing, changing, deferring or narrowing the inputs of a check "
         "needs --weaken REASON: "
         "the change is recorded in the quest's history and voids its review acceptances; any risk change voids "
-        "them too. A risk's minimum reviews (a code review above low, a design review for critical) stay. "
+        "them too. A risk's minimum reviews (a code review at high, a design review at critical) stay. "
         "With --task T: the task's files=GLOBS, or status=dropped reason=R. `campaign get ID` prints them.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
