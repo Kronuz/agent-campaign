@@ -6217,6 +6217,13 @@ def cmd_message(a: argparse.Namespace) -> int:
     return 0
 
 
+def job_ok_or_pending(jid: str) -> bool:
+    """Whether job JID passed or has not ended yet: a job ordered after it can still run."""
+    with contextlib.suppress(CampaignError):
+        return resolve_job(jid)["state"].get("state") not in set(TERMINAL) - {"done"}
+    return False
+
+
 def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
     by default the head of their quest's branch, in whichever of the job's repositories holds it
@@ -6284,9 +6291,12 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         if spec.get("quest"):  # an evidence job's outside scripts as they are now
             spec["scripts"] = script_digests(spec["cmd"], spec["repo"])
         what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
+        ended = [x for x in spec.get("after", []) if x not in renamed and not job_ok_or_pending(x)]
+        for x in ended:  # a predecessor that ended unpassed would skip the rerun again
+            print(f"{jid}: no longer after {x}, which ended {resolve_job(x)['state'].get('state')}")
         spec.update(
             commit=commit,
-            after=[renamed.get(x, x) for x in spec.get("after", [])],
+            after=[renamed.get(x, x) for x in spec.get("after", []) if x not in ended],
             cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
             what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
         )

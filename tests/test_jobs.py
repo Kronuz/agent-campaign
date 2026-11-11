@@ -438,6 +438,20 @@ class Scheduling(CampaignCase):
         go.touch()
         self.ok(self.home, "wait", "--quest", "fix", "--timeout", "60")
 
+    def test_a_rerun_drops_a_predecessor_that_ended_unpassed(self) -> None:
+        """A job skipped because the job it ran after failed runs when rerun alone."""
+        wt = self.started("fix", files="app.py")
+        bad = self.submit(wt, "--quest", "fix", "--", "exit 3")
+        after = self.submit(wt, "--quest", "fix", "--after", bad, "--", "python3 app.py")
+        self.run_cli(self.home, "wait", bad, after, "--timeout", "60")
+        self.assertEqual(self.job(after)["state"], "skipped")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        out = self.ok(self.home, "job", "rerun", after).out
+        self.assertIn(f"no longer after {bad}, which ended failed", out)
+        new = out.splitlines()[-1].split(":")[0].split()[0]
+        self.ok(self.home, "wait", new, "--timeout", "60")
+        self.assertEqual(self.job(new)["state"], "done")
+
     def test_a_job_at_a_sibling_commit_keeps_its_queued_instance(self) -> None:
         """Mutants off one base are not newer code: only a job at a descendant supersedes one."""
         wt = self.started("fix", files="app.py")
