@@ -694,6 +694,31 @@ class Evidence(CampaignCase):
         self.verified("b")
         self.ok(self.home, "land", "b")
 
+    def test_a_tagged_job_at_new_code_cancels_its_queued_older_role(self) -> None:
+        """A resubmit with the same label and criterion replaces the older queued or running job even
+        when its command or environment changed; another label for the criterion is kept."""
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        go = self.root / "go"
+        hold = f"while [ ! -e {go} ]; do sleep 0.1; done"
+        gate = self.submit(wt, "--", hold)
+        busy = self.submit(wt, "--quest", "fix", "--for", "A1", "--what", "A1 soak", "--", hold)
+        self.wait_until(lambda: self.job(busy)["state"] == "running")
+        tagged = ("--quest", "fix", "--for", "A1", "--after", gate)
+        old = self.submit(wt, *tagged, "--what", "A1 probe", "--env", "X=1", "--", "python3 app.py")
+        other = self.submit(wt, *tagged, "--what", "A1 oracle", "--", "true oracle")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        r = self.ok(wt, "job", "submit", *tagged, "--what", "A1 probe", "--", "python3 app.py | cat")
+        self.assertIn(f"superseded {old}", r.out)
+        self.assertEqual(self.job(other)["state"], "queued", "another role for A1 was cancelled")
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--what", "A1 soak", "--", hold + " ")
+        self.assertIn(f"superseded {busy}: running", r.out)
+        self.wait_until(lambda: self.job(busy)["state"] != "running")
+        go.touch()
+        self.ok(self.home, "wait", "--quest", "fix", "--timeout", "60")
+
     def test_tagged_jobs_prove_their_criteria_without_a_table(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"

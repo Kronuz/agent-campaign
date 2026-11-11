@@ -4873,9 +4873,31 @@ def descends(old: Json, new: Json) -> bool:
     return all(repo and a and b and ancestor(Path(repo), a, b) for repo, a, b in pairs)
 
 
+def same_role(old: Json, new: Json) -> bool:
+    """Whether two jobs are one piece of evidence at other code though their commands differ: the
+    same label, repository and level, tagged for a shared criterion of the same quest."""
+
+    def role(j: Json) -> set[tuple[Any, ...]]:
+        return {
+            (t.get("campaign"), t.get("quest"), cid, t.get("fails_without"))
+            for t in j.get("tags", [])
+            for cid in t.get("for", [])
+        }
+
+    def label(j: Json) -> str:
+        return re.sub(r" at [0-9a-f]{7,40}$", "", str(j["spec"].get("what", "")))
+
+    keys = ("repo", "level")
+    return (
+        bool(role(old) & role(new))
+        and label(old) == label(new) != ""
+        and all(old["spec"].get(k) == new["spec"].get(k) for k in keys)
+    )
+
+
 def supersede(ids: list[str]) -> None:
-    """Cancels the still-queued jobs these newly queued quest jobs replace: same shape, older code
-    (descends), submitted earlier. One a pending job waits on (--after) is kept unless that job is replaced too."""
+    """Cancels the queued or running jobs these newly queued quest jobs replace: same shape or same
+    tagged role (same_role), older code (descends), submitted earlier. One a pending job waits on (--after) is kept unless that job is replaced too."""
     new = [resolve_job(x) for x in dict.fromkeys(ids)]
     jobs = [j for j in all_jobs() if j["id"] not in ids]
     replaced: dict[str, str] = {}
@@ -4885,8 +4907,8 @@ def supersede(ids: list[str]) -> None:
         for j in jobs:
             s = j["spec"]
             if (
-                j["state"].get("state") == "queued"
-                and shape(s) == shape(n["spec"])
+                j["state"].get("state") in ("queued", "running")
+                and (shape(s) == shape(n["spec"]) or same_role(j, n))
                 and code_of(s) != code_of(n["spec"])
                 and s.get("submitted", 0) <= n["spec"].get("submitted", 0)
                 and descends(s, n["spec"])
@@ -4899,9 +4921,12 @@ def supersede(ids: list[str]) -> None:
             print(f"kept {jid}: {waiter} waits on it")
             continue
         j = load_job(jobs_dir() / jid)
-        if j["state"].get("state") == "queued" and claim(j):  # one the worker took since keeps running
+        if j["state"].get("state") == "queued" and claim(j):
             finish(load_job(j["dir"]), -1, "cancelled", note=f"superseded by {by}")
             print(f"superseded {jid}: queued at {j['spec']['commit'][:12]}, cancelled for {by}")
+        elif j["state"].get("state") == "running":
+            (j["dir"] / "cancel").touch()
+            print(f"superseded {jid}: running at {j['spec']['commit'][:12]}, stopped for {by}")
 
 
 def mtime(path: Path) -> float | None:
