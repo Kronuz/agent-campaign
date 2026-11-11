@@ -1153,9 +1153,14 @@ def outside(paths: list[str], globs: list[str]) -> list[str]:
     return [x for x in paths if not is_meta(x) and globs and not any(fnmatch.fnmatch(x, g) for g in globs)]
 
 
-def brief_hash(c: Campaign, pid: str) -> str:
+CRITERION = re.compile(r"^\s*[-*]\s*\**A\d+\b.*(?:\n[ \t]+\S.*)*", re.M)  # `- A1 ...` and its wrapped lines
+
+
+def criteria_hash(c: Campaign, pid: str) -> str:
+    """The quest file's criterion lines, hashed: editing them, not its prose, voids acceptances."""
     brief = c.home / c.meta / "quests" / f"{pid}.md"
-    return hashlib.sha256(brief.read_bytes()).hexdigest()[:16] if brief.exists() else ""
+    lines = CRITERION.findall(brief.read_text() if brief.exists() else "")
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
 
 
 def worktree_path(repo: Path, campaign: str, name: str) -> Path:
@@ -1694,7 +1699,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
         p.setdefault("accepted", {})[a.lens] = {
             "commit": commit,
             "base": merge_base(repo, main_head, commit),
-            "brief": brief_hash(c, a.id),
+            "criteria": criteria_hash(c, a.id),
             "by": "waived" if a.waive else "review",
             "verdict": r["verdict"],
             "note": a.waive or a.note or "",
@@ -2055,7 +2060,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
 
 def review_gaps(c: Campaign, pid: str, target: str, main_head: str) -> list[str]:
     """What the quest's reviews still lack for TARGET's code: a lens its risk requires, an acceptance,
-    or one that no longer holds (the quest file, the review, or the code changed since)."""
+    or one that no longer holds (a criterion, the review, or the code changed since)."""
     p = c.quests[pid]
     repo = c.repo(p)
     base = merge_base(repo, main_head, target)
@@ -2067,8 +2072,8 @@ def review_gaps(c: Campaign, pid: str, target: str, main_head: str) -> list[str]
         acc = p.get("accepted", {}).get(lens)
         if not acc:
             gaps.append(f"{lens} review not accepted: {review_step(verdict(c, pid, lens), pid, lens)}")
-        elif acc.get("brief") != brief_hash(c, pid):
-            gaps.append(f"the quest file changed after {lens} was accepted: re-accept against the current criteria")
+        elif acc.get("criteria") != criteria_hash(c, pid):
+            gaps.append(f"a criterion changed after {lens} was accepted: re-accept against the current criteria")
         elif "review" not in acc:
             gaps.append(f"the {lens} acceptance names no review content: `campaign accept {pid} {lens}` again")
         elif acc["review"] != review_identity(c, pid, lens):
@@ -6818,8 +6823,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "accept",
         "record a review lens as passed for the code it reviewed",
-        "Records a review lens as accepted and commits the review file with it: the review's content, the quest "
-        "file, and the quest's changed "
+        "Records a review lens as accepted and commits the review file with it: the review's content, the "
+        "criteria, and the quest's changed "
         "files at the accepted commit. An APPROVE covers the code at the review's Commit: line (metadata-only "
         "commits after it keep it). After CHANGES, --confirm names, for each blocking finding, jobs that passed "
         "at the fixed code; a fix that changes files the review never saw needs the reviewer or --fix-scope. "

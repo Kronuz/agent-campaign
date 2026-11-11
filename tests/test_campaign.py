@@ -756,18 +756,25 @@ class Reviews(CampaignCase):
         status = self.ok(self.home, "status", "feat").out
         self.assertIn("rebase onto main", status)
         self.assertNotIn("changed since", status)  # the reviewed code did not change
-        self.started("other", files="lib.py", risk="normal")
+        self.started("other", files="lib.py", risk="normal", lenses="correctness")
         self.assertIn("not reviewed yet; launch a correctness reviewer", self.ok(self.home, "status", "other").out)
         self.review("other", "correctness", "CHANGES")
         status = self.ok(self.home, "status", "other").out
         self.assertIn("correctness review not accepted: verdict CHANGES; fix what blocks", status)
 
-    def test_a_changed_brief_voids_acceptance(self) -> None:
+    def test_only_a_changed_criterion_voids_acceptance(self) -> None:
         self.normal()
+        brief = ".campaign/demo/quests/feat.md"
+        self.commit(self.home, {brief: "## Acceptance criteria\n\n- A1 prints: the suite\n  at the head\n"})
         self.review("feat", "correctness", "APPROVE")
         self.ok(self.home, "accept", "feat", "correctness")
-        self.commit(self.home, {".campaign/demo/quests/feat.md": "new criteria\n"})
-        self.fails(self.home, "land", "feat", match="quest file changed")
+        self.commit(
+            self.home,
+            {brief: "# Feat\n\nNew prose.\n\n## Acceptance criteria\n\n- A1 prints: the suite\n  at the head\n"},
+        )
+        self.assertNotIn("criterion changed", self.ok(self.home, "status", "feat").out)
+        self.commit(self.home, {brief: "## Acceptance criteria\n\n- A1 prints: the suite\n  at the tip\n"})
+        self.fails(self.home, "land", "feat", match="a criterion changed after correctness was accepted")
 
     def test_upstream_code_changes_void_high_risk_acceptance_only(self) -> None:
         wt = self.started("dur", files="lib/**", risk="high", check="unit=true")
