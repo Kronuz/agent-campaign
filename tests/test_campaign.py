@@ -724,6 +724,14 @@ class Reviews(CampaignCase):
         self.review("feat", "correctness", "REJECT")
         self.fails(self.home, "accept", "feat", "correctness", match="re-plan")
 
+    def test_changes_with_only_nits_or_non_blocking_findings_is_an_approval(self) -> None:
+        self.normal()
+        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "nit"), ("C2", "no", "defect")))
+        self.assertIn("approved; `campaign accept feat correctness`", self.ok(self.home, "status", "feat").out)
+        self.ok(self.home, "accept", "feat", "correctness")  # no --confirm: nothing blocks
+        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["verdict"], "APPROVE")
+        self.ok(self.home, "land", "feat")
+
     def test_waivers_are_recorded_and_refused_for_high_risk(self) -> None:
         self.normal()
         self.ok(self.home, "accept", "feat", "correctness", "--waive", "three-line change with a revert-checked test")
@@ -893,8 +901,8 @@ class ReviewBinding(CampaignCase):
         self.feature()
         self.review("feat", "correctness", "APPROVE", findings=(("C1", "yes", "defect"),))
         self.fails(self.home, "accept", "feat", "correctness", match="APPROVE but lists blocking findings C1")
-        self.review("feat", "correctness", "CHANGES", findings=(("C1", "no", "nit"),))
-        self.fails(self.home, "accept", "feat", "correctness", match="CHANGES but lists no blocking finding")
+        self.review("feat", "correctness", "CHANGES")
+        self.fails(self.home, "accept", "feat", "correctness", match="CHANGES but lists no findings table")
         for conditional in ("APPROVE WITH CONDITIONS", "**APPROVE WITH REQUIRED CHANGES.**"):
             self.review("feat", "correctness", conditional)
             self.fails(self.home, "accept", "feat", "correctness", match="a conditional approval is CHANGES")

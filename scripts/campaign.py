@@ -1659,7 +1659,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
                     f"{rel}: APPROVE but lists blocking findings {', '.join(blocking)}: the reviewer corrects one or the other"
                 )
             if r["verdict"] == "CHANGES" and not blocking:
-                die(f"{rel}: CHANGES but lists no blocking finding (a findings row with Blocking yes)")
+                die(f"{rel}: CHANGES but lists no findings table")
             if r["verdict"] == "APPROVE" and a.confirm:
                 die("an APPROVE needs no --confirm")
             seen: dict[str, str] = {}
@@ -1933,7 +1933,8 @@ def review_path(c: Campaign, pid: str, lens: str) -> Path:
 
 def read_review(text: str) -> Json:
     """A review file's verdict, the commit it reviewed, and its findings table: ID, blocking, kind.
-    An appended re-check counts: the last `Commit:` line starts the round that is read."""
+    An appended re-check counts: the last `Commit:` line starts the round that is read. A nit never
+    blocks, and a CHANGES whose findings all do not block is an APPROVE."""
     rounds = list(REVIEWED.finditer(text))
     text = text[rounds[-1].start() :] if rounds else text
     verdict, reviewed = VERDICT.search(text), REVIEWED.search(text)
@@ -1942,9 +1943,11 @@ def read_review(text: str) -> Json:
         cells = [x.strip("*`") for x in table_cells(row)] if row.startswith("|") else []
         if len(cells) < 3 or cells[0].lower() in ("id", "") or set(cells[0]) <= set("-: "):
             continue
-        findings.append({"id": cells[0], "blocking": cells[1].lower() == "yes", "kind": cells[2].lower()})
+        kind = cells[2].lower()
+        findings.append({"id": cells[0], "blocking": cells[1].lower() == "yes" and kind != "nit", "kind": kind})
+    said = verdict.group(1) if verdict else ""
     return {
-        "verdict": verdict.group(1) if verdict else "",
+        "verdict": "APPROVE" if said == "CHANGES" and findings and not any(f["blocking"] for f in findings) else said,
         "commit": reviewed.group(1) if reviewed else "",
         "findings": findings,
     }
