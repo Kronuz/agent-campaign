@@ -1729,7 +1729,7 @@ def confirmations(repo: Path, commit: str, reviewed: str, *, table: list[Json], 
     if missing:
         die(
             "; ".join(f"{fid} has no confirming job" for fid in missing)
-            + ": rerun its probe or the new test as a job at the fixed commit, then --confirm FINDING=JOB"
+            + ": the suite job passing its fix's test at the fixed commit, as --confirm FINDING=JOB"
         )
     problem = job_problem(repo, [commit])
     out: dict[str, Json] = {}
@@ -1971,7 +1971,7 @@ def review_step(said: str, pid: str, lens: str) -> str:
     if said == "APPROVE":
         return f"approved; `campaign accept {pid} {lens}`"
     if said == "CHANGES":
-        return f"verdict CHANGES; fix what blocks, rerun each finding's probe as a job, then `campaign accept {pid} {lens} --confirm FINDING=JOB ...`"
+        return f"verdict CHANGES; fix what blocks, a test each, then `campaign accept {pid} {lens} --confirm FINDING=JOB ...` (the suite job)"
     if said == "REJECT":
         return "verdict REJECT; re-plan the quest"
     if said == "none yet":
