@@ -1,17 +1,16 @@
 # Review and proof
 
-What proves a claim, what each review lens asks, and how a review runs. Builders read the proof
-standards before writing tests; reviewers read all of it.
+What proves a claim, what each lens asks, and how a review runs. Builders read the proof
+standards; reviewers read all of it.
 
 ## Proof standards
 
-Proportional to the claim: a mechanical edit needs the suite and CI; a behavior change needs
-these.
+A mechanical edit needs the suite and CI; a behavior change needs these.
 
 1. **Values, not counts.** Tests check values, ordering and error paths, not only counts, status
    codes and happy paths.
-2. **A failing test per fix:** a fix's regression test could pass vacuously, so a revert or mutant
-   job shows it failing without the fix. No other claim needs a mutant.
+2. **A failing test per fix,** run once: a revert or mutant job tagged `--for A1 --fails-without`
+   exits 0 because the test fails without the fix. No other claim needs a mutant.
 3. **An oracle or property test** where one exists: a reference implementation, a round trip, an
    invariant, an exhaustive small domain, a frozen copy of the old code.
 4. **Asserts are live only in Debug.** A claim that an `assert` guards something needs a Debug
@@ -49,8 +48,8 @@ The reviewer carries every question the lead names; the lens decides the emphasi
 
 ## How a review runs
 
-1. **Start from the evidence.** The review runs beside the suite job; `campaign status <ID>` lists
-   each criterion with the jobs behind it. Do not rebuild what they prove, nor what CI runs.
+1. **Start from the evidence.** `campaign status <ID>` lists each criterion with the jobs tagged for
+   it. Do not rebuild what they prove, nor what CI runs.
 2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
    `.scratch/review-<ID>-<lens>/` in the home checkout. Each blocking finding names the test its
    fix must add; the suite passing it confirms the fix, with no second review.

@@ -8,10 +8,10 @@ description: Run a large engineering project with agents as a campaign. The lead
 The **lead** (the main session) turns the **owner**'s goals into **quests**. A **contributor**
 agent completes each quest on its own branch; machine work goes to a **job queue** that runs it at
 exact commits while no agent waits. A **reviewer** agent examines a high-risk quest from a fresh
-context. **`campaign land`** puts a quest on `main` only when its suite and CI passed at that exact
-code, each criterion has the evidence it names, and each required review was accepted for the code
-it saw. Everything that matters is in the repository, so any agent, the lead included, can be
-replaced.
+context. **`campaign land`** puts a quest on `main` only when its suite passed at its code and CI
+at the exact commit, each criterion has a job tagged for it (or the evidence it names), and each
+required review was accepted for the code it saw. Everything that matters is in the repository, so
+any agent, the lead included, can be replaced.
 
 ```
 goals ─► PLAN ─► quests ─► campaign start ─► contributor ─► jobs (quiet) ─► evidence
@@ -21,8 +21,8 @@ goals ─► PLAN ─► quests ─► campaign start ─► contributor ─► 
 
 ## Invariants
 
-1. **Evidence, not narrative.** A check counts only when a job ran it on the code being landed; a
-   journal line or a reviewer's say-so is never a green test.
+1. **Evidence, not narrative.** A check counts only when a job ran it on the quest's code being
+   landed; a journal line or a reviewer's say-so is never a green test.
 2. **One writer per file set.** `campaign start` refuses overlapping file sets; `land` refuses
    changes outside the quest's set and edits to the lead's files.
 3. **Criteria before code.** The lead writes each quest's acceptance criteria and the evidence each
@@ -77,10 +77,11 @@ five-line fix, a trivial conflict): a launch costs more.
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
    writes Goals, Non-goals, Constraints and Reserved decisions in `.campaign/<campaign>/PLAN.md`.
 2. Split the goals into quests: `campaign new ID --title T --risk R --files GLOBS [--needs IDS]
-   [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is the campaign's suite
-   (`campaign config suite=CMD`), unless `--check NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each
-   quest file (`.campaign/<campaign>/quests/ID.md`): outcome, three to five criteria at outcome
-   level, each naming its test (Evidence, below), contracts, decisions, what may land early.
+   [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is its repository's suite
+   (`campaign config suite=CMD` for the home, `suite.REPO=CMD` for another), unless `--check
+   NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each quest file
+   (`.campaign/<campaign>/quests/ID.md`): outcome, three to five criteria at outcome level, each
+   naming its test (Evidence, below), contracts, decisions, what may land early.
 3. When the architecture is consequential, one reviewer (lens `design`) challenges the plan and the
    quest list before anything is built. This is the one review worth waiting for.
 
@@ -132,11 +133,9 @@ on-disk or wire format or changes a durability mechanism, which gates it. Slow C
 (`campaign config ci_later=NAME,...`).
 
 With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`), met by that CI
-job passing at the exact commit; it queues no local job, and an Evidence row cites it as
-`` `ci:ThreadSanitizer` ``. **Expensive runs go once,** at the candidate head after its one merge of
-`main`; then its text is frozen (nits go to a follow-up), the lead orders landings so it is not
-re-merged, and a fix round reruns only the suite. The worker shares slots fairly across campaigns,
-shorter jobs first.
+job passing at the exact commit; it queues no local job. **Evidence survives merges from `main`:** a
+job counts for the head when it ran at a commit of the quest's branch whose own changes equal the
+head's, and CI at the exact head tests the merge (without CI, the suite reruns there).
 
 ## Run a quest
 
@@ -146,9 +145,9 @@ shorter jobs first.
    first, capped by what the lead can review and land and by the host's light slots. A quest is
    launchable when it is planned, its `needs` have landed, and its file set overlaps no active or
    review quest's in its repository; `campaign status` lists them in that order.
-2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs:
-   `campaign job submit --quest ID --level L --minutes M -- CMD` and `campaign verify ID`. When
-   only jobs remain, it records their ids and ends its turn.
+2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs
+   tagged with the criteria they prove: `campaign verify ID --for A1` and `campaign job submit
+   --quest ID --for A2 -- CMD`. When only jobs remain, it records their ids and ends its turn.
 3. The lead waits with one background `campaign wait --commits` (no tokens until a job ends, a
    branch moves or a message arrives), then resumes the contributor by message while its context
    is small (about 150k tokens). A larger context, or a harness that cannot resume it, gets a fresh
@@ -211,20 +210,19 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 
 ## Evidence
 
-Each criterion names its test or other evidence; the journal's Evidence table gives one row per
-criterion, and landing checks each row at the code being landed:
+Each criterion names its test or other evidence, and landing reads it from the records:
 
-| Criterion | Its row must name |
+| Criterion | Its evidence |
 |---|---|
-| `- A1 ...` (untagged) | a job that passed at that code, normally the suite job |
-| `- A2 [artifact] ...` | a `path` committed in the quest's repository; with a quote (`` `path`: "text" ``), the text the file holds there |
-| `- A3 [decision] ...` | an id in `PLAN.md`'s Decisions table |
-| `- A4 [manual] ...` | who checked what, by hand; shown as manual, never as automated proof |
+| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it) that passed at the quest's code; with `--fails-without` tags, one of those exited 0 too |
+| `- A2 [artifact] ...` | a journal row naming a `path` committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
+| `- A3 [decision] ...` | a journal row naming an id in `PLAN.md`'s Decisions table |
+| `- A4 [manual] ...` | a journal row saying who checked what; shown as manual, never as automated proof |
 
-Proof is proportional to the claim (`references/review.md`): tests check values, not counts, and a
-fix's regression test, which could pass vacuously, is shown failing without the fix by a revert or
-mutant job. Performance claims follow `references/measurement.md`: before and after at named
-commits, `exclusive` only for numbers that decide, by a rule the quest file fixed first.
+`campaign brief` generates the journal's Evidence table; an untagged criterion of a journal written
+before tags is read from its row. The quality bar (`references/review.md`): tests check values; a
+fix's test is shown failing without it once; one review for high and critical risk; a performance
+claim has one short before/after run (`references/measurement.md`).
 
 ## Machine work
 
@@ -237,13 +235,10 @@ commits, `exclusive` only for numbers that decide, by a rule the quest file fixe
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
-host and toolchain; across commits that change only docs (`docs/**`, `*.md`) it does not name and
-`tested_docs` does not match; and, for a job strace traced whole on Linux, wherever every tracked
-file it read and every path name are unchanged. A check scoped with `--inputs NAME=GLOBS` is
-identified by the files under them, the build files and the paths its command names; `land` needs
-the build-test, a gate check without inputs, at the exact code. Name a mutable input with `--env`;
-rerun with `--force` what depends on more.
-A strict or exclusive job lasts at most 30 minutes and is stopped at its deadline. Every process a
+host and toolchain, and across merges from `main`, documentation-only commits, unchanged read sets
+and `--inputs` scopes (`references/host.md`). Name a mutable input with `--env`; rerun with
+`--force` what depends on more. A strict or exclusive job, and a fuzz or soak, lasts at most 10
+minutes and is stopped at its deadline; `--long REASON` lifts the cap and defers it. Every process a
 job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
 daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
 directories of worktrees no open quest owns after 3 days); `campaign sweep` removes clean
@@ -252,8 +247,8 @@ the largest consumers. Mechanics: `references/host.md`.
 
 ## Integration
 
-`campaign land` refuses with each gap `campaign brief` lists: dependencies, a rebase when `main`
-changed code, the file set, tasks, criteria, messages, the suite at the exact code, reviews, CI.
+`campaign land` refuses with each gap `campaign brief` lists: dependencies, a merge of `main` when it
+changed code, the file set, tasks, criteria, messages, the suite at its code, reviews, CI.
 It fast-forwards `main`, or merges when only campaign files differ, verifies that the landed code
 equals the tested code, records the landing, and pushes only with `--push`. Exceptions are explicit
 and recorded with the landing: `--upto COMMIT --reason R` (an increment), `--no-ci REASON`, and
@@ -285,7 +280,8 @@ under "Blocked on" and ask.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
 - Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
-  `campaign map`, never by waking agents.
+  `campaign map`, never by waking agents. The periodic report quotes `status`'s host and waste
+  lines; the lead owns the queue, and a stall `campaign check` reports is fixed within the hour.
 
 ## Writing
 

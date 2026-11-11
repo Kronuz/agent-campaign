@@ -56,12 +56,12 @@ Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and sta
 - Review by risk: a normal quest lands on green checks, a high one gets one review in parallel, a
   critical one also a reviewer from another model family. An acceptance is bound to the commit the
   review saw and to the review's content; a fix is confirmed per finding by a job at the fixed code.
-- Criteria name their evidence (a job by default, or a committed file, a recorded decision, a
-  manual check), and nothing a quest must pass is weakened without a recorded reason.
-- Evidence keyed by code: a check result is reused for identical code and toolchain and no longer
-  counts once the code changes.
-- Landing checks dependencies, the quest's file set, every gate check on the exact code, every
-  required review and CI when configured, then fast-forwards `main` or merges only campaign files.
+- Criteria name their evidence (a job tagged `--for A1` by default, or a committed file, a recorded
+  decision, a manual check), and nothing a quest must pass is weakened without a recorded reason.
+- Evidence keyed by code: a result is reused for the same quest code and toolchain, across merges
+  from `main` that CI tests.
+- Landing checks dependencies, the file set, every gate check, every required review and CI, then
+  fast-forwards `main` or merges only campaign files.
 - Jobs instead of waiting agents: one queue per machine, supervised runners with heartbeats, and
   `quiet` holds (light, strict, exclusive) so builds and benchmarks share a machine.
 - Direct path first: one suite job and CI gate a landing; crash, fuzz, soak and mutant batches run

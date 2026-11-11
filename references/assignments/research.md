@@ -11,7 +11,7 @@ bet.
 - Propose at least three distinct approaches, one of which breaks an assumption everyone makes.
   Prefer elegant mechanisms: a perfect hash, a branch-free kernel, a succinct structure.
 - Prove each with a minimal prototype and a microbenchmark on the project's real data against the
-  current implementation, interleaved, at least five trials, as exclusive jobs. Kill ideas quickly;
+  current implementation, interleaved pairs in one 10-minute exclusive job. Kill ideas quickly;
   keep the losers' numbers.
 - Correctness and parity are non-negotiable; formats change only through a design review.
 - Write `docs/research/<piece>.md`: the bound, the survey with sources, each idea with its result,

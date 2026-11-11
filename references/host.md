@@ -17,10 +17,10 @@ or newer).
 ## Jobs
 
 ```sh
-campaign job submit [--quest ID] [--commit REF] [--ref NAME=[PATH@]REF] [--cwd DIR] \
-    --level none|light|strict|exclusive --minutes N [--priority P] [--after JOBS] \
-    [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
-campaign verify ID            # the quest's gate checks at its branch head (--all: deferred too)
+campaign job submit [--quest ID [--for A1,A2 [--fails-without]]] [--commit REF] [--ref NAME=[PATH@]REF] \
+    [--cwd DIR] --level none|light|strict|exclusive --minutes N [--long REASON] [--priority P] \
+    [--after JOBS] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
+campaign verify ID [--for A1] # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
 campaign job list | show J | log J | rerun J... | cancel J   # rerun: same jobs at the quest's head; a mutant needs --commit
@@ -35,13 +35,14 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   versions on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the repository, the
   code (each commit's tree without `.campaign/`), refs, command, directory, level and `--env`. An
   identical job that is pending or succeeded is returned (`--force` reruns), and a quest job at
-  newer code cancels its queued older instances (but one a pending job waits on). A passed job,
-  cited or resubmitted, also counts wherever every tracked file in its read set holds what it held,
-  and across up to 20 first-parent commits that change only documentation (`docs/**`, `*.md`) its
-  command does not name and no `tested_docs` glob matches (the brief names what it ignored); the
-  build-test, a gate check without `--inputs`, never by its read set, since `land` needs its code.
-  `brief` names Evidence rows citing a replaced job. Upgrading `campaign` can change keys: run
-  `campaign verify` again. What the key does not see is the submitter's to name:
+  newer code cancels its queued older instances (but one a pending job waits on). A passed job also
+  counts wherever every tracked file in its read set holds what it held; across up to 20
+  first-parent commits that change only documentation (`docs/**`, `*.md`) its command does not name
+  and no `tested_docs` glob matches; and, for a quest, across first-parent commits of its branch
+  whose own changes (against main, those docs aside) equal the head's, which only merges from main
+  separate. The build-test, a gate check without `--inputs`, counts by neither read set nor merges
+  unless `ci=github`, whose run at the exact head tests the merge. Upgrading `campaign` can change
+  keys: run `campaign verify` again. What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|
@@ -50,6 +51,11 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
   | a measurement | the key; a strict or exclusive job holds A and B (`--ref base=`), so its result stands for that code, host and toolchain |
   | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
+- **Tags** (`for.json`). `--for A1` records that the job proves criterion A1 of its quest by
+  passing; a later run of the same job (same command, level, directory, environment) carries the
+  tag, and `land` reads the newest that counts at the head. `--fails-without` marks a mutant or
+  revert that exits 0 because the test fails; one job never carries both for one criterion. A
+  criterion no job is tagged for falls back to the journal's Evidence rows.
 - **Read sets** (`reads.json`). A `none` or `light` job on Linux runs under `strace -f`
   (`$CAMPAIGN_STRACE` names another, `""` none); if it passes and the trace ends cleanly, its read
   set is every tracked file its processes touched, with its mode, and every path name. Any other
@@ -68,34 +74,27 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>` in another
   repository) while no pending job of its own is there, else a fresh checkout beside it, so a batch
   of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing removes the
-  quest's slots. A Xapiand build-and-test reused its slot at the next commit in 310 and 320 s
-  against 586 and 688 s fresh (47% and 53% less; ccache warm both ways, ctest 160-190 s of each).
+  quest's slots. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns sharing the light slots; `quiet` arbitrates the machine across every session. A job
-  that drains the machine (exclusive, or strict on macOS) blocks every new light hold while it
-  waits, so drains and light work take turns: a drain starts in a lull (no runnable light work, and
-  the running light jobs end within 10 minutes by their `--minutes`), or once it has waited an hour
-  since the last drain ended (`CAMPAIGN_DRAIN_WAIT`), when no new light job starts until it runs.
-  An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`, an hour) in which the queued drains run
-  back to back; a priority-1 light job that has waited longer than a turn ends it once the running
-  drain ends, so a long queue of drains never holds the direct path for hours, and no light job
-  starts beside a drain.
-  `campaign window --minutes N --for TEXT` lets queued drains run back to back for a batch of
-  measurements (light jobs wait); it closes by itself or with `--close`. Give long jobs accurate
-  `--minutes`: drains plan around them.
+  that drains the machine (exclusive, or strict on macOS) blocks new light holds while it waits, so
+  drains and light work take turns: a drain starts in a lull (no runnable light work, and the
+  running light jobs end within 10 minutes by their last runs), or once it has waited an hour since
+  the last drain ran (`CAMPAIGN_DRAIN_WAIT`). An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`,
+  an hour) in which queued drains run back to back and no light job starts; a priority-1 light job
+  that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
+  TEXT` opens such a turn by hand; `--close` ends it.
   `campaign worker --restart` (after updating the tool) has the worker finish its tick and
   re-execute in place on the new code; running jobs keep running. SIGINT or SIGTERM stops it
-  between ticks, never mid-claim. Priorities: gate checks from `verify` and light jobs
-  submitted with `--quest` for an active or in-review quest (probes, mutants, sanitizer runs: the
-  direct path) run at 1 unless `--priority` says otherwise, other jobs and measurements (strict,
-  exclusive) at 0, deferred checks queued by `land` at -1. Deferred light jobs use at most half the light slots, and a
-  deferred strict or exclusive check lasts at most 10 minutes, so the direct path never waits long
-  behind completeness work.
-  Drains are what light work waits behind most: on a 16-CPU host on 2026-11-10, 319 light jobs
-  waited 213 hours in all, 61% of it while a drain ran, 29% with the light slots full and 10% on
-  dependencies, busy slots and fair share (median 36 minutes at priority 0, 6 at priority 1).
+  between ticks, never mid-claim. Priorities: gate checks and light `--quest` jobs of an active or
+  in-review quest (the direct path) run at 1, other jobs and measurements at 0, deferred checks and
+  `--long` jobs at -1, using at most half the light slots; `--priority` overrides.
+- **Queue health.** `campaign status` prints the last hour's light slot-minutes used against the
+  slots, minutes drains held the host, minutes runnable work waited beside an idle slot, and the
+  jobs that ended without a result (cancelled, skipped, interrupted, timeout). `check` warns when a
+  queued job waited over 30 minutes beside idle slots.
 - **Build parallelism.** Several light jobs run at once, so each keeps to 4 build jobs
   (`CAMPAIGN_LIGHT_BUILD_JOBS`): a light job gets `CMAKE_BUILD_PARALLEL_LEVEL` unless its `--env`
   names one, so `cmake --build` needs no `-j`. `campaign check` warns about a light check asking for

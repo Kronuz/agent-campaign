@@ -19,20 +19,19 @@ worktree in the home (`campaign get <ID> journal`); keep it current and commit i
 Code, tests, results and how-it-works notes go in your worktree's repository and its docs.
 Context: <only what the files do not say: a ruling, findings to fold in, a related quest>.
 
-Prove each criterion as the quest file says: an untagged one by its test in the suite job
-(`campaign verify <ID>`; other jobs with `campaign job submit --quest <ID> --level <L> --minutes <M>
--- <cmd>`), an [artifact] one with a committed `path`, a [decision] one with its PLAN.md id, a
-[manual] one with who checked what. Sanitizers, platforms and `ci:` checks are CI's. Run expensive
-jobs once, at the head you mark "ready for review"; a fix round reruns only the suite. Commits that
-touch only the journal keep the evidence: jobs are keyed by the code. Done means every criterion
-has evidence, the journal's Result says what changed with its numbers and the docs it wrote, and
-State says "ready for review"; commit the journal before your final message.
+Tag each job with the criteria it proves: `campaign verify <ID> --for A1`, `campaign job submit
+--quest <ID> --for A2 -- <cmd>`, and for a fix's test `--for A2 --fails-without` on a mutant or
+revert. An [artifact], [decision] or [manual] criterion gets its journal row (a `path`, a PLAN.md id,
+who checked what). Sanitizers, platforms and `ci:` checks are CI's. Evidence survives journal
+commits and merges from main; run each job once. Done means `campaign brief` shows every
+criterion met (paste its Evidence table into the journal), the Result says what changed with its
+numbers and the docs it wrote, and State says "ready for review"; commit the journal before your
+final message.
 ```
 
 Add when relevant: the review to fold in ("fix the blocking findings C1, C2 in
-.campaign/<campaign>/reviews/<ID>-<lens>.md; each fix gets a test that fails without it; name the
-suite job per finding in the journal"); the experiment budget for performance work (about five
-experiments, stop at the target or the third loser in a row).
+.campaign/<campaign>/reviews/<ID>-<lens>.md, each with a test that fails without it"); the
+experiment budget for performance work (about five, stop at the target or the third loser in a row).
 
 ## Exploration
 
@@ -49,9 +48,9 @@ concurrency case> / what breaks <behavior>?>. Evidence so far: <the measurement 
 <sha>, with numbers>. Start in: <files>. Must stay identical: <outputs, digests, on-disk bytes>.
 
 First confirm the problem on current main with a job; if it is not there, report that and stop.
-Then at most three experiments, one hypothesis each. Time things only as `strict` jobs (`exclusive`
-for a number that decides), never in your own shell. A fix comes with a test that fails without it and, for speed, an A/B
-job against main with an A/A spread. Keep the journal current; when only jobs remain, record their
+Then at most three experiments, one hypothesis each. Time things only as `strict` jobs of at most 10
+minutes (`exclusive` for a number that decides), never in your own shell. A fix comes with a test
+that fails without it and, for speed, an A/B job against main with an A/A spread. Keep the journal current; when only jobs remain, record their
 ids and end your turn. Final message, under 200 words: the cause with numbers, the change and its
 evidence (job ids), or "nothing found" with what you ruled out.
 ```

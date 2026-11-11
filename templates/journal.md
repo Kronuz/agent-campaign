@@ -4,8 +4,8 @@ State: working
 Quest: {brief} (the lead's; never edit it)
 
 Keep this current and commit it with the work, so a fresh contributor can continue. `campaign
-status` reads State, the first step under Next, and the Evidence table. State is one of: working,
-waiting on jobs <ids>, ready for review, fixing <findings>, blocked on <who>: <what>.
+status` reads State and the first step under Next. State is one of: working, waiting on jobs <ids>,
+ready for review, fixing <findings>, blocked on <who>: <what>.
 
 ## Doing
 
@@ -21,13 +21,13 @@ waiting on jobs <ids>, ready for review, fixing <findings>, blocked on <who>: <w
 
 ## Evidence
 
-One row per criterion, with what its kind needs: a job id (it, or the same job rerun, passed at
-the current code), a `path`, a decision id, or for a [manual] one who checked what. Name every job
-you examined, failures included, and answer each message by its id (msg-N).
+Jobs prove criteria by their tags (`--for A1`); paste `campaign brief`'s generated table here.
+Write the rows of [artifact], [decision] and [manual] criteria (a `path`, a decision id, who
+checked what), and answer each message by its id (msg-N).
 
 | Criterion | Evidence |
 |---|---|
-| <A1> | <job id at the current code> |
+| <A1> | <from `campaign brief`> |
 
 ## Result
 
