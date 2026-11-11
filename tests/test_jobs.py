@@ -560,8 +560,22 @@ class Limits(CampaignCase):
         self.assertEqual(self.job(jid)["state"], "timeout")
         self.assertEqual(self.job(jid)["exit"], 124)
 
-    def test_long_measurements_are_refused(self) -> None:
-        self.fails(self.home, "job", "submit", "--level", "strict", "--minutes", "45", "--", "true", match="at most 30")
+    def test_measurements_and_fuzzing_last_ten_minutes_unless_deferred_as_long(self) -> None:
+        for args in (
+            ("--level", "strict", "--minutes", "11", "--", "true"),
+            ("--minutes", "60", "--", "./fuzz-reader"),
+        ):
+            self.fails(self.home, "job", "submit", *args, match="at most 10 minutes: one job per row, or --long")
+        short = self.submit(self.home, "--level", "exclusive", "--", "true")
+        self.assertEqual(json.loads((self.root / "jobs" / short / "spec.json").read_text())["minutes"], 10)
+        self.fails(self.home, "job", "submit", "--level", "strict", "--minutes", "45", "--long", "x", "--", "true")
+        self.fails(self.home, "job", "submit", "--long", " ", "--", "true", match="--long needs a reason")
+        soak = self.submit(self.home, "--minutes", "60", "--long", "the hour-long soak", "--", "./soak-cache")
+        spec = json.loads((self.root / "jobs" / soak / "spec.json").read_text())
+        self.assertEqual((spec["minutes"], spec["priority"], spec["long"]), (60, -1, "the hour-long soak"))
+        self.fails(self.home, "new", "x", "--title", "x", "--check", "bench:strict:20=true", match="at most 10")
+        self.ok(self.home, "new", "y", "--title", "y", "--check", "bench:strict=true")
+        self.assertEqual(self.ok(self.home, "get", "y", "check").out, "bench:strict:10=true\n")
 
     def test_helpers_never_outlive_their_job(self) -> None:
         jid = self.submit(self.home, "--", 'sleep 600 & echo $! > "$JOB_OUT/helper"; true')

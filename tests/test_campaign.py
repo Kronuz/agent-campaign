@@ -326,7 +326,7 @@ class Evidence(CampaignCase):
         journal = ".campaign/demo/journal/fix.md"
         rows = "| A1 | tested it, all green |\n| A2 | `docs/perf/gone.md` |\n| A3 | D1 |\n| A4 | |\n"
         self.commit(wt, {journal: f"## Evidence\n\n{rows}"})
-        self.fails(self.home, "land", "fix", match="criteria without evidence in a journal's Evidence table at")
+        self.fails(self.home, "land", "fix", match="criteria without evidence at")
         out = self.ok(self.home, "status", "fix").out
         self.assertIn("names no job", out)
         self.assertIn("docs/perf/gone.md is not in", out)
@@ -525,7 +525,7 @@ class Evidence(CampaignCase):
         self.assertIn(f"    {other}  exit 2 at ", out)
         self.assertNotIn(f"    {failed}", out)
         self.commit(wt, {"app.py": "print(3)\n"})
-        self.assertNotIn("failed", self.ok(self.home, "status").out)  # history: `campaign job list`
+        self.assertNotIn("jobs at this code", self.ok(self.home, "status").out)  # history: `campaign job list`
 
     def test_status_shows_progress_from_the_criteria_and_the_journal(self) -> None:
         wt = self.started("fix", files="app.py")
@@ -536,7 +536,7 @@ class Evidence(CampaignCase):
         self.git(self.home, "commit", "-qam", "criteria")
         out = self.ok(self.home, "status").out  # the template's placeholder row lists nothing
         self.assertIn("0% 0 of 3 criteria with evidence\n", out)
-        self.assertIn("in no journal's Evidence table yet: A1-A3", out)
+        self.assertIn("no evidence yet: A1-A3", out)
         journal = "\n".join(
             [
                 "# fix: journal",
@@ -560,7 +560,7 @@ class Evidence(CampaignCase):
         self.commit(wt, {".campaign/demo/journal/fix.md": journal})
         out = self.ok(self.home, "status").out
         self.assertIn("33% 1 of 3 criteria with evidence (A1)", out)
-        self.assertNotIn("in no journal's Evidence table", out)
+        self.assertNotIn("no evidence yet", out)
         self.ok(self.home, "start", "fix", "--task", "two", "--files", "app.py")
         task = self.root / "app-wt/demo/fix--two"
         self.commit(task, {".campaign/demo/journal/fix--two.md": "## Evidence\n\n| A2 | test_two |\n"})
@@ -693,6 +693,83 @@ class Evidence(CampaignCase):
         self.assertNotIn("criteria without evidence", brief_out)  # the probe tested b's own code
         self.verified("b")
         self.ok(self.home, "land", "b")
+
+    def test_tagged_jobs_prove_their_criteria_without_a_table(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        criteria = "- A1 prints two: a probe\n- A2 the suite passes\n- A3 [manual] reads well: the lead"
+        brief.write_text(brief.read_text().replace("None in this test.", criteria))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A3", "--", "true", match="[manual] criterion")
+        self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A9", "--", "true", match="no criterion A9")
+        self.fails(wt, "job", "submit", "--for", "A1", "--", "true", match="add --quest")
+        probe = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "python3 app.py | grep -q 2")
+        failing = self.submit(wt, "--quest", "fix", "--for", "A2", "--", "exit 4")
+        self.ok(self.home, "verify", "fix", "--for", "A2")
+        self.run_cli(self.home, "wait", "--quest", "fix", "--timeout", "90", timeout=120)
+        journal = ".campaign/demo/journal/fix.md"
+        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {failing} |\n| A3 | the lead read the output |\n"})
+        out = self.ok(self.home, "status", "fix").out
+        self.assertIn("A1  met", out)  # its tagged probe, whatever the table cites
+        self.assertIn(f"jobs: {probe}", out)
+        self.assertIn("A2  met", out)  # the suite tagged by verify passed, though another tagged job failed
+        table = self.ok(wt, "brief").out
+        self.assertIn("evidence, for the journal's Evidence table:\n  | Criterion | Evidence |", table)
+        self.assertIn(f"  | A1 | {probe} |", table)
+        self.assertIn("  | A3 | the lead read the output |", table)
+        self.commit(wt, {"app.py": "print(2)  # the code moves on\n"})
+        self.verified("fix")
+        refused = self.fails(self.home, "land", "fix", match="criteria without evidence at")
+        self.assertIn(f"`campaign job rerun {probe}`", refused.text)
+        self.assertIn(f"{probe} ran other code", self.ok(self.home, "status", "fix").out)
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        self.ok(self.home, "land", "fix")  # the rerun carries the tag: same command, the head's code
+        self.assertTrue(self.quest("fix")["landed"][0]["criteria"]["A1"].startswith(rerun))  # kept by prune
+
+    def test_a_fails_without_job_must_exit_zero_where_the_fix_is_missing(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.fails(wt, "job", "submit", "--quest", "fix", "--fails-without", "--", "true", match="needs --for")
+        test = "python3 app.py | grep -q 2"
+        self.submit(wt, "--quest", "fix", "--for", "A1", "--", test)
+        self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--commit", "main", "--", f"! ({test})")
+        self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--", f"! ({test})")  # fails: the fix is in
+        self.ok(self.home, "verify", "fix")
+        self.run_cli(self.home, "wait", "--quest", "fix", "--timeout", "60")
+        self.assertIn("A1  met", self.ok(self.home, "status", "fix").out)  # one fails-without job exited 0
+        self.ok(self.home, "land", "fix")
+        bad_only = self.started("other", files="lib/**")
+        brief = self.home / ".campaign/demo/quests/other.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 holds: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(bad_only, {"lib/util.py": "X = 2\n"})
+        self.submit(bad_only, "--quest", "other", "--for", "A1", "--", "grep -q 2 lib/util.py")
+        args = ("--quest", "other", "--for", "A1", "--fails-without")
+        self.fails(bad_only, "job", "submit", *args, "--", "grep -q 2 lib/util.py", match="also passes for A1")
+        mutant = self.submit(bad_only, *args, "--commit", "main", "--", "! grep -q 1 lib/util.py")
+        self.ok(self.home, "verify", "other")
+        self.run_cli(self.home, "wait", "--quest", "other", "--timeout", "60")
+        self.assertIn(f"{mutant} failed: the test passed without the fix>", self.ok(bad_only, "brief").out)
+        self.fails(self.home, "land", "other", match="criteria without evidence")
+        good = self.submit(
+            bad_only,
+            "--quest",
+            "other",
+            "--for",
+            "A1",
+            "--fails-without",
+            "--commit",
+            "main",
+            "--",
+            "! grep -q 2 lib/util.py",
+        )
+        self.ok(self.home, "wait", good)
+        self.ok(self.home, "land", "other")
 
     def test_a_ci_check_is_met_by_its_ci_job_and_queues_nothing(self) -> None:
         conclusion = self.root / "ci-conclusion"
@@ -1553,6 +1630,38 @@ class Campaigns(CampaignCase):
         self.assertEqual((self.lib / "lib.py").read_text(), "X = 1\n")
         self.ok(self.home, "land", "api")
         self.assertEqual((self.lib / "lib.py").read_text(), "X = 2\n")
+
+
+class QueueHealth(CampaignCase):
+    def fake(self, jid: str, level: str, state: str, submitted: float, **times: float) -> str:
+        d = self.root / "jobs" / jid
+        d.mkdir(parents=True)
+        spec = {"cmd": "true", "level": level, "minutes": 10, "submitted": submitted, "repo": "", "commit": ""}
+        (d / "spec.json").write_text(json.dumps({**spec, "after": [], "campaign": "", "quest": ""}))
+        (d / "state.json").write_text(json.dumps({"state": state, **times}))
+        return jid
+
+    def test_status_shows_host_use_and_waste_and_check_warns_of_a_stall(self) -> None:
+        now, m = time.time(), 60
+        self.fake("261110-000001-aaaaaa", "light", "done", now - 51 * m, started=now - 50 * m, ended=now - 26 * m)
+        self.fake("261110-000002-bbbbbb", "exclusive", "done", now - 30 * m, started=now - 20 * m, ended=now - 10 * m)
+        self.fake("261110-000003-cccccc", "light", "cancelled", now - 15 * m, ended=now - 14 * m)
+        self.fake("261110-000004-dddddd", "light", "skipped", now - 6 * m, ended=now - 5 * m)
+        self.fake("261110-000005-eeeeee", "light", "failed", now - 9 * m, started=now - 8 * m, ended=now - 7 * m)
+        self.assertNotIn("waited over", self.ok(self.home, "check").out)
+        stuck = self.fake("261110-000006-ffffff", "light", "queued", now - 120 * m)
+        out = self.ok(self.home, "status").out
+        self.assertIn(
+            "host, last hour: light slots 10% used (25 of 240 slot-minutes), drains 10 min, "
+            "runnable work beside idle slots 50 min\n",
+            out,
+        )
+        self.assertIn("jobs ended, last hour: 5, 1 failed, 2 produced nothing (1 cancelled, 1 skipped)\n", out)
+        warned = self.ok(self.home, "check").out
+        self.assertRegex(
+            warned, rf"1 queued job waited over 30 minutes beside idle slots \(longest {stuck}, 1[01]\d min\)"
+        )
+        self.assertIn("the worker is down", warned)
 
 
 class Usage(CampaignCase):

@@ -67,7 +67,8 @@ SET_STATUS: dict[str, tuple[str, ...]] = {  # what `campaign set status=` may mo
 TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped", "corrupt")
 FAILED = ("failed", "timeout", "interrupted")
 HEAVY = ("strict", "exclusive")
-DEFERRED_HEAVY_MAX = 10  # minutes: a gate job never waits longer behind a deferred measurement
+SHORT_RUN = 10  # minutes: a measurement, fuzz or soak that does not say --long; no gate waits longer behind one
+LONG_RUN = re.compile(r"fuzz|soak", re.I)  # runs that grow to fill any time they are given
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
 UNSTARTED_ATTEMPTS = 3  # a runner that dies before the command starts is requeued, up to this many tries
 BEAT = float(os.environ.get("CAMPAIGN_HEARTBEAT_SECONDS", "15"))
@@ -1015,6 +1016,7 @@ def landing_record(repo: Path, main: str, intent: Json) -> Json | None:
         "final": intent["final"],
         "reason": intent.get("reason", ""),
         "evidence": intent.get("evidence", []),
+        **({"criteria": intent["criteria"]} if intent.get("criteria") else {}),
         **({"from": intent["from"]} if intent.get("from") else {}),
         **({"ci_skipped": intent["ci_skipped"]} if intent.get("ci_skipped") else {}),
     }
@@ -1045,11 +1047,11 @@ def parse_check(spec: str, later: bool = False) -> Json:
     if not sep or not cmd.strip() or not parts[0] or len(parts) > 3:
         die(f"--check NAME[:LEVEL[:MINUTES]]=CMD, not {spec!r}")
     level = parts[1] if len(parts) > 1 and parts[1] else "light"
-    minutes = parts[2] if len(parts) > 2 else "30"
+    minutes = parts[2] if len(parts) > 2 else str(SHORT_RUN if level in HEAVY else 30)
     if level not in LEVELS or not minutes.isdigit() or int(minutes) < 1:
         die(f"--check {spec!r}: level is one of {', '.join(LEVELS)}, minutes a positive integer")
-    if later and level in HEAVY and int(minutes) > DEFERRED_HEAVY_MAX:
-        die(f"--later {spec!r}: a deferred {level} check lasts at most {DEFERRED_HEAVY_MAX} minutes; chain longer runs")
+    if level in HEAVY and int(minutes) > SHORT_RUN:
+        die(f"--check {spec!r}: a {level} check lasts at most {SHORT_RUN} minutes; split it")
     check: Json = {"name": parts[0], "level": level, "minutes": int(minutes), "cmd": cmd.strip()}
     if later:
         check["later"] = True
@@ -1985,7 +1987,9 @@ def review_step(said: str, pid: str, lens: str) -> str:
     return f"its review has {said}; the reviewer writes `Verdict: APPROVE|CHANGES|REJECT`"
 
 
-def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -> list[str]:
+def landing_gaps(
+    c: Campaign, pid: str, target: str, *, final: bool, ci: bool, jobs: list[Json] | None = None
+) -> list[str]:
     """What keeps a quest from landing TARGET, each with what to do about it; empty when it can
     land. `land` refuses with these and `status` lists them."""
     p = c.quests[pid]
@@ -2024,13 +2028,12 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
             gaps.append(
                 f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)"
             )
-    wanted = criteria(c, pid) if final else {}
     carried = (landing_journals(c, pid) if apart else journals_at(c, repo, target, pid)) if final else {}
-    rows = evidence(carried, wanted, proof(c, repo, [target])) if wanted else {}
+    rows = criteria_evidence(c, pid, [target], carried, jobs) if final else {}
     unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
     if unproven:
         gaps.append(
-            f"criteria without evidence in a journal's Evidence table at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
+            f"criteria without evidence at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
         )
     unanswered = [m["id"] for m in inbox(c, pid) if not answered(m, carried.values())] if final else []
     if unanswered:
@@ -2181,6 +2184,9 @@ def cmd_land(a: argparse.Namespace) -> int:
         if gaps:
             die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
         evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]
+        carried = landing_journals(c, a.id) if not same_repo(repo, c.home) else journals_at(c, repo, target, a.id)
+        proven: dict[str, list[Json]] = criteria_evidence(c, a.id, [target], carried) if final else {}
+        met = {x: "; ".join(r["evidence"] for r in rows if r["met"]) for x, rows in proven.items()}
         main_head = rev(repo, main)
         base = merge_base(repo, main_head, target)
         message = f"campaign: land {a.id}" + ("" if final else f" increment ({a.reason})")
@@ -2191,6 +2197,7 @@ def cmd_land(a: argparse.Namespace) -> int:
             "final": final,
             "reason": a.reason or "",
             "evidence": evidence,
+            **({"criteria": met} if met else {}),
             "mode": mode,
             "from": main_head,
             "at": stamp(),
@@ -2586,6 +2593,90 @@ def evidence(
     return rows
 
 
+def evidence_shape(spec: Json) -> str:
+    """A job up to its code: what a tag names, so each run of the same job at later code counts."""
+    refs = sorted((name, r.get("repo")) for name, r in spec.get("refs", {}).items())
+    fields = [spec.get(k) for k in ("repo", "cmd", "cwd", "level", "inputs")]
+    return json.dumps([*fields, refs, sorted(spec.get("env", {}).items())])
+
+
+def tagged(c: Campaign, pid: str, jobs: list[Json]) -> dict[str, Json]:
+    """Each criterion the quest's jobs are tagged for (`job submit --for`): the newest job of each
+    tagged command ("runs"), and the jobs tagged as failing without the fix ("fails")."""
+    out: dict[str, Json] = {}
+    for j in sorted(jobs, key=lambda j: j["spec"].get("submitted", 0)):
+        for t in j.get("tags", []):
+            if t.get("campaign") == c.ident and t.get("quest") == pid:
+                for cid in t.get("for", []):
+                    entry = out.setdefault(cid, {"runs": {}, "fails": []})
+                    if t.get("fails_without"):
+                        entry["fails"].append(j)
+                    else:
+                        entry["runs"][evidence_shape(j["spec"])] = j
+    return out
+
+
+def tagged_row(repo: Path, commits: list[str], entry: Json) -> Json:
+    """A tagged criterion's evidence: a run of one of its tagged jobs that passed at one of COMMITS'
+    code (across merges from main), and, when any is tagged, a fails-without job that exited 0."""
+    passed: list[str] = []
+    why: list[str] = []
+    for j in entry["runs"].values():
+        mine = same_repo(Path(j["spec"].get("repo") or "/"), repo)
+        twin = None
+        for k in commits if mine else []:
+            with contextlib.suppress(CampaignError, KeyError):
+                found = job_at(j["spec"], k, merged=True)
+                twin = twin or (found if found and found["state"].get("state") == "done" else None)
+        state = j["state"].get("state")
+        if twin is not None:
+            passed.append(twin["id"] + (f" ({docs_note(twin)})" if docs_note(twin) else ""))
+        elif not mine:
+            why.append(f"{j['id']} ran in {j['spec'].get('repo')}, not the quest's repository")
+        else:
+            why.append(f"{j['id']} ran other code" if state == "done" else f"{j['id']} {state}")
+    fails = [j["id"] for j in entry["fails"] if j["state"].get("state") == "done"]
+    if entry["fails"] and not fails:
+        why += [f"{j['id']} {j['state'].get('state')}: the test passed without the fix" for j in entry["fails"]]
+    text = ", ".join(passed) + (f"; fails without: {', '.join(fails)}" if fails else "")
+    met = bool(passed) and (bool(fails) or not entry["fails"])
+    return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}
+
+
+def criteria_evidence(
+    c: Campaign, pid: str, commits: list[str], journals: dict[str, str], jobs: list[Json] | None = None
+) -> dict[str, list[Json]]:
+    """Each criterion's evidence at one of COMMITS: the jobs tagged for it, else its rows in the
+    journals' Evidence tables (journals written before tags, and non-job criteria)."""
+    wanted = criteria(c, pid)
+    repo = c.repo(c.quests[pid])
+    tags = tagged(c, pid, all_jobs() if jobs is None else jobs)
+    rows = evidence(journals, {x: w for x, w in wanted.items() if x not in tags}, proof(c, repo, commits))
+    return {x: [tagged_row(repo, commits, tags[x])] if x in tags else rows[x] for x in wanted}
+
+
+def evidence_table(rows: dict[str, list[Json]]) -> list[str]:
+    """The journal's Evidence table, generated: what proves each criterion, or what it lacks."""
+    out = ["| Criterion | Evidence |", "|---|---|"]
+    for cid, found in rows.items():
+        met = [r["evidence"] for r in found if r["met"]]
+        lacks = "; ".join(w for r in found for w in r["why"]) or "no evidence yet"
+        out.append(f"| {cid} | {'; '.join(met) if met else f'<{lacks}>'} |")
+    return out
+
+
+def criteria_for(c: Campaign, pid: str, given: str) -> list[str]:
+    """--for IDS, checked against the quest file: a job proves only job criteria."""
+    wanted = criteria(c, pid)
+    ids = csv(given)
+    for cid in ids:
+        if cid not in wanted:
+            die(f"--for {cid}: {pid}'s quest file has no criterion {cid} (it has {', '.join(wanted) or 'none'})")
+        if wanted[cid]["kind"] != "job":
+            die(f"--for {cid}: an [{wanted[cid]['kind']}] criterion is proven in the journal, not by a job")
+    return ids
+
+
 def replaced_citations(journals: dict[str, str], jobs: list[Json]) -> list[Json]:
     """Evidence rows citing a job a newer one of its shape replaced: at its code or a descendant,
     submitted later, ended, and cited by no journal of the quest. The row should name that result."""
@@ -2788,7 +2879,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
     return out
 
 
-def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> Json:
+def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, table: bool = False) -> Json:
     """A quest as status shows it: what it still needs ("missing"), its branch, checks, reviews and
     journals, and the jobs that failed at its current code, each noted or not in a journal. Brief
     keeps only what an agent acts on."""
@@ -2826,7 +2917,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         head = rev(repo, p["branch"])
         ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
-        view["missing"] = landing_gaps(c, pid, head, final=True, ci=True)
+        view["missing"] = landing_gaps(c, pid, head, final=True, ci=True, jobs=jobs)
         view["docs_only"] = [
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)
@@ -2837,6 +2928,9 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         if brief:
             for name, branch, _, _ in branches(c, pid):
                 texts[name] = journal_text(c, name, branch)
+        if table:
+            tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
+            view["evidence"] = evidence_table(criteria_evidence(c, pid, tips, texts, jobs))
     if not brief and "branch" in view:
         head = rev(repo, p["branch"])
         checks: dict[str, str] = {}
@@ -2870,7 +2964,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         tasks = [w["state"] for name, w in work.items() if name != pid and not w["state"].startswith("dropped: ")]
         tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
         journals = {pid: journal, **{n: t for n, t in texts.items() if n != pid}}
-        rows = evidence(journals, wanted, proof(c, repo, tips))
+        rows = criteria_evidence(c, pid, tips, journals, jobs)
         view["progress"] = {
             "criteria": len(wanted),
             "met": [x for x, r in rows.items() if any(e["met"] for e in r)],
@@ -2980,11 +3074,11 @@ def quest_map(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     if final and not final[-1].get("unverified") and not final[-1].get("earlier"):
         met = set(wanted)  # landing required every criterion
     elif final:  # recorded after the fact, or before the campaign: what its journal's evidence proves
-        rows = evidence(journals, wanted, proof(c, repo, [final[-1]["commit"], rev(repo, main)]))
+        rows = criteria_evidence(c, pid, [final[-1]["commit"], rev(repo, main)], journals, jobs)
         met = {x for x, r in rows.items() if any(e["met"] for e in r)}
     elif p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
         tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
-        rows = evidence(journals, wanted, proof(c, repo, tips))
+        rows = criteria_evidence(c, pid, tips, journals, jobs)
         met = {x for x, r in rows.items() if any(e["met"] for e in r)}
     else:
         met = set()
@@ -3353,7 +3447,7 @@ def print_quest(v: Json, full: bool) -> None:
             met += f" ({id_ranges(g['met'])})" if g["met"] else ""
             print(f"  {bar(len(g['met']) / g['criteria'])} {met}" + (f" · {tasks}" if tasks else ""))
             if g["unlisted"]:
-                print(f"  {mark('📝')}in no journal's Evidence table yet: {id_ranges(g['unlisted'])}")
+                print(f"  {mark('📝')}no evidence yet: {id_ranges(g['unlisted'])}")
         else:
             print(f"  {tasks}")
         if g["next"]:
@@ -3455,6 +3549,8 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
         q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
         q["replaced"] = v["replaced"]
         q["pending"] = {s: k for s, k in v["jobs"].items() if k}
+        if "evidence" in v:
+            q["evidence"] = v["evidence"]
         quests.append(q)
     return out
 
@@ -3493,6 +3589,9 @@ def print_brief(b: Json) -> None:
             )
         if q["pending"]:
             print(f"  - jobs: {', '.join(f'{k} {s}' for s, k in q['pending'].items())}")
+        if len(q.get("evidence", [])) > 2:
+            print("  evidence, for the journal's Evidence table:")
+            print("\n".join(f"  {row}" for row in q["evidence"]))
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -3513,7 +3612,7 @@ def show_status(a: argparse.Namespace) -> int:
     pids = [a.id] if a.id else list(c.quests)
     for pid in pids:
         c.quest(pid)
-    views = [quest_view(c, pid, jobs, brief=a.brief) for pid in pids]
+    views = [quest_view(c, pid, jobs, brief=a.brief, table=a.brief and bool(a.id)) for pid in pids]
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
     if a.brief:
         b = brief(c, views, queue, scoped=bool(a.id))
@@ -3568,6 +3667,8 @@ def show_status(a: argparse.Namespace) -> int:
     print(
         f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
     )
+    for line in health_lines(queue_health(jobs, time.time())) if not a.id else []:
+        print(f"  {line}")
     for m in inbox(c, "") if not a.id else []:
         print(f"  {mark('📨')}" + paint(f"{m['id']} for the lead, from {m['by']}", "yellow") + f": {m['text']}")
     if not views:
@@ -4209,6 +4310,7 @@ def cmd_check(a: argparse.Namespace) -> int:
     c = Campaign(home)
     found = problems(c)
     notes = [*oversized_checks(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
+    notes += stalls(all_jobs(), time.time())
     for severity, message in [*found, *notes]:
         print_problem(severity, message)
     if not any(s != "note" for s, _ in [*found, *notes]):
@@ -4353,7 +4455,10 @@ def cmd_verify(a: argparse.Namespace) -> int:
     if not p.get("branch") and not a.commit:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
-    submit_checks(c, a.id, checks, commit, priority=1, fresh=a.fresh, force=a.force)
+    ids = criteria_for(c, a.id, a.criteria or "")
+    for jid in submit_checks(c, a.id, checks, commit, priority=1, fresh=a.fresh, force=a.force):
+        if ids:
+            tag(jid, c.ident, a.id, ids, False)
     print(f"wait for them with `campaign wait --quest {a.id}`")
     return 0
 
@@ -4461,7 +4566,29 @@ def load_job(d: Path) -> Json:
         except CampaignError:
             return {"state": "corrupt"}
 
-    return {"id": d.name, "dir": d, "spec": tolerant(d / "spec.json"), "state": tolerant(d / "state.json")}
+    job = {"id": d.name, "dir": d, "spec": tolerant(d / "spec.json"), "state": tolerant(d / "state.json")}
+    if (d / "for.json").exists():
+        job["tags"] = (read_json(d / "for.json") or {}).get("tags", [])
+    return job
+
+
+def tag(jid: str, campaign: str, quest: str, ids: list[str], fails_without: bool) -> None:
+    """Records that job JID is evidence for criteria IDS of a quest: passing at its code, or, with
+    FAILS_WITHOUT, exiting 0 because the test fails without the fix (a mutant or a revert)."""
+    path = jobs_dir() / jid / "for.json"
+    tags = (read_json(path) or {}).get("tags", []) if path.exists() else []
+    for t in tags:
+        both = set(ids) & set(t["for"]) if (t["campaign"], t["quest"]) == (campaign, quest) else set()
+        if both and t["fails_without"] != fails_without:
+            way = "passes" if fails_without else "fails without the fix"
+            die(f"{jid} also {way} for {', '.join(sorted(both))}: one job cannot prove both")
+    entry = {"campaign": campaign, "quest": quest, "fails_without": fails_without}
+    old = next((t for t in tags if {k: t.get(k) for k in entry} == entry), None)
+    if old is None:
+        tags.append({**entry, "for": ids})
+    else:
+        old["for"] = list(dict.fromkeys([*old["for"], *ids]))
+    write_json(path, {"tags": tags})
 
 
 def attempt_dir(job: Json) -> Path:
@@ -5348,6 +5475,124 @@ def camp(job: Json) -> str:
     return str(job["spec"].get("campaign") or "")
 
 
+def light_slots(heavy: bool = False) -> int:
+    """Light jobs at once, as quiet admits them: half the CPUs (a quarter beside a heavy job)."""
+    if os.environ.get("CAMPAIGN_LIGHT_JOBS"):
+        return int(os.environ["CAMPAIGN_LIGHT_JOBS"])
+    ncpu = os.cpu_count() or 4
+    return max(1, ncpu // 4) if heavy else max(1, ncpu // 2)
+
+
+STALL = 30  # minutes runnable work may wait beside idle slots before `check` warns
+WASTED = ("cancelled", "skipped", "interrupted", "timeout")  # ended without a result
+
+
+def spans(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
+    """Each job that held a slot, from its runner's start to its end (now while it runs)."""
+    out: list[tuple[Json, float, float]] = []
+    for j in jobs:
+        st = j["state"]
+        end = st.get("ended") or (now if st.get("state") == "running" else None)
+        if st.get("started") and end and j["spec"].get("level") != "none":
+            out.append((j, float(st["started"]), float(end)))
+    return out
+
+
+def waits(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
+    """Each job's runnable wait: from its submission or its last dependency's end to its start (its
+    cancellation, or now while queued). A job behind a dependency that did not pass has none."""
+    by_id = {j["id"]: j for j in jobs}
+    out: list[tuple[Json, float, float]] = []
+    for j in jobs:
+        deps = [by_id.get(x) for x in j["spec"].get("after", [])]
+        if any(d is None or d["state"].get("state") != "done" for d in deps):
+            continue
+        ready = max([float(j["spec"].get("submitted") or 0), *(float(d["state"].get("ended") or 0) for d in deps if d)])
+        st = j["state"]
+        until = float(st.get("started") or st.get("ended") or (now if st.get("state") == "queued" else 0))
+        if until > ready:
+            out.append((j, ready, until))
+    return out
+
+
+def idle_for(job: Json, live: list[Json], slots: int) -> bool:
+    """Whether a slot JOB could take was free beside the LIVE jobs: a light slot with no drain, a
+    heavy job's own cores, or, for a drain, the whole machine."""
+    level = job["spec"].get("level")
+    if level == "none":
+        return False
+    if drains(job):
+        return not live
+    if level in HEAVY:
+        return not any(x["spec"].get("level") in HEAVY for x in live)
+    return not any(drains(x) for x in live) and sum(x["spec"].get("level") not in HEAVY for x in live) < slots
+
+
+def idle_minutes(
+    jobs: list[Json], now: float, since: float, only: Collection[str] | None = None
+) -> tuple[dict[str, int], int, int]:
+    """Minute by minute since SINCE: per job (of ONLY), the minutes it waited runnable beside a free slot
+    it could take; the minutes any job did; and the minutes a drain held the machine."""
+    held = [x for x in spans(jobs, now) if x[2] > since]
+    waiting = [x for x in waits(jobs, now) if x[2] > since and (only is None or x[0]["id"] in only)]
+    if only is not None:  # sample only from the first wait
+        since = max(since, min((a for _, a, _ in waiting), default=now))
+    slots = light_slots()
+    per_job: Counter[str] = Counter()
+    idle = drained = 0
+    for t in range(int(since) + 30, int(now), 60):
+        live = [j for j, a, b in held if a <= t < b]
+        drained += any(drains(j) for j in live)
+        stuck = [j["id"] for j, a, b in waiting if a <= t < b and idle_for(j, live, slots)]
+        per_job.update(stuck)
+        idle += bool(stuck)
+    return dict(per_job), idle, drained
+
+
+def queue_health(jobs: list[Json], now: float) -> Json:
+    """The host's last hour from the job records: light slot-minutes used against the slots, minutes a
+    drain held it, minutes runnable work waited beside idle slots, and the jobs that ended, by result."""
+    since = now - 3600
+    held = [x for x in spans(jobs, now) if x[2] > since]
+    used = sum(min(b, now) - max(a, since) for j, a, b in held if j["spec"].get("level") not in HEAVY) / 60
+    _, idle, drained = idle_minutes(jobs, now, since)
+    ended = [j for j in jobs if float(j["state"].get("ended") or 0) > since]
+    return {
+        "used": round(used),
+        "capacity": 60 * light_slots(),
+        "drained": drained,
+        "idle": idle,
+        "ended": len(ended),
+        "failed": sum(j["state"].get("state") == "failed" for j in ended),
+        "wasted": dict(Counter(j["state"]["state"] for j in ended if j["state"].get("state") in WASTED)),
+    }
+
+
+def health_lines(h: Json) -> list[str]:
+    """The two lines a lead's report quotes: host use and wasted jobs, over the last hour."""
+    share = round(100 * h["used"] / h["capacity"]) if h["capacity"] else 0
+    kinds = ", ".join(f"{n} {k}" for k, n in sorted(h["wasted"].items()))
+    return [
+        f"host, last hour: light slots {share}% used ({h['used']} of {h['capacity']} slot-minutes), "
+        f"drains {h['drained']} min, runnable work beside idle slots {h['idle']} min",
+        f"jobs ended, last hour: {h['ended']}, {h['failed']} failed, {sum(h['wasted'].values())} produced nothing"
+        + (f" ({kinds})" if kinds else ""),
+    ]
+
+
+def stalls(jobs: list[Json], now: float) -> list[tuple[str, str]]:
+    """A warning when a queued job waited over STALL minutes beside idle slots: the lead's to fix."""
+    queued = {j["id"] for j in jobs if j["state"].get("state") == "queued"}
+    per_job: dict[str, int] = idle_minutes(jobs, now, now - 86400, queued)[0] if queued else {}
+    stuck = {k: m for k, m in per_job.items() if m > STALL}
+    if not stuck:
+        return []
+    worst = max(stuck, key=lambda k: stuck[k])
+    down = "" if worker_alive() else "; the worker is down (a submit or wait starts it)"
+    text = f"{plural(len(stuck), 'queued job')} waited over {STALL} minutes beside idle slots (longest {worst}, "
+    return [("warning", text + f"{stuck[worst]} min){down}: `campaign job show {worst}`")]
+
+
 def cmd_worker(a: argparse.Namespace) -> int:
     jd = jobs_dir()
     home = jd / ".worker"
@@ -5397,14 +5642,6 @@ def cmd_worker(a: argparse.Namespace) -> int:
         if not take():
             return 0
     (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
-    ncpu = os.cpu_count() or 4
-
-    def light_slots(heavy: bool) -> int:
-        """Light jobs at once, as quiet admits them: half the CPUs (a quarter beside a heavy job)."""
-        if os.environ.get("CAMPAIGN_LIGHT_JOBS"):
-            return int(os.environ["CAMPAIGN_LIGHT_JOBS"])
-        return max(1, ncpu // 4) if heavy else max(1, ncpu // 2)
-
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", "3600"))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
@@ -5615,11 +5852,21 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     if not cmd:
         die("give the command after --")
     command = cmd[0] if len(cmd) == 1 else shlex.join(cmd)
+    short = a.level in HEAVY or bool(LONG_RUN.search(command))
+    minutes = a.minutes or (SHORT_RUN if short else 30)
+    if short and minutes > SHORT_RUN and not a.long:
+        die(
+            f"a {a.level} job, or a fuzz or soak, lasts at most {SHORT_RUN} minutes: one job per row, or "
+            "--long REASON to defer it"
+        )
+    if a.long and a.criteria:
+        die("a --long job is deferred: it proves no criterion before landing")
     spec: Json = {
         "cmd": command,
         "level": a.level,
-        "minutes": a.minutes,
-        "priority": a.priority or 0,
+        "minutes": minutes,
+        "priority": -1 if a.long else a.priority or 0,
+        **({"long": a.long} if a.long else {}),
         "after": csv(a.after),
         "retries": a.retries,
         "keep": a.keep,
@@ -5631,13 +5878,19 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     repo = Path(a.repo).resolve() if a.repo else cwd
     c: Campaign | None = None
     p: Json = {}
+    if (a.criteria or a.fails_without) and not a.quest:
+        die("--for and --fails-without name a quest's criteria: add --quest ID")
+    if a.fails_without and not a.criteria:
+        die("--fails-without needs --for: the criteria whose test fails without the fix")
+    ids: list[str] = []
     if a.quest:
         c = find_campaign(cwd)
         p = c.quest(a.quest)
         spec.update(quest=a.quest, campaign=c.ident)
+        ids = criteria_for(c, a.quest, a.criteria or "")
         repo = Path(a.repo).resolve() if a.repo else c.repo(p)
         default_ref = p.get("branch") or "HEAD"
-        if a.priority is None and a.level == "light" and p["status"] in ("active", "review"):
+        if a.priority is None and not a.long and a.level == "light" and p["status"] in ("active", "review"):
             spec["priority"] = 1  # direct-path evidence, as verify's gate checks; measurements keep 0
     if a.unversioned or not git_ok(repo, "rev-parse", "--git-dir"):
         spec.update(repo="", commit="", refs={}, cwd=str(Path(a.cwd or cwd).resolve()))
@@ -5684,7 +5937,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec["campaign"] = ""
         with contextlib.suppress(CampaignError):
             spec["campaign"] = find_campaign(Path.cwd()).ident
+    if ids and not spec.get("commit"):
+        die("an unversioned job is never evidence: drop --for")
     jid, reused = submit(spec, force=a.force)
+    if c is not None and ids:
+        tag(jid, c.ident, a.quest, ids, a.fails_without)
     print(jid + (f" (reused: {resolve_job(jid)['spec'].get('what', '')})" if reused else ""))
     if not reused:
         supersede([jid])
@@ -6026,6 +6283,7 @@ def job_needs() -> Json:
             for landing in p.get("landed", []):
                 named.update(landing.get("later", []))
                 named.update(e["job"] for e in landing.get("evidence", []) if e.get("job"))
+                named.update(JOB_ID.findall(" ".join(landing.get("criteria", {}).values())))
                 home = same_repo(repo, c.home)
                 carried = (
                     journals_at(c, repo, landing["commit"], pid)
@@ -6758,11 +7016,10 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "status",
         "each quest and what it still needs, for people",
-        "Each quest and what it still needs to land. Progress counts the criteria in its quest file that its "
-        "journals' Evidence tables name with evidence (`| A1 | job ID |`); `status ID` lists each criterion with "
-        "the rows behind it. In a quest's worktree, that quest. Colored on a terminal (NO_COLOR turns it off); "
-        "CAMPAIGN_BAR sets the progress bar's two characters (default \u2588\u2591, e.g. \u25b0\u25b1). "
-        "Agents read `campaign brief`.",
+        "Each quest and what it still needs to land, with its criteria met; `status ID` lists each criterion "
+        "with its evidence. Two lines give the host's last hour: slot use, drains, idle minutes with runnable "
+        "work, and jobs that produced nothing. Colored on a terminal (NO_COLOR turns it off); CAMPAIGN_BAR "
+        "sets the progress bar's two characters. Agents read `campaign brief`.",
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
     p.add_argument("--json", action="store_true", help="the same as JSON")
@@ -6772,8 +7029,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "brief",
         "what each quest still needs, for agents",
-        "What a quest still needs, one line each: landing gaps, unanswered messages, failed jobs no journal names yet, "
-        "Evidence rows citing a job a newer one of the same command replaced, pending jobs; --json gives the same as JSON. In a quest's worktree, that quest and its file set; "
+        "What a quest still needs, one line each: landing gaps, unanswered messages, failed jobs no journal "
+        "names, pending jobs. In a quest's worktree, that quest, its file set and its generated Evidence table; "
         "elsewhere, every quest not landed.",
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
@@ -6809,12 +7066,10 @@ def parser() -> argparse.ArgumentParser:
         "check",
         "contradictions between state, git, worktrees and jobs",
         "Reports errors and warnings where state.json, git, the worktrees and the job records disagree, and "
-        "what other campaigns on this machine overlap; exits 1 on an error. Notes report what is left behind: "
-        "landed quests not cleaned, what `job prune` would do to jobs, jobs of campaigns this machine does not "
-        "know; a warning, free disk under disk_warn (`campaign config`, default 100 GiB), naming the five "
-        "largest consumers the campaigns know and what reclaims each; a warning, and a notice to the owner once per "
-        "message, when a message to another campaign's lead has sat undelivered in cmux over 15 minutes. It "
-        "changes nothing.",
+        "what other campaigns on this machine overlap; exits 1 on an error. Notes report what is left behind "
+        "(uncleaned quests, prunable jobs, unknown campaigns' jobs). Warnings: free disk under disk_warn, with "
+        "the largest consumers; a queued job that waited over 30 minutes beside idle slots; a message to a "
+        "lead undelivered in cmux over 15 minutes (the owner is told once). It changes nothing.",
     )
     p.set_defaults(fn=cmd_check)
 
@@ -6836,17 +7091,15 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "verify",
         "queue a quest's gate checks at its branch head",
-        "Queues the quest's gate checks as jobs at its branch head (or --commit), reusing identical results. "
-        "--all adds the deferred checks; --deferred reruns a landed quest's deferred checks on main.",
+        "Queues the quest's gate checks at its branch head (or --commit), reusing results that still count.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--commit", metavar="REF", help="verify this commit instead of the head")
+    p.add_argument("--for", dest="criteria", metavar="A1,A2", help="the criteria the gate jobs prove")
     p.add_argument("--force", action="store_true", help="rerun even if an identical job succeeded")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--all", action="store_true", help="the deferred checks too")
-    p.add_argument(
-        "--deferred", action="store_true", help="rerun a landed quest's deferred checks on main (or --commit)"
-    )
+    p.add_argument("--deferred", action="store_true", help="a landed quest's deferred checks, on main")
     p.set_defaults(fn=cmd_verify)
 
     p = command(
@@ -6879,12 +7132,11 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "land",
         "land a quest on main",
-        "Lands the quest when nothing `campaign brief` lists is left: dependencies, rebase, file set, tasks, "
-        "criteria, messages, checks, reviews and CI. It fast-forwards main (or merges when only campaign files "
-        "differ), checks that the landed code is the tested code and records the landing. A final landing then "
-        "cleans the quest as `clean` does, keeping and naming what cannot go safely (--keep keeps it all), and "
-        "refreshes MAP.md when the campaign keeps one. --upto lands a prefix that is safe alone as an increment; "
-        "--record records a landing that already happened.",
+        "Lands the quest when nothing `campaign brief` lists is left: dependencies, a merge of main, file set, "
+        "tasks, criteria (from the jobs tagged for them), messages, checks, reviews and CI. It fast-forwards "
+        "main (or merges when only campaign files differ), checks that the landed code is the tested code, "
+        "records the landing, cleans the quest as `clean` does (--keep keeps it) and refreshes MAP.md. --upto "
+        "lands a prefix safe alone; --record records a landing that already happened.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--upto", metavar="REF", help="land the branch up to this commit, as an increment")
@@ -7005,13 +7257,14 @@ def parser() -> argparse.ArgumentParser:
     p = job_command(
         "submit",
         "queue a command at an exact commit",
-        "Queues CMD to run at an exact commit (the quest's branch with --quest, else HEAD) in its own checkout, "
-        "under quiet at --level. An identical job that is pending or succeeded is returned instead; --sync "
-        "runs it now. Paths outside the job's checkout are warned about: they are not part of its identity, "
-        "except that a --quest job's identity holds the bytes of each file its command names there. "
-        "A --quest job cancels the quest's still-queued jobs it replaces (the same job at newer code).",
+        "Queues CMD at an exact commit (the quest's branch with --quest, else HEAD) in its own checkout, under "
+        "quiet at --level. An identical job that is pending or still counts is returned instead. Paths "
+        "outside the checkout are not part of its identity (a --quest job's holds the files its command "
+        "names). A --quest job cancels the quest's queued jobs it replaces.",
     )
     p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")
+    p.add_argument("--for", dest="criteria", metavar="A1,A2", help="the criteria it proves by passing")
+    p.add_argument("--fails-without", action="store_true", help="--for a mutant: exits 0 as the test fails")
     p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: HEAD, or the quest's branch)")
     p.add_argument(
@@ -7019,28 +7272,27 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME=[PATH@]REF",
-        help="another commit (of this or another repository) at $JOB_REF_NAME",
+        help="another commit, of any repository, at $JOB_REF_NAME",
     )
     p.add_argument("--cwd", metavar="DIR", help="the directory to run in, inside the checkout")
     p.add_argument("--level", choices=LEVELS, default="light", help="its quiet level (default light)")
-    p.add_argument("--minutes", type=int, default=30, metavar="N", help="its bound once it runs (default 30)")
+    p.add_argument(
+        "--minutes", type=int, metavar="N", help=f"its bound (default 30; at most {SHORT_RUN} if heavy or fuzz)"
+    )
+    p.add_argument("--long", metavar="REASON", help="lift that cap; the job is deferred")
     p.add_argument(
         "--priority",
         type=int,
         metavar="N",
-        help="higher runs first (default 0; 1 for a light job of an active or in-review --quest)",
+        help="higher runs first (default 0; 1 for a light job of an active --quest)",
     )
     p.add_argument("--after", metavar="JOBS", help="jobs that must succeed first")
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
-    p.add_argument(
-        "--slot", metavar="NAME", help="reuse a named checkout (incremental builds; default for a --quest light job)"
-    )
+    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest light job)")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
-    p.add_argument(
-        "--retries", type=int, default=0, metavar="N", help="requeues after a lost runner (only for jobs safe to rerun)"
-    )
-    p.add_argument("--what", metavar="TEXT", help="what it is for, shown by status and the sidebar")
+    p.add_argument("--retries", type=int, default=0, metavar="N", help="requeues after a lost runner")
+    p.add_argument("--what", metavar="TEXT", help="what it is for, as status shows it")
     p.add_argument("--unversioned", action="store_true", help="run in --cwd as it is (probes; never evidence)")
     p.add_argument("--force", action="store_true", help="run even if an identical job succeeded")
     p.add_argument("--sync", action="store_true", help="run now and wait (no worker); same records")
@@ -7113,7 +7365,7 @@ def parser() -> argparse.ArgumentParser:
 
 # options that bypass or weaken a safeguard: each needs a non-empty reason, which is recorded
 REASONS = {"no_ci": "--no-ci", "weaken": "--weaken", "fix_scope": "--fix-scope"}
-REASONS.update(reason="--reason", force="--force")
+REASONS.update(reason="--reason", force="--force", long="--long")
 
 
 def main(argv: list[str] | None = None) -> int:
