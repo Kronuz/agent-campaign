@@ -1250,6 +1250,38 @@ class Campaigns(CampaignCase):
         self.assertLess(self.job(first)["started"], self.job(theirs)["started"], "the overdue drain went first")
         self.assertLess(self.job(theirs)["started"], self.job(second)["started"], "light work got its turn")
 
+    def test_a_drain_cancelled_while_queued_does_not_restart_the_wait(self) -> None:
+        """Only a drain that ran restarts the wait: cancelling queued drains never starves the others."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="6", CAMPAIGN_DRAIN_SLACK="0")
+        ours = self.submit(self.home, "--level", "light", "--force", "--minutes", "5", "--", "sleep 30")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        for n in range(6):
+            time.sleep(3)
+            # held queued behind the light job, so it is cancelled without ever running
+            gone = self.submit(
+                self.home, "--level", "exclusive", "--minutes", "1", "--force", "--after", ours, "--", f"true {n}"
+            )
+            self.ok(self.home, "job", "cancel", gone)
+        self.ok(self.home, "wait", ab, "--timeout", "60", timeout=90)
+        self.assertLess(
+            float(self.job(ab)["claimed"]), float(self.job(ours)["started"]) + 25, "cancelled drains restarted its wait"
+        )
+
+    def test_a_drain_plans_its_lull_from_how_long_the_command_took(self) -> None:
+        """A light job declaring far more minutes than its command took before does not hold off a lull."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1")
+        first = self.submit(self.home, "--level", "light", "--minutes", "30", "--env", "S=1", "--", 'sleep "$S"')
+        self.ok(self.home, "wait", first)
+        ours = self.submit(self.home, "--level", "light", "--minutes", "30", "--env", "S=20", "--", 'sleep "$S"')
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        self.wait_until(lambda: self.job(ab).get("claimed"), timeout=30)
+        self.assertLess(
+            float(self.job(ab)["claimed"]), float(self.job(ours)["started"]) + 10, "it waited out --minutes"
+        )
+        self.ok(self.home, "wait", ours, ab, "--timeout", "60", timeout=90)
+
     def test_an_overdue_drain_opens_a_turn_for_the_queued_drains(self) -> None:
         """An overdue drain opens a turn: the drains queued behind it run before light work resumes."""
         self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5", CAMPAIGN_DRAIN_TURN="60")

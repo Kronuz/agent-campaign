@@ -5239,6 +5239,18 @@ def claim(job: Json) -> bool:
 SPLITS = sys.platform == "linux" or (sys.platform.startswith("freebsd") and bool(shutil.which("cpuset")))
 
 
+def expected_seconds(spec: Json, took: dict[tuple[str, str, str], list[float]]) -> float:
+    """How long a job should run: the longest of its command's last three runs, at most its --minutes."""
+    declared = 60.0 * int(spec.get("minutes") or 30)
+    last = took.get(run_kind(spec), [])[-3:]
+    return min(declared, max(last)) if last else declared
+
+
+def run_kind(spec: Json) -> tuple[str, str, str]:
+    """What a job runs, whatever the commit: its command, directory and repository."""
+    return (str(spec.get("cmd", "")), str(spec.get("cwd", "")), str(spec.get("repo", "")))
+
+
 def drains(job: Json) -> bool:
     """A job whose hold waits for every light hold and blocks new ones while it waits."""
     level = job["spec"].get("level")
@@ -5390,20 +5402,28 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 )
             )
             now = time.time()
+            # how long each command took, oldest run first
+            took: dict[tuple[str, str, str], list[float]] = {}
+            for j in sorted(jobs, key=lambda j: j["id"]):
+                st = j["state"]
+                if st.get("state") == "done" and st.get("started") and st.get("ended"):
+                    took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
+
             # a draining hold blocks new light holds until the running ones end: start one only when
             # they all end soon, and past its wait start no new light job, so the drain stays short
             lights_end = max(
                 (
-                    float(r["state"].get("started") or now) + 60 * int(r["spec"].get("minutes") or 30)
+                    float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
                     for r in running
                     if r["spec"].get("level") not in (*HEAVY, "none")
                 ),
                 default=now,
             )
             drain_ok = lights_end - now <= drain_slack
-            # a drain's wait counts from the last drain's end: light work and drains take turns
+            # a drain's wait counts from the last drain that ran: one cancelled or skipped while queued
+            # never held the machine, so it must not restart the wait
             last_drain = max(
-                (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and states[j["id"]] != "queued"),
+                (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
                 default=0.0,
             )
             turn = window_info()
