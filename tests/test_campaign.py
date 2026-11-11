@@ -465,6 +465,9 @@ class Evidence(CampaignCase):
     def test_inputs_never_replace_the_whole_tree_build_test(self) -> None:
         self.ok(self.home, "new", "solo", "--title", "solo", "--check", "unit=true")
         self.fails(self.home, "set", "solo", "--inputs", "unit=lib/**", "--weaken", "x", match="keep one without them")
+        self.assertIn(
+            "a file it reads outside them is not checked", " ".join(self.ok(self.home, "set", "--help").out.split())
+        )
         self.fails(
             self.home,
             "new",

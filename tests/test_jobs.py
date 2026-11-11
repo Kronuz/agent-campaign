@@ -71,7 +71,7 @@ class ReadSets(CampaignCase):
 
         jobs = {name: run(name)[0] for name in ("kill", "none", "ok")}
         reads = {n: json.loads((self.root / "jobs" / j / "reads.json").read_text()) for n, j in jobs.items()}
-        self.assertEqual(reads["kill"]["why"], ["the trace ends before its first process exits"])
+        self.assertEqual(reads["kill"]["why"], ["the trace ends before every process exits"])
         self.assertEqual(reads["none"]["why"], ["the trace is missing"])
         self.assertEqual(sorted(reads["ok"]["reads"]), ["**", "app.py", "link.txt", "real/v.txt"])
         self.assertTrue(reads["ok"]["complete"])
@@ -122,8 +122,37 @@ class ReadSets(CampaignCase):
         self.assertEqual((paths[2], paths[-1], problem), ("/r/sub/deeper/a.h", "/r/x/b.h", ""))
         log.write_text('10 openat(AT_FDCWD, "a.h", O_RDONLY) = 3</r/a.h>\n11 openat(AT_FDCWD, "b.h", O_RDONLY) = 3\n')
         self.assertEqual(
-            campaign_module().strace_paths(log, "/r")[1], "a process starts where the trace cannot tell its directory"
+            campaign_module().strace_paths(log, "/r")[1], "a process's directory is one the trace cannot tell"
         )
+
+    def problem(self, log: str) -> str:
+        (self.root / "trace").write_text(log + "10 +++ exited with 0 +++\n")
+        return str(campaign_module().strace_paths(self.root / "trace", "/r")[1])
+
+    def test_a_trace_through_git_is_not_whole(self) -> None:
+        git = '10 openat(AT_FDCWD, "/home/repo/.git/objects/pack/pack-1.idx", O_RDONLY) = 3\n'
+        self.assertEqual(self.problem(git), "a process read git's object store, which a read set does not key")
+
+    def test_a_chdir_threads_share_is_not_whole(self) -> None:
+        clone = "10 clone3({flags=CLONE_VM|CLONE_FS|CLONE_THREAD, exit_signal=0}, 88) = 13\n"
+        opened = '13 openat(AT_FDCWD, "data.txt", O_RDONLY) = 3\n13 +++ exited with 0 +++\n'
+        self.assertEqual(
+            self.problem(clone + '10 chdir("sub") = 0\n' + opened), "a process's directory is one the trace cannot tell"
+        )
+        self.assertEqual(self.problem('10 chdir("sub") = 0\n' + clone + opened), "")  # set before the thread starts
+
+    def test_a_pid_reused_after_an_early_exit_starts_in_its_parents_directory(self) -> None:
+        log = "10 clone(flags=SIGCHLD <unfinished ...>\n11 +++ exited with 0 +++\n10 <... clone resumed>) = 11\n"
+        log += '10 chdir("/r/sub") = 0\n10 clone(flags=SIGCHLD) = 11\n11 openat(AT_FDCWD, "a.h", O_RDONLY) = 3\n'
+        (self.root / "trace").write_text(log + "11 +++ exited with 0 +++\n10 +++ exited with 0 +++\n")
+        self.assertEqual(campaign_module().strace_paths(self.root / "trace", "/r"), (["/r/sub", "/r/sub/a.h"], ""))
+
+    def test_a_trace_counts_only_when_every_process_exits(self) -> None:
+        self.assertEqual(
+            self.problem("10 clone(child_stack=NULL, flags=SIGCHLD) = 11\n"),
+            "the trace ends before every process exits",
+        )
+        self.assertEqual(self.problem("10 clone(child_stack=NULL, flags=SIGCHLD) = 11\n11 +++ exited with 0 +++\n"), "")
 
 
 class FalseReuse(CampaignCase):

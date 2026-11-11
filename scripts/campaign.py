@@ -4378,7 +4378,7 @@ BUILD_FILES += ("meson.build", "meson_options.txt", "pyproject.toml", "setup.py"
 INPUTS_HELP = (
     "the files a check's jobs depend on (GLOBS comma-separated; empty clears): its evidence then survives "
     "commits that change nothing under them, the build files (CMakeLists*, *.cmake, toolchain files) and "
-    "the paths its command names"
+    "the paths its command names; a file it reads outside them is not checked"
 )
 
 
@@ -4896,7 +4896,10 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[str], str]:
     cwds: dict[str, str] = {}
     pending: dict[str, str] = {}
     out: list[str] = []
-    top, ended, unknown = "", False, False
+    running: set[str] = set()
+    early: set[str] = set()  # children seen before their clone returns
+    shared: set[str] = set()  # processes that share a directory (CLONE_FS: threads)
+    top, unknown, moved = "", False, False
     for line in log.read_text(errors="replace").splitlines():
         pid, _, rest = line.partition(" ")
         rest = rest.strip()
@@ -4905,8 +4908,13 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[str], str]:
             parents = {cwds.get(p, cwd) for p, call in pending.items() if call.startswith(FORKS)}
             unknown = unknown or (pid != top and len(parents) != 1)
             cwds[pid] = cwd if pid == top or len(parents) != 1 else parents.pop()
+            fs = [p for p, call in pending.items() if call.startswith(FORKS) and "CLONE_FS" in call]
+            shared.update([pid, *fs] if fs else [])
+            early.update([pid] if pid != top else [])
+        running.add(pid)
         if rest.startswith("+++"):
-            ended = ended or (pid == top and rest.startswith("+++ exited with"))
+            if rest.startswith("+++ exited with"):
+                running.discard(pid)
             cwds.pop(pid, None)  # a reused pid is a new process
             pending.pop(pid, None)
             continue
@@ -4921,7 +4929,12 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[str], str]:
             continue
         call, args, ret = m.groups()
         if call + "(" in FORKS and ret.isdigit():
-            cwds.setdefault(ret, cwds[pid])
+            if ret not in early:  # a child seen early already has its directory, and may have exited
+                cwds[ret] = cwds[pid]
+                running.add(ret)
+            early.discard(ret)
+            shared.update([pid, ret] if "CLONE_FS" in args else [])
+        moved = moved or (call in ("chdir", "fchdir") and ret == "0" and pid in shared)
         dirfd = re.match(r"(\d+)<([^>]*)>, ", args)
         if call == "fchdir" and ret == "0" and (fd := re.match(r"\d+<([^>]*)>", args)):
             cwds[pid] = fd.group(1)
@@ -4933,9 +4946,11 @@ def strace_paths(log: Path, cwd: str) -> tuple[list[str], str]:
         if call == "chdir" and ret == "0":
             cwds[pid] = path
         out.append(path)
-    if unknown:
-        return out, "a process starts where the trace cannot tell its directory"
-    return out, "" if ended else "the trace ends before its first process exits"
+    if any(part.endswith(".git") for x in out for part in Path(x).parts):
+        return out, "a process read git's object store, which a read set does not key"
+    if unknown or moved:
+        return out, "a process's directory is one the trace cannot tell"
+    return out, "the trace ends before every process exits" if running else ""
 
 
 def record_reads(spec: Json, root: Path, cwd: Path, log: Path) -> Json:
