@@ -50,12 +50,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | installed libraries, a service, the network | `$CAMPAIGN_FINGERPRINT` (e.g. `brew list --versions`), or `--force` |
   | a measurement | the key; a strict or exclusive job holds A and B (`--ref base=`), so its result stands for that code, host and toolchain |
   | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
-- **Read sets** (`reads.json`), recorded when a versioned job passes, hold what its Python
-  processes opened, listed or imported; what a Ninja build directory's deps, inputs and configure
-  step name; for `none` and `light` jobs on Linux, what strace saw (`$CAMPAIGN_STRACE` overrides);
-  every tracked path name but docs; the build files, `tested_docs`, `--inputs` and the paths its
-  command names. Unless every source reports itself whole (no untraced test binary or custom
-  command, Make build, or Python with `-I`, `-E`, `-S`), the job keeps whole-tree identity.
+- **Read sets** (`reads.json`). A `none` or `light` job on Linux runs under `strace -f`
+  (`$CAMPAIGN_STRACE` names another, `""` none); if it passes and the trace ends cleanly, its read
+  set is every tracked file its processes touched, with its mode, and every path name. Any other
+  job keeps whole-tree identity.
+- **Input-scoped checks.** `campaign new|set ID --inputs NAME=GLOBS` scopes the quest check NAME
+  (an empty GLOBS clears it): its jobs' code is then the blobs matching GLOBS, the build files
+  (`BUILD_FILES`) and every path or folder its command names, so a job at an older commit with the
+  same inputs is the same job (`verify`: "its inputs are unchanged since ..."). Adding or narrowing
+  inputs needs `--weaken`, and a quest keeps the build-test, a gate check without them. GLOBS name
+  everything the command executes: a binary the job builds, by its sources.
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (build outputs stay), and one job uses it
   at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the slot's

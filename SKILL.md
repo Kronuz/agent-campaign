@@ -244,9 +244,11 @@ Performance claims follow `references/measurement.md`: before and after at named
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
 host and toolchain; across commits that change only docs (`docs/**`, `*.md`) it does not name and
-`tested_docs` does not match; and wherever every tracked file it read is unchanged (its read set),
-except the build-test, a gate check without `--inputs`, which `land` needs at the exact code. Name a
-mutable input with `--env`; rerun with `--force` what depends on more.
+`tested_docs` does not match; and, for a job strace traced whole on Linux, wherever every tracked
+file it read and every path name are unchanged. A check scoped with `--inputs NAME=GLOBS` is
+identified by the files under them, the build files and the paths its command names; `land` needs
+the build-test, a gate check without inputs, at the exact code. Name a mutable input with `--env`;
+rerun with `--force` what depends on more.
 A strict or exclusive job lasts at most 30 minutes and is stopped at its deadline. Every process a
 job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
 daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
