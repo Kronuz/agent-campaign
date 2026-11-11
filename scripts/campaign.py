@@ -67,7 +67,8 @@ SET_STATUS: dict[str, tuple[str, ...]] = {  # what `campaign set status=` may mo
 TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped", "corrupt")
 FAILED = ("failed", "timeout", "interrupted")
 HEAVY = ("strict", "exclusive")
-SHORT_RUN = 10  # minutes: a measurement, fuzz or soak that does not say --long; no gate waits longer behind one
+SHORT_RUN = 10  # minutes: a measurement (strict, exclusive) that does not say --long; it drains the machine
+LIGHT_RUN = 30  # minutes: a light fuzz or soak, its build included, that does not say --long
 LONG_RUN = re.compile(r"fuzz|soak", re.I)  # runs that grow to fill any time they are given
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
 UNSTARTED_ATTEMPTS = 3  # a runner that dies before the command starts is requeued, up to this many tries
@@ -5861,13 +5862,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     if not cmd:
         die("give the command after --")
     command = cmd[0] if len(cmd) == 1 else shlex.join(cmd)
-    short = a.level in HEAVY or bool(LONG_RUN.search(command))
-    minutes = a.minutes or (SHORT_RUN if short else 30)
-    if short and minutes > SHORT_RUN and not a.long:
-        die(
-            f"a {a.level} job, or a fuzz or soak, lasts at most {SHORT_RUN} minutes: one job per row, or "
-            "--long REASON to defer it"
-        )
+    cap = SHORT_RUN if a.level in HEAVY else LIGHT_RUN if LONG_RUN.search(command) else 0
+    minutes = a.minutes or (SHORT_RUN if a.level in HEAVY else 30)
+    if cap and minutes > cap and not a.long:
+        what = f"a {a.level} job" if a.level in HEAVY else "a light fuzz or soak, its build included,"
+        die(f"{what} lasts at most {cap} minutes: one job per row, or --long REASON to defer it")
     if a.long and a.criteria:
         die("a --long job is deferred: it proves no criterion before landing")
     spec: Json = {
@@ -7286,7 +7285,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", metavar="DIR", help="the directory to run in, inside the checkout")
     p.add_argument("--level", choices=LEVELS, default="light", help="its quiet level (default light)")
     p.add_argument(
-        "--minutes", type=int, metavar="N", help=f"its bound (default 30; at most {SHORT_RUN} if heavy or fuzz)"
+        "--minutes",
+        type=int,
+        metavar="N",
+        help=f"its bound (default 30; at most {SHORT_RUN} if heavy, {LIGHT_RUN} for a light fuzz or soak)",
     )
     p.add_argument("--long", metavar="REASON", help="lift that cap; the job is deferred")
     p.add_argument(

@@ -235,8 +235,8 @@ Jobs run at the commit they were submitted for, in their own checkout, with the 
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
 host and toolchain, and across merges from `main`, documentation-only commits, unchanged read sets
 and `--inputs` scopes (`references/host.md`). Name a mutable input with `--env`; rerun with
-`--force` what depends on more. A strict or exclusive job, and a fuzz or soak, lasts at most 10
-minutes and is stopped at its deadline; `--long REASON` lifts the cap and defers it. Every process a
+`--force` what depends on more. A strict or exclusive job lasts at most 10 minutes, a light fuzz
+or soak 30, and each is stopped at its deadline; `--long REASON` lifts the cap and defers it. Every process a
 job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
 daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
 directories of worktrees no open quest owns after 3 days); `campaign sweep` removes clean

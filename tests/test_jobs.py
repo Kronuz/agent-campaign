@@ -561,11 +561,11 @@ class Limits(CampaignCase):
         self.assertEqual(self.job(jid)["exit"], 124)
 
     def test_measurements_and_fuzzing_last_ten_minutes_unless_deferred_as_long(self) -> None:
-        for args in (
-            ("--level", "strict", "--minutes", "11", "--", "true"),
-            ("--minutes", "60", "--", "./fuzz-reader"),
-        ):
-            self.fails(self.home, "job", "submit", *args, match="at most 10 minutes: one job per row, or --long")
+        self.fails(
+            self.home, "job", "submit", "--level", "strict", "--minutes", "11", "--", "true", match="at most 10 minutes"
+        )
+        self.fails(self.home, "job", "submit", "--minutes", "31", "--", "./fuzz-reader", match="at most 30 minutes")
+        self.submit(self.home, "--minutes", "25", "--", "./fuzz-reader")  # a light fuzz shares a light slot
         short = self.submit(self.home, "--level", "exclusive", "--", "true")
         self.assertEqual(json.loads((self.root / "jobs" / short / "spec.json").read_text())["minutes"], 10)
         self.fails(self.home, "job", "submit", "--level", "strict", "--minutes", "45", "--long", "x", "--", "true")

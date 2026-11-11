@@ -5,8 +5,8 @@ toolchain it measured, and expires with them.
 
 ## Short runs
 
-A strict or exclusive job, and a fuzz or soak, lasts at most 10 minutes; `--long REASON` lifts the
-cap and defers the job (priority -1), so it proves no criterion before landing. Longer fuzzing,
+A strict or exclusive job lasts at most 10 minutes, a light fuzz or soak 30 with its build; `--long
+REASON` lifts the cap and defers the job (priority -1), so it proves no criterion before landing. Longer fuzzing,
 soaks and recovery tails are milestone checks.
 
 | Stage | Length | Level | Purpose |
