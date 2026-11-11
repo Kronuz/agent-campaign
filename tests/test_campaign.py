@@ -732,13 +732,11 @@ class Reviews(CampaignCase):
         self.assertEqual(self.quest("feat")["accepted"]["correctness"]["verdict"], "APPROVE")
         self.ok(self.home, "land", "feat")
 
-    def test_waivers_are_recorded_and_refused_for_high_risk(self) -> None:
+    def test_a_review_is_never_waived_nor_counted_for_yield(self) -> None:
         self.normal()
-        self.ok(self.home, "accept", "feat", "correctness", "--waive", "three-line change with a revert-checked test")
-        self.assertEqual(self.quest("feat")["accepted"]["correctness"]["by"], "waived")
-        self.ok(self.home, "land", "feat")
-        self.started("risky", files="lib/**", risk="high")
-        self.fails(self.home, "accept", "risky", "correctness", "--waive", "trust me", match="cannot be waived")
+        self.fails(self.home, "accept", "feat", "correctness", "--waive", "small", match="unrecognized arguments")
+        self.fails(self.home, "status", "--reviews", match="unrecognized arguments")
+        self.assertNotIn("reviews", json.loads(self.ok(self.home, "status", "--json").out))
 
     def test_changes_after_acceptance_void_it(self) -> None:
         self.normal()
@@ -790,18 +788,6 @@ class Reviews(CampaignCase):
         self.fails(self.home, "land", "dur", match="re-accept")
         self.ok(self.home, "accept", "dur", "correctness")  # the lead read the upstream diff
         self.ok(self.home, "land", "dur")
-
-    def test_review_counts_are_derived_from_review_files(self) -> None:
-        self.normal()
-        folder = self.home / ".campaign/demo/reviews"
-        folder.mkdir(parents=True)
-        (folder / "feat-correctness.md").write_text(
-            "Verdict: CHANGES\n\n| ID | Blocking | Class | Finding | Evidence | Fix |\n|---|---|---|---|---|---|\n"
-            "| C1 | yes | defect | leak | probe | free |\n| C2 | no | nit | name | - | - |\n"
-        )
-        data = json.loads(self.ok(self.home, "status", "--json", "--reviews").out)
-        self.assertEqual(data["reviews"][0]["blocking_defects"], 1)
-        self.assertEqual(data["reviews"][0]["findings"], 2)
 
 
 class ReviewBinding(CampaignCase):
@@ -896,13 +882,6 @@ class ReviewBinding(CampaignCase):
         finally:
             os.chdir(cwd)
         self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
-
-    def test_a_waiver_never_overrides_a_review(self) -> None:
-        self.feature()
-        self.ok(self.home, "accept", "feat", "correctness", "--waive", "a one-line change")
-        self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
-        self.fails(self.home, "land", "feat", match="correctness review changed after it was accepted")
-        self.fails(self.home, "accept", "feat", "correctness", "--waive", "small", match="a review exists")
 
     def test_a_verdict_agrees_with_its_findings(self) -> None:
         self.feature()

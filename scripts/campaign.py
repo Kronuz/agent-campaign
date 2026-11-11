@@ -1634,90 +1634,77 @@ def cmd_accept(a: argparse.Namespace) -> int:
         main_head = rev(repo, main_branch(repo))
         path = review_path(c, a.id, a.lens)
         rel = path.relative_to(c.home)
-        r: Json = {"verdict": "", "commit": "", "findings": []}
-        data = b""
         reviewed = ""
         findings: dict[str, Json] = {}
         fix_scope: Json = {}
-        if a.waive:
-            if p["risk"] in ("high", "critical"):
-                die(f"{a.id} is {p['risk']} risk: its {a.lens} review cannot be waived")
-            if path.exists():
+        if not path.exists():
+            die(f"no review at {rel}")
+        data = path.read_bytes()  # parsed and identified from one read
+        r = read_review(data.decode(errors="replace"))
+        blocking = [f["id"] for f in r["findings"] if f["blocking"]]
+        if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
+            die(
+                f"{rel}: the verdict is {r['verdict'] or 'missing'!r}, not one of APPROVE, CHANGES, REJECT; a "
+                "conditional approval is CHANGES, its conditions blocking findings"
+            )
+        if r["verdict"] == "REJECT":
+            die(f"{a.lens} review rejected {a.id}: re-plan the quest")
+        if r["verdict"] == "APPROVE" and blocking:
+            die(
+                f"{rel}: APPROVE but lists blocking findings {', '.join(blocking)}: the reviewer corrects one or the other"
+            )
+        if r["verdict"] == "CHANGES" and not blocking:
+            die(f"{rel}: CHANGES but lists no findings table")
+        if r["verdict"] == "APPROVE" and a.confirm:
+            die("an APPROVE needs no --confirm")
+        seen: dict[str, str] = {}
+        if a.lens != "design":  # a design is reviewed before the code exists
+            if not r["commit"] or not git_ok(repo, "cat-file", "-e", f"{r['commit']}^{{commit}}"):
+                die(f"{rel}: no 'Commit:' line naming the reviewed commit in {repo}")
+            reviewed = rev(repo, r["commit"])
+            seen = own_blobs(repo, main_head, reviewed)
+            since = drift(repo, main_head, commit, seen)
+            if r["verdict"] == "APPROVE" and since:
                 die(
-                    f"a review exists ({rel}, verdict {verdict(c, a.id, a.lens)}): accept it; a waiver never overrides a review"
+                    f"the review approved {reviewed[:12]}; {commit[:12]} changes {', '.join(since[:8])} since: "
+                    f"have the reviewer review them, or accept --commit {reviewed[:12]}"
                 )
-        else:
-            if not path.exists():
-                die(f"no review at {rel} (or --waive REASON)")
-            data = path.read_bytes()  # parsed and identified from one read
-            r = read_review(data.decode(errors="replace"))
-            blocking = [f["id"] for f in r["findings"] if f["blocking"]]
-            if r["verdict"] not in ("APPROVE", "CHANGES", "REJECT"):
+            defects = [f["id"] for f in r["findings"] if f["blocking"] and f["kind"] == "defect"]
+            if r["verdict"] == "CHANGES" and not since and defects:
                 die(
-                    f"{rel}: the verdict is {r['verdict'] or 'missing'!r}, not one of APPROVE, CHANGES, REJECT; a "
-                    "conditional approval is CHANGES, its conditions blocking findings"
+                    f"{', '.join(defects)}: blocking defects, and {commit[:12]} has the code the review saw: fix "
+                    "them, or the reviewer withdraws them"
                 )
-            if r["verdict"] == "REJECT":
-                die(f"{a.lens} review rejected {a.id}: re-plan the quest")
-            if r["verdict"] == "APPROVE" and blocking:
-                die(
-                    f"{rel}: APPROVE but lists blocking findings {', '.join(blocking)}: the reviewer corrects one or the other"
-                )
-            if r["verdict"] == "CHANGES" and not blocking:
-                die(f"{rel}: CHANGES but lists no findings table")
-            if r["verdict"] == "APPROVE" and a.confirm:
-                die("an APPROVE needs no --confirm")
-            seen: dict[str, str] = {}
-            if a.lens != "design":  # a design is reviewed before the code exists
-                if not r["commit"] or not git_ok(repo, "cat-file", "-e", f"{r['commit']}^{{commit}}"):
-                    die(f"{rel}: no 'Commit:' line naming the reviewed commit in {repo}")
-                reviewed = rev(repo, r["commit"])
-                seen = own_blobs(repo, main_head, reviewed)
-                since = drift(repo, main_head, commit, seen)
-                if r["verdict"] == "APPROVE" and since:
+            unseen = [x for x in since if x not in seen]
+            if unseen and r["verdict"] == "CHANGES":
+                if not a.fix_scope:
                     die(
-                        f"the review approved {reviewed[:12]}; {commit[:12]} changes {', '.join(since[:8])} since: "
-                        f"have the reviewer review them, or accept --commit {reviewed[:12]}"
+                        f"the fix changes {', '.join(unseen[:8])}, which the {a.lens} review never saw: have the reviewer "
+                        "review the fix (the review names the fixed commit and approves), or --fix-scope REASON when "
+                        "it adds no mechanism (a regression test for a finding)"
                     )
-                defects = [f["id"] for f in r["findings"] if f["blocking"] and f["kind"] == "defect"]
-                if r["verdict"] == "CHANGES" and not since and defects:
-                    die(
-                        f"{', '.join(defects)}: blocking defects, and {commit[:12]} has the code the review saw: fix "
-                        "them, or the reviewer withdraws them"
-                    )
-                unseen = [x for x in since if x not in seen]
-                if unseen and r["verdict"] == "CHANGES":
-                    if not a.fix_scope:
-                        die(
-                            f"the fix changes {', '.join(unseen[:8])}, which the {a.lens} review never saw: have the reviewer "
-                            "review the fix (the review names the fixed commit and approves), or --fix-scope REASON when "
-                            "it adds no mechanism (a regression test for a finding)"
-                        )
-                    fix_scope = {"paths": unseen, "reason": a.fix_scope}
-            if r["verdict"] == "CHANGES":
-                findings = confirmations(repo, commit, reviewed, table=r["findings"], given=a.confirm)
+                fix_scope = {"paths": unseen, "reason": a.fix_scope}
+        if r["verdict"] == "CHANGES":
+            findings = confirmations(repo, commit, reviewed, table=r["findings"], given=a.confirm)
         p.setdefault("accepted", {})[a.lens] = {
             "commit": commit,
             "base": merge_base(repo, main_head, commit),
             "criteria": criteria_hash(c, a.id),
-            "by": "waived" if a.waive else "review",
+            "by": "review",
             "verdict": r["verdict"],
-            "note": a.waive or a.note or "",
-            "review": "" if a.waive else blob_id(c.home, data),
+            "note": a.note or "",
+            "review": blob_id(c.home, data),
             "reviewed": reviewed,
             "findings": findings,
             **({"fix_scope": fix_scope} if fix_scope else {}),
             "blobs": own_blobs(repo, main_head, commit),
             "at": stamp(),
         }
-        if a.lens not in p["lenses"] and not a.waive:
+        if a.lens not in p["lenses"]:
             p["lenses"].append(a.lens)
         p["updated"] = stamp()
         # the review is committed with its acceptance, so git holds exactly what was accepted
-        c.save(
-            f"campaign: accept {a.id} {a.lens} at {commit[:12]}" + (" (waived)" if a.waive else ""),
-            () if a.waive else (str(rel),),
-        )
+        c.save(f"campaign: accept {a.id} {a.lens} at {commit[:12]}", (str(rel),))
     for fid, f in findings.items():
         if f["kind"] == "defect" and not f["reproduced"]:
             print(f"note: {fid} is a defect and no job shows its probe failing at the reviewed {reviewed[:12]}")
@@ -2933,11 +2920,11 @@ def ended_at_head(c: Campaign, pid: str, jobs: list[Json]) -> list[Json]:
 
 
 def acceptance(acc: Json, now: str) -> str:
-    """How an acceptance reads: at its commit, waived, or void when it names no review content (an
-    acceptance by an earlier tool, which `land` refuses), with the review's verdict now."""
-    if acc.get("by") != "waived" and "review" not in acc:
+    """How an acceptance reads: at its commit, or void when it names no review content (an acceptance
+    by an earlier tool, which `land` refuses), with the review's verdict now."""
+    if "review" not in acc:
         return f"{now}; its acceptance names no review content, so it is void: accept again"
-    return f"accepted at {acc['commit'][:12]}" + (" (waived)" if acc.get("by") == "waived" else "")
+    return f"accepted at {acc['commit'][:12]}"
 
 
 def first_paragraph(text: str, limit: int = 400) -> str:
@@ -3260,24 +3247,6 @@ def cmd_map(a: argparse.Namespace) -> int:
     return 0
 
 
-def review_rows(c: Campaign) -> list[Json]:
-    rows: list[Json] = []
-    folder = c.home / c.meta / "reviews"
-    for f in sorted(folder.glob("*.md")) if folder.exists() else []:
-        r = read_review(f.read_text())
-        blocking = [x for x in r["findings"] if x["blocking"]]
-        rows.append(
-            {
-                "file": f.name,
-                "verdict": r["verdict"] or "?",
-                "findings": len(r["findings"]),
-                "blocking": len(blocking),
-                "blocking_defects": sum(1 for x in blocking if x["kind"] == "defect"),
-            }
-        )
-    return rows
-
-
 def machine_status() -> int:
     for name, o in campaigns().items():
         quests = o["state"].get("quests", {})
@@ -3548,7 +3517,6 @@ def show_status(a: argparse.Namespace) -> int:
             print_brief(b)
         return 0
     found: list[tuple[str, str]] = [] if a.brief else problems(c)
-    reviews: list[Json] = review_rows(c) if a.reviews else []
     o = overview(c)
     if a.json:
         print(
@@ -3560,7 +3528,6 @@ def show_status(a: argparse.Namespace) -> int:
                     "quests": views,
                     "problems": found,
                     "jobs": queue,
-                    "reviews": reviews,
                 },
                 indent=2,
             )
@@ -3613,12 +3580,6 @@ def show_status(a: argparse.Namespace) -> int:
                 red = {s: k for s, k in v.get("deferred", {}).items() if s != "done"}
                 if red:
                     print(f"  {v['id']}: deferred checks: " + ", ".join(f"{k} {s}" for s, k in v["deferred"].items()))
-    if reviews:
-        print()
-    for r in reviews:
-        print(
-            f"review {r['file']}: {r['verdict']}, {r['findings']} findings, {r['blocking']} blocking ({r['blocking_defects']} defects)"
-        )
     if found:
         print()
     for severity, message in found:
@@ -6733,7 +6694,6 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
     p.add_argument("--json", action="store_true", help="the same as JSON")
-    p.add_argument("--reviews", action="store_true", help="verdicts and blocking findings per review file")
     p.add_argument("--all", action="store_true", help="every campaign on this machine")
     p.set_defaults(fn=cmd_status, brief=False)
 
@@ -6746,7 +6706,7 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("id", metavar="ID", nargs="?", help="only this quest")
     p.add_argument("--json", action="store_true", help="the same as JSON")
-    p.set_defaults(fn=cmd_status, brief=True, reviews=False, all=False)
+    p.set_defaults(fn=cmd_status, brief=True, all=False)
 
     p = command(
         "usage",
@@ -6824,8 +6784,7 @@ def parser() -> argparse.ArgumentParser:
         "criteria, and the quest's changed "
         "files at the accepted commit. An APPROVE covers the code at the review's Commit: line (metadata-only "
         "commits after it keep it). After CHANGES, --confirm names, for each blocking finding, jobs that passed "
-        "at the fixed code; a fix that changes files the review never saw needs the reviewer or --fix-scope. "
-        "--waive skips the review of a low or normal risk quest that has no review file.",
+        "at the fixed code; a fix that changes files the review never saw needs the reviewer or --fix-scope.",
     )
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("lens", metavar="LENS", choices=LENSES, help=f"the review: {', '.join(LENSES)}")
@@ -6841,9 +6800,6 @@ def parser() -> argparse.ArgumentParser:
         "--fix-scope",
         metavar="REASON",
         help="the fix changes files the review never saw; why they add no mechanism (else the reviewer reviews the fix)",
-    )
-    p.add_argument(
-        "--waive", metavar="REASON", help="no review: low or normal risk with strong evidence, no review file"
     )
     p.add_argument("--note", metavar="TEXT", help="a remark kept with the acceptance")
     p.set_defaults(fn=cmd_accept)
@@ -7084,7 +7040,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 # options that bypass or weaken a safeguard: each needs a non-empty reason, which is recorded
-REASONS = {"no_ci": "--no-ci", "weaken": "--weaken", "waive": "--waive", "fix_scope": "--fix-scope"}
+REASONS = {"no_ci": "--no-ci", "weaken": "--weaken", "fix_scope": "--fix-scope"}
 REASONS.update(reason="--reason", force="--force")
 
 

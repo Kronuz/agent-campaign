@@ -93,7 +93,7 @@ class Scenarios(CampaignCase):
         self.assertEqual(((out / "a").read_text(), (out / "b").read_text()), ("1\n", "45\n"))
         self.assertGreaterEqual(self.job(confirm)["started"], self.job(screen)["ended"])
 
-    def test_d_a_security_surface_needs_its_own_lens_and_no_waiver(self) -> None:
+    def test_d_a_security_surface_needs_its_own_lens(self) -> None:
         wt = self.started("decoder", files="lib/**", risk="high", check="unit=true", lenses="security")
         self.commit(wt, {"lib/util.py": "def decode(b):\n    return b[:16]\n"}, "bound the decoder")
         fuzz = self.submit(
@@ -105,7 +105,6 @@ class Scenarios(CampaignCase):
         )
         self.verified("decoder")
         self.ok(self.home, "wait", fuzz)
-        self.fails(self.home, "accept", "decoder", "security", "--waive", "looks fine", match="cannot be waived")
         self.fails(self.home, "land", "decoder", match="security review not accepted")
         self.review("decoder", "security", "CHANGES", findings=(("S1", "yes", "defect"),))
         self.commit(wt, {"lib/util.py": "def decode(b):\n    return bytes(b[:16])\n"}, "fix S1")
