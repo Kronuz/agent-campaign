@@ -1,50 +1,50 @@
 {
   "group: core": {
-    "words": 3340,
-    "tokens": 5248
+    "words": 3622,
+    "tokens": 5644
   },
   "group: references": {
-    "words": 8083,
-    "tokens": 12641
+    "words": 8741,
+    "tokens": 13588
   },
   "group: agents": {
-    "words": 715,
-    "tokens": 1092
+    "words": 791,
+    "tokens": 1210
   },
   "group: templates": {
-    "words": 943,
-    "tokens": 1449
+    "words": 996,
+    "tokens": 1524
   },
   "every session (skill and agent lists)": {
-    "words": 235,
-    "tokens": 377
+    "words": 232,
+    "tokens": 374
   },
   "lead": {
-    "words": 3340,
-    "tokens": 5248
+    "words": 3622,
+    "tokens": 5644
   },
   "lead, launching": {
-    "words": 982,
-    "tokens": 1608
+    "words": 858,
+    "tokens": 1396
   },
   "contributor": {
-    "words": 947,
-    "tokens": 1457
+    "words": 1020,
+    "tokens": 1564
   },
   "contributor, on a design": {
-    "words": 1191,
-    "tokens": 1839
+    "words": 1264,
+    "tokens": 1946
   },
   "contributor, resumed": {
-    "words": 907,
-    "tokens": 1422
+    "words": 931,
+    "tokens": 1455
   },
   "contributor, exploring": {
-    "words": 1371,
-    "tokens": 2083
+    "words": 1449,
+    "tokens": 2213
   },
   "reviewer": {
-    "words": 1508,
-    "tokens": 2373
+    "words": 1355,
+    "tokens": 2110
   }
 }
