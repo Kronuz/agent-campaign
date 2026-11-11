@@ -535,6 +535,8 @@ def validate(data: Json) -> list[str]:
         errors.append("ci_later must be a list of CI workflow names")
     if not isinstance(data.get("disk_warn", 0.0), (int, float)) or data.get("disk_warn", 0) < 0:
         errors.append("disk_warn must be GiB of free disk, a number")
+    if not isinstance(data.get("suites", {}), dict):
+        errors.append("suites must map a repository's name to its suite command")
     if not isinstance(data.get("tested_docs", []), list):
         errors.append("tested_docs must be a list of path globs")
     quests = data.get("quests")
@@ -1305,7 +1307,7 @@ def cmd_config(a: argparse.Namespace) -> int:
     keys = [x for x in a.assignments if "=" not in x]
     if keys and len(keys) < len(a.assignments):
         die("give either KEYs to read or KEY=VALUE assignments")
-    unknown = [k for k in keys if k not in CONFIG]
+    unknown = [k for k in keys if k not in CONFIG and not k.startswith("suite.")]
     if unknown:
         die(f"no setting {', '.join(unknown)}; the settings are {', '.join(CONFIG)}")
     if not a.assignments or keys:
@@ -1322,6 +1324,9 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["peers"] = csv(value)
                 elif key in ("outbox", "suite") and sep:
                     c.state[key] = value
+                elif key.startswith("suite.") and NAME_RE.fullmatch(key[6:]) and sep:
+                    c.state.setdefault("suites", {})[key[6:]] = value
+                    c.state["suites"] = {k: v for k, v in c.state["suites"].items() if v}
                 elif key == "tested_docs" and sep:
                     c.state["tested_docs"] = csv(value)
                 elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
@@ -1330,12 +1335,13 @@ def cmd_config(a: argparse.Namespace) -> int:
                         c.state["disk_warn"] = float(value)
                 else:
                     die(
-                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., suite=CMD, peers=NAME=URL,..., "
+                        "campaign config takes ci=github|'', ci_later=WORKFLOW,..., suite[.REPO]=CMD, peers=NAME=URL,..., "
                         f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
-    for key in keys or CONFIG:
-        value = c.state.get(key, DISK_WARN_GB if key == "disk_warn" else "") or ""
+    suites = {f"suite.{k}": v for k, v in c.state.get("suites", {}).items()}
+    for key in keys or [*CONFIG, *suites]:
+        value = suites.get(key) or c.state.get(key, DISK_WARN_GB if key == "disk_warn" else "") or ""
         text = ",".join(value) if isinstance(value, list) else f"{value:g}" if isinstance(value, float) else str(value)
         print(text if keys else f"{key}={text}")
     return 0
@@ -1358,9 +1364,12 @@ def cmd_new(a: argparse.Namespace) -> int:
         moved = [x["name"] for x in checks if x.get("later")]
         checks += [parse_check(x, later=True) for x in a.later]
         if not gates({"checks": checks}):
-            if not c.state.get("suite"):
-                die("no gate: --check NAME=CMD, or `campaign config suite=CMD` (the native build plus tests)")
-            checks.insert(0, parse_check(f"suite={c.state['suite']}"))
+            home = same_repo(repo, c.home)
+            suite = c.state.get("suite") if home else c.state.get("suites", {}).get(repo.name)
+            if not suite:
+                key = "suite" if home else f"suite.{repo.name}"
+                die(f"no gate: --check NAME=CMD, or `campaign config {key}=CMD` (the native build plus tests)")
+            checks.insert(0, parse_check(f"suite={suite}"))
         c.quests[a.id] = {
             "title": a.title,
             "status": "planned",
@@ -6926,10 +6935,10 @@ def parser() -> argparse.ArgumentParser:
         "show or set campaign-wide settings: ci, ci_later, suite, peers, outbox",
         "With no argument, prints the settings as key=value lines; with KEYs, their values; with KEY=VALUE, sets "
         "them (in the home's main checkout). ci=github makes landing wait for green GitHub CI but its "
-        "ci_later=WORKFLOW,... workflows. suite=CMD, the native build plus tests, gates a quest `new` gives no "
-        "gate check. peers=NAME=URL,... names other machines' campaigns and their outbox repositories; "
-        "outbox=REMOTE is where this one pushes its own (default origin). disk_warn=GIB is the free disk under "
-        "which `check` warns (default 100; the worker's daily prune uses the largest set).",
+        "ci_later=WORKFLOW,... workflows. suite=CMD (the home's) and suite.REPO=CMD (another repository's, by "
+        "directory name), its build plus tests, gate a quest `new` gives no check. peers=NAME=URL,... names "
+        "other machines' campaigns and their outbox repositories; outbox=REMOTE is where this one pushes "
+        "(default origin). disk_warn=GIB is the free disk under which `check` warns (default 100).",
     )
     p.add_argument("assignments", nargs="*", metavar="KEY[=VALUE]", help="settings to read or set")
     p.set_defaults(fn=cmd_config)
@@ -6937,8 +6946,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "new",
         "plan a quest",
-        "Records a quest and writes .campaign/NAME/quests/ID.md. Its gate is `config suite` or --check; "
-        "sanitizer, crash, fuzz, mutant checks go --later, save crash and TSan at high risk.",
+        "Records a quest, writing .campaign/NAME/quests/ID.md. Its gate: its repository's suite, or --check; "
+        "sanitizer, crash, fuzz, mutant checks go --later, but crash and TSan at high risk.",
     )
     p.add_argument("id", metavar="ID", help="the quest's id: lowercase letters, digits and single dashes")
     p.add_argument("--title", required=True, help="what it delivers, in a few words")

@@ -1201,8 +1201,18 @@ class DirectPath(CampaignCase):
         self.assertEqual(self.quest("plain")["checks"][0]["cmd"], "python3 app.py")
         self.ok(self.home, "new", "own", "--title", "own", "--check", "unit=true")
         self.assertEqual(checks("own"), [("unit", False)])
+        self.repo("lib", {"lib.py": "X = 1\n"})  # another repository gets its own suite, never the home's
+        self.fails(self.home, "new", "lib", "--title", "lib", "--repo", "../lib", match="config suite.lib=CMD")
+        self.ok(self.home, "new", "libown", "--title", "l", "--repo", "../lib", "--check", "unit=true")
+        self.assertEqual(checks("libown"), [("unit", False)])
+        self.ok(self.home, "config", "suite.lib=python3 lib.py")
+        self.assertEqual(self.ok(self.home, "config", "suite.lib").out, "python3 lib.py\n")
+        self.ok(self.home, "new", "lib", "--title", "lib", "--repo", "../lib")
+        self.assertEqual(self.quest("lib")["checks"][0]["cmd"], "python3 lib.py")
         self.ok(self.home, "config", "suite=")
         self.fails(self.home, "new", "none", "--title", "none", match="no gate")
+        self.ok(self.home, "config", "suite.lib=")
+        self.assertNotIn("suite.lib", self.ok(self.home, "config").out)
 
     def test_sanitizer_crash_fuzz_and_mutant_checks_are_milestone_checks(self) -> None:
         def checks(pid: str) -> list[tuple[str, bool]]:
