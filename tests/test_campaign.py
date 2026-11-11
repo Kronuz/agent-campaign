@@ -625,9 +625,72 @@ class Evidence(CampaignCase):
         self.commit(b, {"lib/util.py": "X = 2\n"})
         self.verified("b")
         self.ok(self.home, "land", "a")
-        self.fails(self.home, "land", "b", match="rebase onto main")
+        self.fails(self.home, "land", "b", match="merge main into it")
         self.git(b, "rebase", "-q", "main")
         self.fails(self.home, "land", "b", match="not green")
+        self.verified("b")
+        self.ok(self.home, "land", "b")
+
+    def test_evidence_survives_merges_from_main_that_ci_tests(self) -> None:
+        state = self.state()
+        state["ci"] = "github"
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-q", "-am", "require CI")
+        gh = self.root / "bin" / "gh"
+        gh.write_text('#!/bin/sh\necho \'[{"name": "build", "status": "completed", "conclusion": "success"}]\'\n')
+        gh.chmod(0o755)
+        self.commit(self.home, {"notes/n.txt": "1\n2\n3\n4\n5\n6\n"})
+        a = self.started("a", files="app.py")
+        self.commit(a, {"app.py": "print('a')\n"})
+        self.verified("a")
+        b = self.started("b", files="lib/**,notes/**")
+        brief = self.home / ".campaign/demo/quests/b.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 the probe passes: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(b, {"lib/util.py": "X = 2\n", "notes/n.txt": "1\n2\n3\n4\n5\n6 b\n"})
+        probe = self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py")
+        self.verified("b")
+        self.commit(b, {".campaign/demo/journal/b.md": f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.ok(self.home, "land", "a")
+        self.fails(self.home, "land", "b", match="merge main into it")
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        jobs = len(list((self.root / "jobs").glob("2*")))
+        out = self.ok(self.home, "verify", "b").out
+        self.assertIn("(reused: passed at ", out)
+        self.assertIn("only merges from main since", out)
+        self.assertEqual(self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py"), probe)
+        self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs, "a merge from main reran evidence")
+        brief_out = self.ok(self.home, "brief", "b").out
+        self.assertNotIn("not green", brief_out)
+        self.assertNotIn("criteria without evidence", brief_out)
+        self.commit(self.home, {"notes/n.txt": "1 main\n2\n3\n4\n5\n6\n"})  # main changes a file b changes
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        brief_out = self.ok(self.home, "brief", "b").out
+        self.assertIn("check unit is not green", brief_out)
+        self.assertIn("criteria without evidence", brief_out)
+        self.verified("b")
+        self.fails(self.home, "land", "b", match="criteria without evidence")
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.ok(self.home, "wait", rerun)
+        self.ok(self.home, "land", "b")
+
+    def test_without_ci_the_build_test_runs_at_the_merged_code(self) -> None:
+        a = self.started("a", files="app.py")
+        self.commit(a, {"app.py": "print('a')\n"})
+        self.verified("a")
+        b = self.started("b", files="lib/**")
+        brief = self.home / ".campaign/demo/quests/b.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 the probe passes: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(b, {"lib/util.py": "X = 2\n"})
+        probe = self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py")
+        self.verified("b")
+        self.commit(b, {".campaign/demo/journal/b.md": f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.ok(self.home, "land", "a")
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        brief_out = self.ok(self.home, "brief", "b").out
+        self.assertIn("check unit is not green", brief_out)  # nothing else tests the merge
+        self.assertNotIn("criteria without evidence", brief_out)  # the probe tested b's own code
         self.verified("b")
         self.ok(self.home, "land", "b")
 
@@ -752,7 +815,7 @@ class Reviews(CampaignCase):
         self.ok(self.home, "accept", "feat", "correctness")
         self.commit(self.home, {"notes.md": "a handoff note on main\n"})
         status = self.ok(self.home, "status", "feat").out
-        self.assertIn("rebase onto main", status)
+        self.assertIn("merge main into it", status)
         self.assertNotIn("changed since", status)  # the reviewed code did not change
         self.started("other", files="lib.py", risk="normal", lenses="correctness")
         self.assertIn("not reviewed yet; launch a correctness reviewer", self.ok(self.home, "status", "other").out)

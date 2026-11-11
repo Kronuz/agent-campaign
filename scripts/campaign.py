@@ -1748,7 +1748,7 @@ def confirmations(repo: Path, commit: str, reviewed: str, *, table: list[Json], 
 
 def passed_at(job: Json, commit: str) -> Json:
     """The run of this job's command that passed at COMMIT's code: the job itself, or its rerun."""
-    twin = job_at(job["spec"], commit)
+    twin = job_at(job["spec"], commit, merged=True)
     return twin if twin is not None else job
 
 
@@ -1886,7 +1886,13 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
     return f"CI job {', '.join(bad)} failed" if bad else "success"
 
 
-def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[Json]]:
+def ci_covers(c: Campaign) -> bool:
+    """Whether landing needs CI green at the exact commit, which tests the merge with main."""
+    return c.state.get("ci") == "github"
+
+
+def check_evidence(c: Campaign, p: Json, target: str, ci: bool = False) -> tuple[list[str], list[Json]]:
+    """Each gate check's job at TARGET's code, or why there is none; with CI, across merges from main."""
     repo = c.repo(p)
     missing: list[str] = []
     evidence: list[Json] = []
@@ -1900,7 +1906,7 @@ def check_evidence(c: Campaign, p: Json, target: str) -> tuple[list[str], list[J
             else:
                 missing.append(f"{check['name']}: {state}")
             continue
-        job = job_for_check(repo, target, check, c.state.get("tested_docs", []))
+        job = job_for_check(repo, target, check, c.state.get("tested_docs", []), ci=ci)
         if job is None:
             missing.append(f"{check['name']}: no job")
         elif job["state"].get("state") != "done":
@@ -1994,7 +2000,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
     if moved:
         gaps.append(
-            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): rebase onto {main}, run `campaign verify {pid}`, then land"
+            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} into it"
         )
     paths = changed(repo, base, target)
     owned = [x for x in paths if lead_file(x)]
@@ -2034,7 +2040,7 @@ def landing_gaps(c: Campaign, pid: str, target: str, *, final: bool, ci: bool) -
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
     if stale:
         gaps.append(f"evidence jobs ran other code than {target[:12]}: `campaign job rerun {' '.join(stale)}`")
-    for missing in check_evidence(c, p, target)[0]:
+    for missing in check_evidence(c, p, target, ci=ci and ci_covers(c))[0]:
         name, _, why = missing.partition(": ")
         gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
     gaps += review_gaps(c, pid, target, main_head) if final else []
@@ -2174,7 +2180,7 @@ def cmd_land(a: argparse.Namespace) -> int:
         gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
             die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
-        evidence = check_evidence(c, p, target)[1]
+        evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]
         main_head = rev(repo, main)
         base = merge_base(repo, main_head, target)
         message = f"campaign: land {a.id}" + ("" if final else f" increment ({a.reason})")
@@ -2549,7 +2555,7 @@ def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
             return f"{jid} ran in {job['spec']['repo']}, not the quest's repository"
         for commit in commits:
             with contextlib.suppress(CampaignError, KeyError):
-                twin = job_at(job["spec"], commit)
+                twin = job_at(job["spec"], commit, merged=True)
                 if twin and twin["state"].get("state") == "done":
                     return ""
         return f"{jid} ran other code"
@@ -2825,7 +2831,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)
             if not x["cmd"].startswith(CI_CHECK)
-            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", [])))
+            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c)))
             and docs_note(j)
         ]
         if brief:
@@ -2837,7 +2843,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False) -> 
         view["checks"] = checks
         view["later"] = [x["name"] for x in deferred(p)]
         for check in gates(p):
-            job = job_for_check(repo, head, check, c.state.get("tested_docs", []))
+            job = job_for_check(repo, head, check, c.state.get("tested_docs", []), ci=ci_covers(c))
             note = f" ({docs_note(job)})" if job and docs_note(job) else ""
             checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
             if job:
@@ -4302,7 +4308,7 @@ def submit_checks(
             **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
         exact = build_test(check)
-        earlier = None if force else job_at(spec, commit, exact=exact)
+        earlier = None if force else job_at(spec, commit, exact=exact, merged=ci_covers(c) or not exact)
         if earlier is not None and docs_note(earlier) and not earlier["state"].get("slimmed"):
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
@@ -4466,7 +4472,10 @@ def all_jobs() -> list[Json]:
     return [load_job(d) for d in sorted(jobs_dir().iterdir()) if d.is_dir() and (d / "spec.json").exists()]
 
 
-def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = ()) -> Json | None:
+def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = (), ci: bool = False) -> Json | None:
+    """The job of a quest check at COMMIT's code. The build-test needs the exact code, documentation
+    aside, unless CI at the exact commit (CI) tests the merge with main; every other check counts
+    across merges from main."""
     nothing: Json = {}
     spec: Json = {
         "repo": str(repo),
@@ -4478,7 +4487,8 @@ def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = 
         "env": nothing,
         **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
-    return job_at(spec, commit, tested, exact=build_test(check))
+    exact = build_test(check)
+    return job_at(spec, commit, tested, exact=exact, merged=ci or not exact)
 
 
 def build_test(check: Json) -> bool:
@@ -4528,10 +4538,13 @@ def docs_only_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str]
     return out
 
 
-def job_at(spec: Json, commit: str, tested: Sequence[str] | None = None, exact: bool = False) -> Json | None:
+def job_at(
+    spec: Json, commit: str, tested: Sequence[str] | None = None, exact: bool = False, merged: bool = False
+) -> Json | None:
     """The job with SPEC's identity at COMMIT's code; when none passed there, the one that passed at
     the nearest ancestor whose code differs only in documentation the command does not name, with
-    "at" (that commit) and "docs" (the paths it ignores); unless EXACT, then its read_twin."""
+    "at" (that commit) and "docs" (the paths it ignores); with MERGED, at an ancestor that differs
+    only by merges from main, with "at" and "merged"; unless EXACT, then its read_twin."""
     found = job_with_key({**spec, "commit": commit})
     if found is not None and found["state"].get("state") == "done":
         return found
@@ -4540,7 +4553,36 @@ def job_at(spec: Json, commit: str, tested: Sequence[str] | None = None, exact: 
         twin = job_with_key({**spec, "commit": older})
         if twin is not None and twin["state"].get("state") == "done":
             return {**twin, "at": older, "docs": paths}
+    for older in merged_ancestors(Path(spec["repo"]), commit, spec["cmd"], globs) if merged else []:
+        twin = job_with_key({**spec, "commit": older})
+        if twin is not None and twin["state"].get("state") == "done":
+            return {**twin, "at": older, "merged": True}
     return (None if exact else read_twin(spec, commit)) or found
+
+
+def own_code(repo: Path, commit: str, cmd: str, tested: Sequence[str]) -> dict[str, str]:
+    """The quest's own code at COMMIT: the paths it changes against its merge base with main, with
+    their blobs, documentation CMD does not name aside."""
+    main_head = rev(repo, main_branch(repo))
+    own: dict[str, str] = on_commits(("own", str(repo), main_head, commit), lambda: own_blobs(repo, main_head, commit))
+    return {x: b for x, b in own.items() if not doc_path(x, cmd, tested)}
+
+
+def merged_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()) -> list[str]:
+    """COMMIT's nearest first-parent ancestors whose own code (own_code) is COMMIT's: what lies between
+    them came from main. CI at COMMIT tests that integration; their evidence stands for COMMIT's."""
+    line = on_commits(
+        ("first-parents", str(repo), commit),
+        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={DOCS_DEPTH + 1}", commit).split(),
+    )
+    main_head = rev(repo, main_branch(repo))
+    own = own_code(repo, commit, cmd, tested)
+    out: list[str] = []
+    for older in line[1:]:
+        if ancestor(repo, older, main_head) or own_code(repo, older, cmd, tested) != own:
+            break  # main's own history, or the quest's code changed there
+        out.append(older)
+    return out
 
 
 def docs_note(job: Json) -> str:
@@ -4549,6 +4591,8 @@ def docs_note(job: Json) -> str:
         return f"passed at {job['at'][:12]}; ignores docs-only {', '.join(job['docs'])}"
     if job.get("reads"):
         return f"passed at {job['at'][:12]}; the {job['reads']} files it read are unchanged"
+    if job.get("merged"):
+        return f"passed at {job['at'][:12]}; only merges from main since"
     return ""
 
 
@@ -4610,7 +4654,12 @@ def submit(spec: Json, force: bool = False, exact: bool = False) -> tuple[str, b
         # a slimmed job is a record of its result, not its outputs: asking again runs it again
         if old["state"].get("state") in ("queued", "running", "done") and not old["state"].get("slimmed"):
             return old["id"], True
-    twin = read_twin(spec, spec["commit"]) if key and not (force or exact or order) else None
+    twin = None
+    if key and spec["quest"] and not (force or exact or order):
+        twin = job_at(spec, spec["commit"], merged=True)
+        twin = twin if twin is not None and twin["state"].get("state") == "done" else None
+    elif key and not (force or exact or order):
+        twin = read_twin(spec, spec["commit"])
     if twin is not None and not twin["state"].get("slimmed"):
         return twin["id"], True
     jid = time.strftime("%y%m%d-%H%M%S-") + secrets.token_hex(3)
@@ -5998,7 +6047,10 @@ def job_needs() -> Json:
                     head = rev(repo, branch)
                     whole.update(
                         j["id"]
-                        for j in (job_for_check(repo, head, x, c.state.get("tested_docs", [])) for x in gates(p))
+                        for j in (
+                            job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c))
+                            for x in gates(p)
+                        )
                         if j
                     )
     return {"whole": whole, "record": record - whole, "open": open_quests, "slots": slots, "known": known}
