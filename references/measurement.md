@@ -5,9 +5,8 @@ toolchain it measured, and expires with them.
 
 ## Stage every experiment
 
-A long run is the last step, never the first. Rigs have run for hours on a wrong configuration
-(ignored config keys, a deleted load generator, an arm that ran as the baseline); the smoke stage
-exists to catch that.
+A long run is the last step, never the first: the smoke stage catches a wrong configuration
+(ignored config keys, a missing load generator, an arm that ran as the baseline).
 
 | Stage | Length | Job level | Purpose |
 |---|---|---|---|
@@ -36,14 +35,14 @@ tails keep their length by running several 30-minute jobs, never one long one.
 
 ## Who measures what
 
-- A hot-path change runs one smoke A/B job against its parent before review, so a large regression
-  is caught at the change that caused it, not in a bisect later.
+- A hot-path change runs one smoke A/B job against its parent before landing, so a large
+  regression is caught at the change that caused it.
 - An optimization has a budget of about five experiments; stop at the target or the third loser in
   a row, and record losers with their numbers.
-- Milestone and published numbers are measured on `main` (or the exact landed commit) as
-  `exclusive` jobs, never quoted from a branch.
-- Measure the other platforms once, on the version that will land, as deferred checks (`--later`):
-  they run after landing at low priority and gate the milestone, not the quest.
+- Only numbers that decide or get published run `exclusive`; everything else runs `strict`.
+  Published numbers come from `main` or the exact landed commit, never a branch. A passed
+  measurement whose inputs are unchanged is reused, never rerun.
+- Other platforms are measured once per milestone, as milestone checks (`--later`).
 
 ## Results
 

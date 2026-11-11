@@ -5,30 +5,26 @@ standards before writing tests; reviewers read all of it.
 
 ## Proof standards
 
-Proportional to the claim: a mechanical edit needs its checks and CI; a behavior change needs
+Proportional to the claim: a mechanical edit needs the suite and CI; a behavior change needs
 these.
 
 1. **Values, not counts.** Tests check values, ordering and error paths, not only counts, status
    codes and happy paths.
-2. **A failing test per fix:** the new test fails with the fix reverted (a job at the parent
-   commit, or with the change reverted locally).
-3. **A mutant per claim:** break the change once; a test must catch it.
-4. **Sanitizers in separate builds:** ASan with UBSan, and TSan where threads are involved, each
-   in its own build directory with its own dependency tree (a shared FetchContent directory links
-   one flavor's libraries into another's binaries).
-5. **An oracle or property test** where one exists: a reference implementation, a round trip, an
+2. **A failing test per fix:** a fix's regression test could pass vacuously, so a revert or mutant
+   job shows it failing without the fix. No other claim needs a mutant.
+3. **An oracle or property test** where one exists: a reference implementation, a round trip, an
    invariant, an exhaustive small domain, a frozen copy of the old code.
-6. **Asserts are live only in Debug.** A claim that an `assert` guards something needs a Debug
+4. **Asserts are live only in Debug.** A claim that an `assert` guards something needs a Debug
    build or the project's asserts-on option.
-7. **Platform evidence names its platform.** A local TSan or libc++ result does not stand for
-   another platform; CI covers the rest.
+5. **Sanitizers and platforms are CI's,** each sanitizer in its own build directory and dependency
+   tree (a shared FetchContent directory links one flavor's libraries into another's binaries). A
+   local result does not stand for another platform.
 
 ### Concurrency claims
 
-All of: deterministic tests that force each interleaving the design names; a mutant per ordering
-choice (swap two steps, drop a fence or a lock) that a test kills; stress against a sequential
-model with at least two workers contending per object; separate TSan and ASan+UBSan builds. A
-timing-dependent coverage check reports what it reached and never fails the run.
+Deterministic tests that force each interleaving the design names, and stress against a sequential
+model with at least two workers contending per object, run under TSan as the quest's one local
+sanitizer gate. A timing-dependent coverage check reports what it reached and never fails the run.
 
 ### Traps
 
@@ -41,29 +37,26 @@ timing-dependent coverage check reports what it reached and never fails the run.
 
 ## Lenses
 
-The reviewer carries every question the lead names; the lens decides the emphasis. For critical
-quests and the plan challenge, the lead sends a reviewer from another model family when the harness
-offers one (`references/harness.md`).
+The reviewer carries every question the lead names; the lens decides the emphasis.
 
 | Lens | Asks |
 |---|---|
 | `correctness` | Does the code do what the quest file says on every path? Error paths free what they allocate and leave data consistent; tests fail without what they test; limits are load-bearing; scope stays inside the quest file; no second mechanism where one exists (one shape everywhere). |
-| `security` | Who is the attacker (network peer, authenticated client, local user, malicious file, compromised dependency) and what do they gain? Input validated before use; bounds on lengths, depth, connections, memory; integer overflow in sizes and offsets; secrets out of logs and with tight modes; TLS and certificate checks; pinned dependencies. Probes feed truncated, oversized and malformed input to the real decoder; fuzz evidence is read, not assumed. |
-| `durability` | What survives a crash at every step? Ordering of writes, flushes and renames; recovery from torn writes and partial files; behavior on full disk and I/O errors; concurrency of readers with writers; a crash matrix or executable model for the protocol, run as a job. |
+| `security` | Who is the attacker (network peer, authenticated client, local user, malicious file, compromised dependency) and what do they gain? Input validated before use; bounds on lengths, depth, connections, memory; integer overflow in sizes and offsets; secrets out of logs and with tight modes; TLS and certificate checks; pinned dependencies. Probes feed truncated, oversized and malformed input to the real decoder. |
+| `durability` | What survives a crash at every step? Ordering of writes, flushes and renames; recovery from torn writes and partial files; behavior on full disk and I/O errors; concurrency of readers with writers; for a new on-disk or wire format, a crash model run as a job. |
 | `design` | Before the code: is the shape right, are the decisions that are expensive to reverse (bytes on disk, wire format, public API, ordering protocol) settled and justified, is there a simpler mechanism, does every criterion have a rerunnable check? Rule once, with one text fix round; then probes run as jobs (an executable model, a test) settle disputes. |
 | `system` | One question `campaign check` raised: two quests defining one contract differently, a contract changing under its consumers, one file with two writers, sequencing that assumes something unlanded. Name who acts. |
 
 ## How a review runs
 
-1. **Start from the evidence.** `campaign status <ID>` lists each criterion with the jobs behind
-   it; list the criteria passed jobs already prove at the reviewed commit, and do not rebuild them.
+1. **Start from the evidence.** The review runs beside the suite job; `campaign status <ID>` lists
+   each criterion with the jobs behind it. Do not rebuild what they prove, nor what CI runs.
 2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
-   `.scratch/review-<ID>-<lens>/` in the home checkout: the lead confirms each fix by rerunning its
-   finding's probe at the fixed commit (`campaign accept --confirm`), with no second review.
-   Build once with the sanitizer the risk needs; CI covers other platforms.
+   `.scratch/review-<ID>-<lens>/` in the home checkout. Each blocking finding names the test its
+   fix must add; the suite passing it confirms the fix, with no second review.
 3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
    blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
 4. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
    `Verdict:` (APPROVE, CHANGES or REJECT), the evidence relied on, what was checked, a findings
    table (ID, Blocking yes or no, Kind defect, gap or nit), and "Not run". An APPROVE has no
-   blocking row; a CHANGES has at least one.
+   blocking row; a CHANGES whose findings are all nits is an APPROVE.

@@ -9,10 +9,10 @@ Risk: {risk}. The lead writes this quest; contributors read it and never edit it
 
 ## Acceptance criteria
 
-One line each: `- A1 <criterion>: <the job, test or check that shows it>`. An untagged criterion
-needs a job that passed at the landed code; tag one `[artifact]` (a committed `path`),
-`[decision]` (an id in PLAN.md's Decisions table) or `[manual]` (checked by hand) only when a job
-cannot show it.
+Three to five, at outcome level: `- A1 <criterion>: <the test that shows it>`. An untagged one
+needs a job that passed at the landed code, normally the suite; tag one `[artifact]` (a committed
+`path`), `[decision]` (an id in PLAN.md's Decisions table) or `[manual]` (checked by hand) only
+when a job cannot show it.
 
 - A1 <criterion>: <evidence>
 
@@ -27,5 +27,5 @@ quest depending on it can start before it lands.>
 
 ## May land early
 
-<Prefixes of the branch that are safe alone: refactors, tests, unused internal APIs, code behind
-a disabled switch. "None" when everything waits for the review; `land --upto` refuses then.>
+<Internal code behind tests, unless the quest is a format, wire or public API. "None" when
+everything waits for the review; `land --upto` refuses then.>

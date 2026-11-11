@@ -1,22 +1,22 @@
 ---
 name: campaign
-description: Run a large engineering project with agents as a campaign. The lead (the main session) splits the owner's goals into quests, each one independently verifiable outcome; contributor agents complete them on their own branches and worktrees; a fresh reviewer examines each quest as its risk requires; and the `campaign` tool keeps the state, runs builds, tests and benchmarks as jobs on exact commits under `quiet`, and lands only what was verified. Use when starting or resuming a multi-part project (an engine, a library family, a migration, a rewrite), when work should run in parallel worktrees, when a quest needs review or is ready to land, or when the owner says "start the campaign", "resume the campaign", "status", "review it" or "land it".
+description: Run a large engineering project with agents as a campaign. The lead (the main session) splits the owner's goals into quests, each one independently verifiable outcome; contributor agents complete them on their own branches and worktrees; a fresh reviewer examines the high-risk ones; and the `campaign` tool keeps the state, runs builds, tests and benchmarks as jobs on exact commits under `quiet`, and lands only what was verified. Use when starting or resuming a multi-part project (an engine, a library family, a migration, a rewrite), when work should run in parallel worktrees, when a quest needs review or is ready to land, or when the owner says "start the campaign", "resume the campaign", "status", "review it" or "land it".
 ---
 
 # Campaign
 
 The **lead** (the main session) turns the **owner**'s goals into **quests**. A **contributor**
 agent completes each quest on its own branch; machine work goes to a **job queue** that runs it at
-exact commits while no agent waits. A **reviewer** agent examines a quest from a fresh context
-when its risk calls for it. **`campaign land`** puts a quest on `main` only when its checks passed
-at that exact code, each criterion has the evidence it names, and each required review was
-accepted for the code it saw. Everything that matters is in the repository, so any agent, the lead
-included, can be replaced.
+exact commits while no agent waits. A **reviewer** agent examines a high-risk quest from a fresh
+context. **`campaign land`** puts a quest on `main` only when its suite and CI passed at that exact
+code, each criterion has the evidence it names, and each required review was accepted for the code
+it saw. Everything that matters is in the repository, so any agent, the lead included, can be
+replaced.
 
 ```
 goals ─► PLAN ─► quests ─► campaign start ─► contributor ─► jobs (quiet) ─► evidence
                                                   │                              │
-                                                  └─► reviewer (by risk) ─► accept ─► campaign land
+                                                  └─► reviewer (high risk) ─► accept ─► campaign land
 ```
 
 ## Invariants
@@ -26,11 +26,11 @@ goals ─► PLAN ─► quests ─► campaign start ─► contributor ─► 
 2. **One writer per file set.** `campaign start` refuses overlapping file sets; `land` refuses
    changes outside the quest's set and edits to the lead's files.
 3. **Criteria before code.** The lead writes each quest's acceptance criteria and the evidence each
-   needs; contributors never edit them, and a changed quest file voids earlier acceptances.
-4. **Review follows risk.** One fresh reviewer per risk that needs one; an acceptance covers the
-   code its review saw and the review's exact content.
-5. **Nothing weakens silently.** Lowering a risk, removing a lens or a check, waiving a review,
-   landing without CI or recording a landing done by hand needs a reason, which the tool records.
+   needs; contributors never edit them, and a changed criterion voids earlier acceptances.
+4. **A gate blocks a landing only when it catches something nothing later would.** CI and
+   milestone checks run the rest.
+5. **Nothing weakens silently.** Lowering a risk, removing a lens or a check, landing without CI or
+   recording a landing done by hand needs a reason, which the tool records.
 6. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
    product is goes to `docs/` of the repository it describes.
 7. **Agents never wait on machines, and measurements never run without isolation.**
@@ -67,20 +67,20 @@ the plan challenge, a reviewer from another model family when the harness offers
 The **frontier** tier, the most capable model a harness offers above strong, is for targeted hard
 or sensitive work only: research, a critical quest's review, and the design or review of a format,
 wire protocol, durability or concurrency mechanism about to freeze. Name its task at each launch,
-run one at a time, never make it a role's default, and measure whether it beats strong: both on one
-commit from fresh contexts, compared by the material findings each alone made. Each harness's
-models for the tiers are in `references/harness.md`. Change a default on outcomes
-(`campaign usage`, criteria met, rework), not on price alone. The lead does small edits itself
-(a five-line fix, a trivial conflict): a launch costs more.
+run one at a time, never make it a role's default, and measure whether it beats strong. Each
+harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
+(`campaign usage`, criteria met, rework), not on price alone. The lead does small edits itself (a
+five-line fix, a trivial conflict): a launch costs more.
 
 ## Start a campaign
 
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
    writes Goals, Non-goals, Constraints and Reserved decisions in `.campaign/<campaign>/PLAN.md`.
 2. Split the goals into quests: `campaign new ID --title T --risk R --files GLOBS [--needs IDS]
-   [--after IDS] [--provides C] [--consumes C] [--milestone M] --check NAME[:LEVEL[:MIN]]=CMD`.
-   Fill in each quest file (`.campaign/<campaign>/quests/ID.md`): outcome, criteria A1... each with
-   the evidence it needs (Evidence, below), contracts, decisions, what may land early.
+   [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is one suite check, the
+   native build plus its tests, unless `--check NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each
+   quest file (`.campaign/<campaign>/quests/ID.md`): outcome, three to five criteria at outcome
+   level, each naming its test (Evidence, below), contracts, decisions, what may land early.
 3. When the architecture is consequential, one reviewer (lens `design`) challenges the plan and the
    quest list before anything is built. This is the one review worth waiting for.
 
@@ -97,10 +97,10 @@ models for the tiers are in `references/harness.md`. Change a default on outcome
   lead hears of every quest any campaign starts there.
 - **Tasks:** parallel writers inside one quest (`campaign start ID --task T --files GLOBS`),
   merged into the quest branch by the lead. The quest is still reviewed once.
-- **Increments:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest file's "May
-  land early" allows (behavior-preserving refactors, tests, unused internal APIs, code behind a
-  disabled switch). Never early: bytes on disk or the wire, public API, user-visible behavior, or
-  the part the review exists for.
+- **Land small and often:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest
+  file's "May land early" allows; the lead allows internal code behind tests by default. Never
+  early: bytes on disk or the wire, public API, user-visible behavior, or the part the review
+  exists for.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work. Such a quest's journal stays in the home, in a
@@ -119,22 +119,24 @@ models for the tiers are in `references/harness.md`. Change a default on outcome
 
 ## Direct path first
 
-Only what decides the next step blocks it. A quest's **gate checks** (`--check`: the build, the
-tests, and the evidence its risk requires) block its landing. Its **deferred checks** (`--later`:
-other platforms, long soaks, full matrices, extended fuzzing) are queued at low priority on the
-landed code and must be green before the milestone closes. A red one is an error in `campaign
-check`: fix forward or revert, then `campaign verify ID --deferred` reruns them on `main`. The
-evidence a high or critical risk needs (TSan for concurrency, fuzzing for a decoder, the crash
-model for durability) is always a gate. Slow CI workflows can be made non-gating the same way
+A quest's **gate** is its suite job, which covers every untagged criterion it tests, and CI.
+Sanitizers (ASan, UBSan, TSan) and the platform matrix are CI's, on the quest branch or on `main`
+after landing; a red CI is fixed forward or reverted within the day. The only local sanitizer gate
+is a TSan test a high-risk quest adds to prove a concurrency claim.
+
+Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **milestone checks**
+(`--later`): queued at low priority on the landed code, run once per milestone on `main`, green
+before it closes. A red one is an error in `campaign check`: fix forward or revert, then `campaign
+verify ID --deferred` reruns them. The exception is the crash model of a quest that writes a new
+on-disk or wire format, which gates it. Slow CI workflows are made non-gating the same way
 (`campaign config ci_later=NAME,...`).
 
-**CI first.** With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`),
-met by that CI job passing at the exact commit; it queues no local job, and an Evidence row cites it
-as `` `ci:ThreadSanitizer` ``. Local jobs are for what CI cannot run: other platforms, mutants,
-probes, measurements. **Expensive runs go once:** at the candidate head, after its one merge of
-`main`, never at intermediate commits; then the branch's text is frozen (nits go to a follow-up),
-the lead orders landings so it is not re-merged, and a fix round reruns only its finding's probe.
-The worker shares slots fairly across campaigns, shorter jobs first; plan hour-long batches.
+With `ci=github`, what CI runs is a `ci:` check (`--check tsan=ci:ThreadSanitizer`), met by that CI
+job passing at the exact commit; it queues no local job, and an Evidence row cites it as
+`` `ci:ThreadSanitizer` ``. **Expensive runs go once,** at the candidate head after its one merge of
+`main`; then its text is frozen (nits go to a follow-up), the lead orders landings so it is not
+re-merged, and a fix round reruns only the suite. The worker shares slots fairly across campaigns,
+shorter jobs first.
 
 ## Run a quest
 
@@ -153,12 +155,12 @@ The worker shares slots fairly across campaigns, shorter jobs first; plan hour-l
    contributor with the "Resume" prompt, which rebuilds from the journal and job records. At
    every wake it fills idle capacity within step 1's caps: launchable quests first, then an
    exploration batch (below).
-4. When the journal says "ready for review", the lead sets `status=review` and launches the
-   reviewers the risk requires; each writes `.campaign/<campaign>/reviews/ID-LENS.md`. The lead
-   relays blocking findings to the contributor by id.
-5. `campaign accept ID LENS` once a review approves, or after CHANGES with the confirming jobs
-   (Risk and review); it commits the review file with the acceptance. Then `campaign land ID`, which
-   also removes the quest's worktrees, merged branches and build slot, and names what it kept.
+4. A high or critical quest's reviewer starts at the contributor's candidate head, in parallel with
+   its evidence jobs, and writes `.campaign/<campaign>/reviews/ID-LENS.md`; the lead relays
+   blocking findings by id. Any other quest: the lead reads the diff.
+5. When the journal says "ready for review", the lead sets `status=review`, runs `campaign accept
+   ID LENS` for each required review (Risk and review), and `campaign land ID` on a green suite and
+   CI, which also removes the quest's worktrees, merged branches and build slot.
 
 ## Exploration batches
 
@@ -182,55 +184,47 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 | Risk (first match wins) | Before building | Before final landing |
 |---|---|---|
 | **critical**: irreversible (freezing a format or protocol for release, migrating users' data, removing user-visible behavior) | owner approval; a `design` review | the high-risk review, plus acceptance evidence the reviewer ran itself |
-| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | a `design` review when a decision is expensive to reverse | one review by the lens of the dominant risk (`durability`, `security` or `correctness`) |
-| **normal**: ordinary features and fixes | — | one `correctness` review, or `--waive REASON` for a small change with strong evidence |
-| **low**: docs, tests, tooling, mechanical edits, behavior-preserving refactors | — | checks green; the lead reads the diff |
+| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | a `design` review when a decision is expensive to reverse | one review by the dominant risk's lens (`durability`, `security` or `correctness`), run in parallel with the evidence |
+| **normal**: ordinary features and fixes; **low**: docs, tests, tooling, mechanical edits, behavior-preserving refactors | — | suite and CI green; the lead reads the diff |
 
-- **One reviewer by default,** carrying every risk question the quest raises (the prompt names
-  three to five). A second only for a question that needs separate expertise or independence.
+- **One reviewer,** carrying every risk question the quest raises (the prompt names three to five);
+  a second only for a question that needs separate expertise or independence.
 - **A review is bound to what it saw.** It names the commit it reviewed (`Commit:`), a verdict, and
   a findings table with an ID, Blocking (yes or no) and Kind (defect, gap, nit) per row. An APPROVE
-  covers that commit's code; commits that touch only `.campaign/` keep it. Editing the review after
-  acceptance voids the acceptance.
-- **Fixes are confirmed by jobs, not re-reviews.** For each blocking finding, rerun its probe or
-  the new test as a job at the fixed commit, then `campaign accept ID LENS --confirm C1=JOB
-  --confirm C2=JOB`. A job confirms only if it passed at the accepted code in the quest's
-  repository; a blocking defect needs changed code; the tool records whether the same probe failed
-  at the reviewed commit. A fix that changes files the review never saw goes back to the reviewer
-  (the review names the fixed commit and approves), unless `--fix-scope REASON` says why it adds no
-  mechanism (a regression test for a finding).
+  covers that commit's code; commits that touch only `.campaign/` keep it. A CHANGES whose findings
+  are all nits is an APPROVE. Editing the review after acceptance voids the acceptance.
+- **Fixes are confirmed by tests, not re-reviews.** Each blocking finding's fix adds a test; the
+  suite job that passes it at the fixed commit confirms it: `campaign accept ID LENS --confirm
+  C1=JOB --confirm C2=JOB`. A job confirms only if it passed at the accepted code in the quest's
+  repository, and a blocking defect needs changed code. A fix that changes files the review never
+  saw goes back to the reviewer, unless `--fix-scope REASON` says why it adds no mechanism.
 - **Two fix rounds, then stop.** A third means the quest or design is wrong: re-plan or ask the
-  owner. Non-blocking findings become a follow-up quest or a hunt-list row, or are dropped with a
-  reason.
+  owner.
 - **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
   what is still disputed, never another text round.
 - **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
   lowers its risk, removes a lens, or removes, changes, defers or scopes a check; it is kept in its
   history, shown by `campaign status ID`, and voids its acceptances. The review a risk needs (a code
-  review above low, a design review for critical) cannot be removed, and a waiver is refused once a
-  review exists.
+  review for high and critical, a design review for critical) cannot be removed.
 - **System review on events, not on a calendar:** when `campaign check` reports two quests
   changing one file or one contract, ask one reviewer (lens `system`) that specific question.
-- **Yield:** `campaign status --reviews` counts verdicts and blocking defects. An optional review
-  (normal risk) that finds nothing material over about five quests of a kind is dropped for that
-  kind; high and critical reviews are never dropped by yield.
 
 ## Evidence
 
-Each criterion in a quest file names the evidence it needs; the journal's Evidence table gives one
-row per criterion, and landing checks each row at the code being landed:
+Each criterion names its test or other evidence; the journal's Evidence table gives one row per
+criterion, and landing checks each row at the code being landed:
 
 | Criterion | Its row must name |
 |---|---|
-| `- A1 ...` (untagged) | a job that passed at that code (it, or the same job rerun) |
+| `- A1 ...` (untagged) | a job that passed at that code, normally the suite job |
 | `- A2 [artifact] ...` | a `path` committed in the quest's repository; with a quote (`` `path`: "text" ``), the text the file holds there |
 | `- A3 [decision] ...` | an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | who checked what, by hand; shown as manual, never as automated proof |
 
-Proof is proportional to the claim (`references/review.md`): tests check values, not counts; a fix
-has a test that fails without it; a claim has a mutant a test kills; sanitizers in separate builds.
-Performance claims follow `references/measurement.md`: before and after at named commits,
-`exclusive` for numbers that decide, by a rule the quest file fixed before the first run.
+Proof is proportional to the claim (`references/review.md`): tests check values, not counts, and a
+fix's regression test, which could pass vacuously, is shown failing without the fix by a revert or
+mutant job. Performance claims follow `references/measurement.md`: before and after at named
+commits, `exclusive` only for numbers that decide, by a rule the quest file fixed first.
 
 ## Machine work
 
@@ -238,8 +232,8 @@ Performance claims follow `references/measurement.md`: before and after at named
 |---|---|---|
 | `none` | tiny single-threaded probes | no hold |
 | `light` | builds, test suites, fuzzing | half the CPUs at once, nice 19, while memory lasts |
-| `strict` | smoke timings, behavioral runs | own cores on Linux; alone on macOS |
-| `exclusive` | numbers that decide or get published, cache-sensitive A/Bs | the machine to itself |
+| `strict` | every other timing, behavioral runs | own cores on Linux; alone on macOS |
+| `exclusive` | numbers that decide or get published | the machine to itself |
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
 A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
@@ -259,13 +253,12 @@ the largest consumers. Mechanics: `references/host.md`.
 ## Integration
 
 `campaign land` refuses with each gap `campaign brief` lists: dependencies, a rebase when `main`
-changed code, the file set, tasks, criteria, messages, gate checks at the exact code, reviews, CI.
+changed code, the file set, tasks, criteria, messages, the suite at the exact code, reviews, CI.
 It fast-forwards `main`, or merges when only campaign files differ, verifies that the landed code
 equals the tested code, records the landing, and pushes only with `--push`. Exceptions are explicit
 and recorded with the landing: `--upto COMMIT --reason R` (an increment), `--no-ci REASON`, and
-`--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). Each
-milestone in `PLAN.md` runs its full validation as a job on `main`; a red result is fixed or
-reverted before the next landing.
+`--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). A red
+milestone check is fixed or reverted before the next landing.
 
 Other campaigns on the machine share the job queue, `quiet` and the quota. `campaign check` reports
 their quests that overlap yours or change a contract you consume; order them with `--after

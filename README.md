@@ -53,8 +53,8 @@ Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and sta
   (`campaign-contributor`, `campaign-reviewer`). A contributor's assignment (implementation,
   design, research, performance, exploration, documentation, maintenance) sets its method and model
   tier; a reviewer's lens (correctness, security, durability, design, system) sets its review.
-- Review by risk: a low-risk quest lands on green checks, a normal one gets one review, a critical
-  one also gets a reviewer from another model family. An acceptance is bound to the commit the
+- Review by risk: a normal quest lands on green checks, a high one gets one review in parallel, a
+  critical one also a reviewer from another model family. An acceptance is bound to the commit the
   review saw and to the review's content; a fix is confirmed per finding by a job at the fixed code.
 - Criteria name their evidence (a job by default, or a committed file, a recorded decision, a
   manual check), and nothing a quest must pass is weakened without a recorded reason.
@@ -64,8 +64,8 @@ Use campaign. Turn the goals in .campaign/<campaign>/PLAN.md into quests and sta
   required review and CI when configured, then fast-forwards `main` or merges only campaign files.
 - Jobs instead of waiting agents: one queue per machine, supervised runners with heartbeats, and
   `quiet` holds (light, strict, exclusive) so builds and benchmarks share a machine.
-- Direct path first: gate checks block a landing; deferred checks (other platforms, soaks, full
-  matrices) run after it at low priority and block the milestone.
+- Direct path first: one suite job and CI gate a landing; crash, fuzz, soak and mutant batches run
+  once per milestone.
 - Several campaigns per machine, with cross-campaign warnings, `--after NAME:ID` and a lock per
   shared repository; `campaign usage` reports tokens (cached, output, reasoning), cost and time per
   quest, role and assignment.
@@ -94,7 +94,7 @@ The lead drives the tool; these are the commands it reaches for most.
 | Command | What it does |
 |---|---|
 | `campaign init` | starts a campaign in the home repository: `.campaign/<name>/PLAN.md` and `state.json`; a home may hold several |
-| `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), deferred checks (`--later`), dependencies |
+| `campaign new ID` | plans a quest: risk, file set, gate checks (`--check`), milestone checks (`--later`), dependencies |
 | `campaign get ID`, `set ID KEY=VALUE` | reads and changes a quest's fields (`--weaken REASON` to lower what it must pass); `campaign config` does the same for the campaign's settings |
 | `campaign start ID` | creates `quest/<campaign>/ID` in its own worktree, with a journal |
 | `campaign verify ID` | queues the quest's gate checks as jobs at its branch head |

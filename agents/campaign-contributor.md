@@ -19,7 +19,7 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   Result names them. The journal is the campaign's record: in your worktree for a quest in the
   home; for a quest in another repository, in its journal's worktree in the home (your prompt names
   it; `campaign get <id> journal`). Never write campaign files into another repository.
-- Evidence is jobs, not words. Run builds, tests, sanitizers, fuzzing and timing with
+- Evidence is jobs, not words. Run the suite, probes and timing with
   `campaign job submit --quest <id> ...` and `campaign verify <id>`; give each criterion its row in
   the journal's Evidence table with what its kind needs (a job id; a `path`; a decision id; for a
   `[manual]` one, who checked what). Follow the skill's `references/review.md` for what proves a
