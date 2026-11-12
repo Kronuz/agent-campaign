@@ -4672,8 +4672,12 @@ DOCS_DEPTH = 20  # how many commits back evidence is looked for across documenta
 def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
     """Whether PATH is documentation that the command CMD does not name, itself or by a folder, and
     that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
-    folders = [path[: i + 1] for i, ch in enumerate(path) if ch == "/"]
-    named = path in cmd or any(f in cmd for f in folders if f.startswith("docs/"))
+    folders = {path[: i + 1] for i, ch in enumerate(path) if ch == "/"}
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        words = cmd.split()
+    named = path in cmd or any(w.rstrip("/") + "/" in folders for w in words if w.startswith("docs"))
     if named or any(fnmatch.fnmatchcase(path, g) for g in tested):
         return False
     return any(fnmatch.fnmatchcase(path, g) for g in DOC_PATHS)
@@ -6302,6 +6306,8 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
             what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
         )
         new, reused = submit(spec)
+        for t in resolve_job(jid).get("tags", []):  # the rerun proves what the job proved
+            tag(new, t["campaign"], t["quest"], t["for"], t["fails_without"])
         renamed[jid] = new
         moved = "".join(
             f", {k} at {r['commit'][:12]}"

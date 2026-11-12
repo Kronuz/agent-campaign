@@ -314,6 +314,27 @@ class Identity(CampaignCase):
         spec = json.loads((self.root / "jobs" / new_second / "spec.json").read_text())
         self.assertEqual(spec["after"], [new_first])
 
+    def test_a_rerun_keeps_the_criteria_its_job_proved(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        jid = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "true")
+        self.ok(self.home, "wait", jid)
+        self.commit(wt, {"app.py": "print(2)\n"})
+        new = self.ok(self.home, "job", "rerun", jid).out.split()[0].rstrip(":")
+        self.assertNotEqual(new, jid)
+        tags = json.loads((self.root / "jobs" / new / "for.json").read_text())["tags"]
+        self.assertEqual([t["for"] for t in tags], [["A1"]])
+
+    def test_a_docs_folder_counts_as_named_only_as_a_whole_argument(self) -> None:
+        doc_path = campaign_module().doc_path
+        self.assertTrue(doc_path("docs/design/results.md", "docs/design/bench/run.sh row 1000"))
+        self.assertTrue(doc_path("docs/perf/notes.md", "docs/perf/run.sh measure"))
+        self.assertFalse(doc_path("docs/design/results.md", "pytest docs/design"))
+        self.assertFalse(doc_path("docs/design/results.md", "check docs/"))
+        self.assertFalse(doc_path("docs/design/results.md", "cat docs/design/results.md"))
+
     def test_a_rerun_never_moves_a_commit_the_quests_branch_never_held(self) -> None:
         """A mutant (a commit only a scratch ref holds) is refused without --commit and kept with it; a
         commit the branch held before it was rewritten still moves to the head."""
