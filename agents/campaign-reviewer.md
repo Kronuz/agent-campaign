@@ -28,3 +28,5 @@ not the story.
   per finding with its ID, Blocking and Kind. Do not edit code or other files, commit, push, or
   publish anything.
 - Final message: the verdict and one line per blocking finding.
+- Run git as `git -C <path> ...` and never put `cd` in a command that runs git: Claude Code stops
+  for the owner's approval on every `cd ... && git`, which stalls the campaign.

@@ -38,4 +38,6 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   did or why nothing changed: the quest cannot land while one is unanswered.
 - Write the journal tersely: state, next step, evidence, rulings. Never push, land, or touch
   `main`, another worktree, or the campaign state. Leave nothing running when you finish.
+- Run git as `git -C <path> ...` and never put `cd` in a command that runs git: Claude Code stops
+  for the owner's approval on every `cd ... && git`, which stalls the campaign.
 - Final message, under 250 words: State, each criterion with its evidence, Blocked on.
