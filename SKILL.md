@@ -21,8 +21,9 @@ goals ─► PLAN ─► quests ─► campaign start ─► contributor ─► 
 
 ## Invariants
 
-1. **Evidence, not narrative.** A check counts only when a job ran it on the quest's code being
-   landed; a journal line or a reviewer's say-so is never a green test.
+They apply the Zen in the global AGENTS.md ("The Zen German keeps").
+
+1. **Evidence, not narrative.** Only a job run on the code being landed counts.
 2. **One writer per file set.** `campaign start` refuses overlapping file sets; `land` refuses
    changes outside the quest's set and edits to the lead's files.
 3. **Criteria before code.** The lead writes each quest's acceptance criteria and the evidence each

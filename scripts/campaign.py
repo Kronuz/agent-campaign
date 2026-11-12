@@ -2692,7 +2692,7 @@ def criteria_evidence(
     journals' Evidence tables (journals written before tags, and non-job criteria)."""
     wanted = criteria(c, pid)
     repo = c.repo(c.quests[pid])
-    tags = tagged(c, pid, all_jobs() if jobs is None else jobs)
+    tags = {x: t for x, t in tagged(c, pid, all_jobs() if jobs is None else jobs).items() if wanted.get(x, {}).get("kind") == "job"}
     rows = evidence(journals, {x: w for x, w in wanted.items() if x not in tags}, proof(c, repo, commits))
     return {x: [tagged_row(repo, commits, tags[x])] if x in tags else rows[x] for x in wanted}
 
