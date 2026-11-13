@@ -70,8 +70,7 @@ or sensitive work only: research, a critical quest's review, and the design or r
 wire protocol, durability or concurrency mechanism about to freeze. Name its task at each launch,
 run one at a time, never make it a role's default, and measure whether it beats strong. Each
 harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
-(`campaign usage`, criteria met, rework), not on price alone. The lead does small edits itself (a
-five-line fix, a trivial conflict): a launch costs more.
+(`campaign usage`, criteria met, rework), not on price alone.
 
 ## Start a campaign
 
@@ -89,8 +88,11 @@ five-line fix, a trivial conflict): a launch costs more.
 ## Quests
 
 - **Size:** the smallest change that delivers a complete, meaningful behavior a reviewer can hold
-  in mind, usually a few hundred to ~1,500 lines. Split bigger ones; fold a change not worth its
-  own landing into the quest it serves.
+  in mind, usually a few hundred to ~1,500 lines. Split bigger ones.
+- **Quick fixes** skip the quest: an obvious cause, tens of lines outside the high and critical
+  areas, and a test failing without it. The lead or one economical agent commits fix and test to
+  `main`, pushes, and fixes forward on red CI; the commit message is the record. A design choice
+  or growth past that makes it a quest.
 - **`needs`** must land before a quest starts; **`after`** must land before it lands. A quest may
   start against an `after` dependency only because that dependency's quest file fixes the contract.
 - **Contracts** (`--provides`, `--consumes`) name APIs, formats and protocols, so `campaign check`
@@ -105,19 +107,17 @@ five-line fix, a trivial conflict): a launch costs more.
   exists for.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
-  never atomic: each intermediate state must work. Such a quest's journal stays in the home, in a
-  sparse worktree on a branch of its name (`campaign get ID journal`), merged into the home's `main`
-  on landing: the other repository's history holds only its code and docs.
+  never atomic: each intermediate state must work. Its journal stays in the home
+  (`campaign get ID journal`), so the other repository holds only code and docs.
 - **Messages:** an agent with a finding for a quest it is not working on, in any campaign on the
   machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
-  msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing. Details,
-  and other machines: `references/host.md`, Messages.
+  msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing (more in
+  `references/host.md`).
 - **Docs areas** under `tested_docs` are separate quests from the start, chained with `--after`;
   docs of an in-flight format change stay in its quest.
-- **Scope changes:** a new ask goes into the quest file first (a criterion, or its own quest if it
-  can land alone), then to the contributor; superseded work is `campaign set ID status=dropped
-  reason=...`.
+- **Scope changes:** a new ask goes into the quest file first, then to the contributor; superseded
+  work is `campaign set ID status=dropped reason=...`.
 
 ## Direct path first
 
