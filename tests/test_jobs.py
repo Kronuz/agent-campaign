@@ -227,10 +227,11 @@ class Identity(CampaignCase):
         r = self.ok(
             wt, "job", "submit", "--quest", "fix", "--", f"{other} {self.home}/.scratch/expected.bin x=/usr/bin/env"
         )
+        warnings = "\n".join(x for x in r.err.splitlines() if x.startswith("warning:"))
         self.assertIn(f"warning: {other}, {self.home}/.scratch/expected.bin are outside this job's own checkout", r.err)
-        self.assertNotIn("/usr/bin/env", r.err)  # a system path is not the job's code
+        self.assertNotIn("/usr/bin/env", warnings)  # a system path is not the job's code
         r = self.ok(wt, "job", "submit", "--quest", "fix", "--", 'python3 app.py --out "$JOB_OUT/x"')
-        self.assertEqual(r.err, "")
+        self.assertEqual([x for x in r.err.splitlines() if x.startswith(("warning:", "note:"))], [])
 
     def test_an_evidence_jobs_script_outside_the_checkout_is_part_of_its_identity(self) -> None:
         wt = self.started("fix", files="app.py")
@@ -885,6 +886,34 @@ class Slots(CampaignCase):
         go.touch()
         self.ok(self.home, "wait", first, second, "--timeout", "60")
         self.assertGreaterEqual(self.job(second)["started"], self.job(first)["ended"])
+
+    def test_a_slots_refs_keep_one_path_reset_to_the_ref_per_job(self) -> None:
+        base = self.git(self.home, "rev-parse", "HEAD")
+        self.commit(self.home, {"README.md": "second\n"})
+        second = self.git(self.home, "rev-parse", "HEAD")
+        show = 'echo "$JOB_REF_BASE" > "$JOB_OUT/path"; cat "$JOB_REF_BASE/README.md" > "$JOB_OUT/seen"; touch "$JOB_REF_BASE/built"'
+        one = self.submit(self.home, "--slot", "s", "--ref", f"base={base}", "--", show)
+        two = self.submit(self.home, "--slot", "s", "--ref", f"base={second}", "--", show)
+        self.ok(self.home, "wait", one, two, "--timeout", "60")
+        out = [self.root / "jobs" / x / "a1" / "out" for x in (one, two)]
+        stable = self.root / "jobs" / "slots" / "s" / "ref-base"
+        self.assertEqual([(o / "path").read_text().strip() for o in out], [str(stable)] * 2)
+        self.assertEqual([(o / "seen").read_text() for o in out], ["app\n", "second\n"])
+        self.assertTrue((stable / "built").exists(), "the slot's ref was recreated: a build dir in it is lost")
+        self.assertEqual(self.git(stable, "rev-parse", "HEAD"), second)
+        alone = self.submit(self.home, "--force", "--ref", f"base={base}", "--", show)  # no slot: its own directory
+        self.ok(self.home, "wait", alone, "--timeout", "60")
+        own = self.root / "jobs" / alone
+        self.assertEqual((own / "a1" / "out" / "path").read_text().strip(), str(own / "ref-base"))
+
+    def test_submit_prints_back_what_it_parsed(self) -> None:
+        base = self.git(self.home, "rev-parse", "HEAD")
+        shown = self.ok(self.home, "job", "submit", "--ref", f"base={base}", "--level", "none", "--", "true").err
+        self.assertIn("command: true", shown)
+        self.assertIn(f"ref: base={self.home.name}@{base[:12]}", shown)
+        misplaced = self.ok(self.home, "job", "submit", "--level", "none", "--", "true", "--ref", f"base={base}").err
+        self.assertIn("command: true --ref", misplaced)
+        self.assertIn("--ref after -- belongs to the command", misplaced)
 
     def test_a_quests_light_jobs_build_in_its_slot_while_it_is_free(self) -> None:
         """A light job of a quest reuses the quest's build slot (verify's, or NAME@REPO in another

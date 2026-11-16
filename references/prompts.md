@@ -20,8 +20,8 @@ Code, tests, results and how-it-works notes go in your worktree's repository and
 Context: <only what the files do not say: a ruling, findings to fold in, a related quest>.
 
 Tag each job with the criteria it proves: `campaign verify <ID> --for A1`, `campaign job submit
---quest <ID> --for A2 -- <cmd>`, and for a fix's test `--for A2 --fails-without` on a mutant or
-revert. An [artifact], [decision] or [manual] criterion gets its journal row (a `path`, a PLAN.md id,
+--quest <ID> --for A2 -- <cmd>`, and for a fix's test `--for A2 --fails-without` on the plain test
+at a mutant, revert or the base (passes when it fails there). An [artifact], [decision] or [manual] criterion gets its journal row (a `path`, a PLAN.md id,
 who checked what). Sanitizers, platforms and `ci:` checks are CI's. Evidence survives journal
 commits and merges from main; run each job once. Done means `campaign brief` shows every
 criterion met (paste its Evidence table into the journal), the Result says what changed with its

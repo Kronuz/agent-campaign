@@ -10,7 +10,7 @@ A mechanical edit needs the suite and CI; a behavior change needs these.
 1. **Values, not counts.** Tests check values, ordering and error paths, not only counts, status
    codes and happy paths.
 2. **A failing test per fix,** in the suite, run once: a revert or mutant job tagged `--for A1
-   --fails-without` exits 0: it fails without the fix. Nothing else needs a mutant.
+   --fails-without` passes when the test fails: it fails without the fix. Nothing else needs a mutant.
 3. **An oracle or property test** where one exists: a reference implementation, a round trip, an
    invariant, an exhaustive small domain, a frozen copy of the old code.
 4. **Asserts are live only in Debug.** A claim that an `assert` guards something needs a Debug

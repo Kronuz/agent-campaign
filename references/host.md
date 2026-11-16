@@ -54,8 +54,11 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   | files outside the checkout | a `--quest` job's key holds the bytes of files its command names in jobs, worktrees or `~`; `submit` warns: build them in the job |
 - **Tags** (`for.json`). `--for A1` records that the job proves criterion A1 of its quest by
   passing; a later run of the same job (same command, level, directory, environment) carries the
-  tag, and `land` reads the newest that counts at the head. `--fails-without` marks a mutant or
-  revert that exits 0 because the test fails; submit refuses both for one criterion. Otherwise
+  tag, and `land` reads the newest that counts at the head. `--fails-without` marks a test run
+  where the fix is missing (a mutant, a revert or the base): the flag owns the inversion, so the
+  job passes when its command exits nonzero, and never on 124, 126, 127 or a failed `--build`;
+  give the plain test, not `! test`. Jobs recorded before the flag inverted keep their rule
+  (command exits 0). Submit refuses both tags for one criterion. Otherwise
   a criterion counts the gate check its text names, or the journal's Evidence rows.
 - **Read sets** (`reads.json`). A `none` or `light` job on Linux runs under `strace -f`
   (`$CAMPAIGN_STRACE` names another, `""` none); if it passes and the trace ends cleanly, its read
@@ -75,7 +78,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>` in another
   repository) while no pending job of its own is there, else a fresh checkout beside it, so a batch
   of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing removes the
-  quest's slots. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
+  quest's slots. A slot's `--ref NAME` checkouts live at `slot/ref-NAME`, one path for every job
+  there and reset to the ref per job (a build dir configured from `$JOB_REF_NAME` stays valid);
+  without a slot they live under the job's own directory. `job submit` prints the parsed command
+  and options to stderr, and warns when a submit flag such as `--ref` follows `--`. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
 - **Builds for measurements.** `--after` only orders jobs, each in its own checkout. `--build CMD`
   runs CMD under light (30 minutes at most) in the job's checkout, then the command at its level (a
   `--quest` job: in the quest's slot).

@@ -2772,6 +2772,26 @@ def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | N
     return {"journal": "checks", "evidence": "", "met": False, "why": [f"the {names[0]} check has not passed{at}"]}
 
 
+def fails_without_met(j: Json) -> bool:
+    """Whether a job tagged --fails-without shows the test failing where the fix is missing, by the
+    rule of its own record: a current job's command failed (not as 124, 126 or 127); an older job's
+    self-inverted command exited 0."""
+    st = j["state"]
+    if st.get("state") != "done":
+        return False
+    return j["spec"].get("fails_without", 0) < FAILS_WITHOUT or st.get("exit") not in (0, 124, *NO_RUN)
+
+
+def fails_without_why(j: Json) -> str:
+    st, v = j["state"], j["spec"].get("fails_without", 0)
+    state = st.get("state")
+    if state == "failed" and v < FAILS_WITHOUT:
+        return f"{j['id']} exited {st.get('exit')}: its command had to exit 0 where the fix is missing"
+    if state in ("done", "failed") and v >= FAILS_WITHOUT:
+        return f"{j['id']} {state}: {st.get('note') or 'it did not fail without the fix'}"
+    return f"{j['id']} {state}: no result yet" if state in ("queued", "running") else f"{j['id']} {state}"
+
+
 def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None = None) -> Json:
     """A tagged criterion's evidence: a run of one of its tagged jobs, or the check its text names,
     that passed at one of COMMITS' code (across merges from main), and, when any is tagged, a
@@ -2792,9 +2812,9 @@ def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None =
             why.append(f"{j['id']} ran in {j['spec'].get('repo')}, not the quest's repository")
         else:
             why.append(f"{j['id']} ran other code" if state == "done" else f"{j['id']} {state}")
-    fails = [j["id"] for j in entry["fails"] if j["state"].get("state") == "done"]
+    fails = [j["id"] for j in entry["fails"] if fails_without_met(j)]
     if entry["fails"] and not fails:
-        why += [f"{j['id']} {j['state'].get('state')}: the test passed without the fix" for j in entry["fails"]]
+        why += [fails_without_why(j) for j in entry["fails"]]
     text = ", ".join(passed) + (f"; fails without: {', '.join(fails)}" if fails else "")
     met = bool(passed) and (bool(fails) or not entry["fails"])
     return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}
@@ -4725,6 +4745,7 @@ def job_key(spec: Json, reads: bool = False) -> str:
         sorted(spec["env"].items()),
         *([sorted(spec["scripts"].items())] if spec.get("scripts") else []),  # an evidence job's outside files
         *([["build", spec["build"]]] if spec.get("build") else []),
+        *([["fails_without", spec["fails_without"]]] if spec.get("fails_without") else []),
     ]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
 
@@ -4990,7 +5011,8 @@ def shape(spec: Json) -> str:
     env = sorted(spec.get("env", {}).items())
     fields = ("campaign", "quest", "repo", "cmd", "cwd", "level")
     build = [spec["build"]] if spec.get("build") else []
-    return json.dumps([*(spec.get(k) for k in fields), refs, env, *build])
+    inverted = [spec["fails_without"]] if spec.get("fails_without") else []
+    return json.dumps([*(spec.get(k) for k in fields), refs, env, *build, *inverted])
 
 
 def code_of(spec: Json) -> list[Any]:
@@ -5393,20 +5415,34 @@ def prepare(spec: Json, d: Path) -> Path:
         worktree_remove(str(repo), root)
         worktree_add(repo, root, spec["commit"], d / "heartbeat")
     for name, ref in spec["refs"].items():
-        worktree_remove(ref["repo"], d / f"ref-{name}")
-        worktree_add(Path(ref["repo"]), d / f"ref-{name}", ref["commit"], d / "heartbeat")
+        path = ref_path(spec, d, name)
+        reset = ["checkout", "-q", "--detach", "--force", ref["commit"]]
+        if slot_of(spec) and (path / ".git").exists() and git_ok(path, *reset):
+            continue  # a slot's ref keeps its path and its untracked files, reset to the ref
+        worktree_remove(ref["repo"], path)
+        git_ok(Path(ref["repo"]), "worktree", "prune")  # a slot removed whole leaves its refs registered
+        worktree_add(Path(ref["repo"]), path, ref["commit"], d / "heartbeat")
     return root / spec["cwd"]
 
 
+def ref_path(spec: Json, d: Path, name: str) -> Path:
+    """Where a job's --ref NAME is checked out: in its slot, at one path for every job there (a build
+    directory kept in the slot configured from it stays valid), else under the job's own directory."""
+    slot = slot_of(spec)
+    return (jobs_dir() / "slots" / slot if slot else d) / f"ref-{name}"
+
+
 def release(spec: Json, d: Path) -> None:
-    """Drops this runner's slot lock, if it holds one, and the job's own checkouts unless it keeps them."""
+    """Drops this runner's slot lock, if it holds one, and the job's own checkouts unless it keeps them
+    (a slot's checkouts stay for the next job there)."""
     fh = _slot_locks.pop(spec.get("slot") or "", None)
     if fh is not None:
         fh.close()
     if spec.get("commit") and not spec.get("keep"):
         worktree_remove(spec["repo"], d / "src")
         for name, ref in spec.get("refs", {}).items():
-            worktree_remove(ref["repo"], d / f"ref-{name}")
+            if not slot_of(spec):
+                worktree_remove(ref["repo"], ref_path(spec, d, name))
 
 
 def quiet_argv() -> list[str]:
@@ -5479,6 +5515,26 @@ def attend(
             kill_group(child, beat)
 
 
+FAILS_WITHOUT = 2  # spec["fails_without"]: the command must fail; no field is a self-inverted command that exits 0
+NO_RUN = (126, 127)  # not executable, not found: the command never ran, so it proves nothing
+
+
+def outcome(spec: Json, code: int, cancelled: bool = False, timed_out: bool = False) -> tuple[str, str]:
+    """A command's result as the job's (state, note). A --fails-without job passes when its command
+    exits nonzero; a timeout, a cancel and a command that did not run never count as failing."""
+    if cancelled:
+        return "cancelled", ""
+    if timed_out or code == 124:
+        return "timeout", ""
+    if spec.get("fails_without", 0) < FAILS_WITHOUT:
+        return ("done" if code == 0 else "failed"), ""
+    if code in NO_RUN:
+        return "failed", f"exit {code}: the command did not run, so it shows nothing about the fix"
+    if code == 0:
+        return "failed", "the test passed without the fix: it must fail there"
+    return "done", f"the test failed without the fix, as it must (exit {code})"
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     """One attempt of one job, supervised by this process, the leader of its own session."""
     d = Path(a.jobdir)
@@ -5524,7 +5580,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         QUIET_BESIDE=str(ad / "beside"),
     )
     for name in spec["refs"]:
-        env[f"JOB_REF_{name.upper()}"] = str(d / f"ref-{name}")
+        env[f"JOB_REF_{name.upper()}"] = str(ref_path(spec, d, name))
     if spec.get("build"):  # built under light in this checkout, then run at the job's level
         what = f"build for {spec.get('what') or spec['cmd'][:60]}"
         built = [*quiet_argv(), "light", f"job-{d.name}-build", str(LIGHT_RUN), what, "--", "bash", "-c", spec["build"]]
@@ -5557,7 +5613,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     code, cancelled, timed_out = attend(argv, cwd, env, d, began=began, minutes=spec["minutes"], limit=limit)
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
-    state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "done" if code == 0 else "failed"
+    state, note = outcome(spec, code, cancelled, timed_out)
     reads: Json | None = None
     if traced and state == "done":
         root = jobs_dir() / "slots" / spec["slot"] if spec.get("slot") else d / "src"
@@ -5567,7 +5623,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             reads = {"complete": False, "why": [f"recording its reads failed: {e}"], "reads": {}}
     (ad / "strace").unlink(missing_ok=True)
     release(spec, d)
-    if finish(job, code, state, fence=me) and reads is not None:
+    if finish(job, code, state, note, fence=me) and reads is not None:
         save_reads(job, reads)
     return 0
 
@@ -5600,12 +5656,8 @@ def reap() -> None:
             exit_file = attempt_dir(job) / "exit"
             if exit_file.exists() and booted_here:
                 code = int(exit_file.read_text().strip() or "1")
-                finish(
-                    job,
-                    code,
-                    "done" if code == 0 else "timeout" if code == 124 else "failed",
-                    "recorded after its runner died",
-                )
+                state, note = outcome(spec, code)
+                finish(job, code, state, "; ".join(filter(None, [note, "recorded after its runner died"])))
                 continue
             release(spec, d)
             attempt = int(st.get("attempt", 1))
@@ -6078,6 +6130,29 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
     return out
 
 
+SUBMIT_FLAGS = ("--ref", "--for", "--fails-without", "--quest", "--build", "--slot", "--commit", "--level", "--after")
+
+
+def parsed_submit(spec: Json, a: argparse.Namespace, ids: list[str]) -> str:
+    """What job submit understood, one line per part: its command and the options that shape the job."""
+    refs = ", ".join(f"{k}={Path(r['repo']).name}@{r['commit'][:12]}" for k, r in spec.get("refs", {}).items())
+    options = {
+        "level": f"{spec['level']} ({spec['minutes']} min)",
+        "commit": (spec.get("commit") or "")[:12],
+        "quest": spec.get("quest"),
+        "for": ",".join(ids),
+        "fails-without": "the command must exit nonzero" if a.fails_without else "",
+        "ref": refs,
+        "cwd": spec.get("cwd"),
+        "slot": spec.get("slot"),
+        "build": spec.get("build"),
+        "after": ",".join(spec.get("after", [])),
+        "env": " ".join(f"{k}={v}" for k, v in spec["env"].items()),
+    }
+    shown = "  ".join(f"{k}: {v}" for k, v in options.items() if v)
+    return f"command: {spec['cmd']}\noptions: {shown}"
+
+
 def cmd_job_submit(a: argparse.Namespace) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
@@ -6112,6 +6187,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         die("--for and --fails-without name a quest's criteria: add --quest ID")
     if a.fails_without and not a.criteria:
         die("--fails-without needs --for: the criteria whose test fails without the fix")
+    if a.fails_without:
+        spec["fails_without"] = FAILS_WITHOUT
     ids: list[str] = []
     if a.quest:
         c = find_campaign(cwd)
@@ -6160,6 +6237,14 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
                 "a changed script is another job",
                 file=sys.stderr,
             )
+    print(parsed_submit(spec, a, ids), file=sys.stderr)
+    stray: list[str] = [x for x in cmd if x in SUBMIT_FLAGS] if len(cmd) > 1 else []
+    if stray:
+        print(
+            f"warning: {', '.join(stray)} after -- belong{'s' if len(stray) == 1 else ''} to the command, not to "
+            "job submit: put options before --",
+            file=sys.stderr,
+        )
     spec["cmux"] = os.environ.get("CMUX_WORKSPACE_ID", "")
     spec["what"] = a.what or command[:60] + (f" at {spec['commit'][:12]}" if spec.get("commit") else "")
     spec.setdefault("quest", "")
@@ -7518,7 +7603,11 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--quest", metavar="ID", help="the quest it is evidence for")
     p.add_argument("--for", dest="criteria", metavar="A1,A2", help="the criteria it proves by passing")
-    p.add_argument("--fails-without", action="store_true", help="--for a mutant: exits 0 as the test fails")
+    p.add_argument(
+        "--fails-without",
+        action="store_true",
+        help="--for a test run where the fix is missing: the job passes when CMD exits nonzero (not 124, 126, 127)",
+    )
     p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: HEAD, or the quest's branch)")
     p.add_argument(

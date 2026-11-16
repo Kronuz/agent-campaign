@@ -20,7 +20,7 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   home; for a quest in another repository, in its journal's worktree in the home (your prompt names
   it; `campaign get <id> journal`). Never write campaign files into another repository.
 - Evidence is jobs, not words. Run the suite, probes and timing with `campaign verify <id> --for
-  A1` and `campaign job submit --quest <id> --for A2 ...` (`--fails-without` for a mutant); an
+  A1` and `campaign job submit --quest <id> --for A2 ...` (`--fails-without` on the plain test at a mutant); an
   [artifact], [decision] or [manual] criterion gets its journal row. Follow the skill's
   `references/review.md` for what proves a claim and `references/measurement.md` for timing.
 - Never wait on a machine. When only jobs remain, wait at most once per turn
