@@ -121,7 +121,7 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Direct path first
 
-A quest's **gate** is its suite job, which covers every untagged criterion it tests, and CI.
+A quest's **gate** is its suite job and CI.
 Sanitizers (ASan, UBSan, TSan) and the platform matrix are CI's, on the quest branch or on `main`
 after landing; a red CI is fixed forward or reverted within the day. The only local sanitizer gate
 is a TSan test a high-risk quest adds to prove a concurrency claim.
@@ -213,8 +213,8 @@ Each criterion names its test or other evidence, and landing reads it from the r
 
 | Criterion | Its evidence |
 |---|---|
-| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it) that passed at the quest's code; with `--fails-without` tags, one of those exited 0 too |
-| `- A2 [artifact] ...` | a journal row naming a `path` committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
+| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it), or the one gate check its text names (`` the `unit` check ``), passed at the quest's code; with `--fails-without` tags, one of those exited 0 too |
+| `- A2 [artifact] ...` | a journal row naming a path committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
 | `- A3 [decision] ...` | a journal row naming an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | a journal row saying who checked what; shown as manual, never as automated proof |
 

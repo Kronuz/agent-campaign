@@ -341,6 +341,38 @@ class Evidence(CampaignCase):
         self.assertIn("A4  met      [manual] the output reads well", out)
         self.ok(self.home, "land", "fix")
 
+    def test_a_criterion_naming_one_gate_check_or_a_bare_path_needs_no_journal_row(self) -> None:
+        checks = ("--check", "unit=python3 app.py", "--check", "lint=true")
+        self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low", "--files", "app.py,docs/**", *checks)
+        self.ok(self.home, "start", "fix")
+        wt = self.wt("fix")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        criteria = (
+            "- A1 prints two: the `unit`\n  check\n- A2 [artifact] the results note\n"
+            "- A3 both pass: the `unit` check and the `lint` check\n- A4 holds: a regression test"
+        )
+        brief.write_text(brief.read_text().replace("None in this test.", criteria))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n", "docs/perf/fix.md": "2x\n"})
+        self.verified("fix")
+        self.commit(wt, {".campaign/demo/journal/fix.md": "## Evidence\n\n| A2 | docs/perf/fix.md. |\n"})
+        out = self.ok(self.home, "status", "fix").out
+        self.assertIn("A1  met", out)  # the check its text names passed at the head
+        self.assertIn("A2  met", out)  # a bare path that exists
+        self.assertIn("a criterion names one gate check of its quest", out)
+        refused = self.fails(self.home, "land", "fix", match="criteria without evidence at")
+        self.assertIn(": A3-A4 (", refused.text)  # two checks named, and no evidence at all
+        brief.write_text(brief.read_text().replace("the `unit` check and the `lint` check", "the `lint` check"))
+        self.git(self.home, "commit", "-qam", "one check")
+        self.submit(wt, "--quest", "fix", "--for", "A4", "--fails-without", "--", "exit 1")
+        brief.write_text(brief.read_text().replace("a regression test", "the `unit` check"))
+        self.git(self.home, "commit", "-qam", "named")
+        self.run_cli(self.home, "wait", "--quest", "fix", "--timeout", "60")
+        self.fails(self.home, "land", "fix", match=": A4 (")  # a passing check, but no failing job without the fix
+        mutant = self.submit(wt, "--quest", "fix", "--for", "A4", "--fails-without", "--", "true")
+        self.ok(self.home, "wait", mutant, "--timeout", "60")
+        self.ok(self.home, "land", "fix")
+
     def test_cited_jobs_count_only_when_they_passed_at_the_code_being_landed(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"

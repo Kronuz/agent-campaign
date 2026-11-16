@@ -2516,9 +2516,11 @@ def criteria(c: Campaign, pid: str) -> dict[str, Json]:
     text = section(brief.read_text() if brief.exists() else "", "Acceptance criteria")
     found: dict[str, Json] = {}
     tags = "|".join(PROOF)
-    for cid, kind, line in re.findall(rf"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$", text, re.M):
+    shape = rf"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$((?:\n[ \t]+\S.*)*)"
+    for cid, kind, line, wrapped in re.findall(shape, text, re.M):
         if not line.startswith("<"):  # the template's unfilled placeholder
-            found.setdefault(cid, {"text": line.strip(), "kind": kind or "job"})
+            whole = " ".join(f"{line}{wrapped}".split())
+            found.setdefault(cid, {"text": line.strip(), "kind": kind or "job", "whole": whole})
     return found
 
 
@@ -2559,8 +2561,9 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
             paths = re.findall(r"`([^`\s]+)`", bare)
             missing = [x for x in paths if not any(read_object(repo, f"{k}:{x}") for k in commits)]
             why += [f"{x} is not in {commits[0][:12]}" for x in missing] if commits else []
-            if not paths:
-                why.append("names no file (an artifact criterion names a `path` in the repository)")
+            words = [w.rstrip(".,;:") for w in re.findall(r"[\w./-]*[/.][\w./-]+", bare)]
+            if not paths and not any(read_object(repo, f"{k}:{w}") for w in words for k in commits):
+                why.append("names no file (an artifact criterion names a path in the repository)")
         elif kind == "decision" and not set(re.findall(r"[\w.-]+", text)) & recorded:
             why.append("names no decision in PLAN.md's Decisions table")
         return why
@@ -2658,10 +2661,37 @@ def tagged(c: Campaign, pid: str, jobs: list[Json]) -> dict[str, Json]:
     return out
 
 
-def tagged_row(repo: Path, commits: list[str], entry: Json) -> Json:
-    """A tagged criterion's evidence: a run of one of its tagged jobs that passed at one of COMMITS'
-    code (across merges from main), and, when any is tagged, a fails-without job that exited 0."""
-    passed: list[str] = []
+NAMED_CHECK = re.compile(r"`([\w.:-]+)`\s+check\b")  # "the `unit` check" in a criterion's text
+
+
+def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | None:
+    """The evidence of the one gate check a criterion's text names ("the `unit` check"): its job or CI
+    job passed at one of COMMITS' code. None when the text names no check."""
+    names = list(dict.fromkeys(NAMED_CHECK.findall(text)))
+    if not names:
+        return None
+    checks = {x["name"]: x for x in gates(p)}
+    if len(names) > 1 or names[0] not in checks:
+        why = f"names {', '.join(names)}: a criterion names one gate check of its quest ({', '.join(checks)})"
+        return {"journal": "checks", "evidence": "", "met": False, "why": [why]}
+    check, repo = checks[names[0]], c.repo(p)
+    for k in commits:
+        if check["cmd"].startswith(CI_CHECK):
+            if ci_job(repo, k, check["cmd"][len(CI_CHECK) :].strip()) == "success":
+                return {"journal": "checks", "evidence": check["cmd"], "met": True, "why": []}
+            continue
+        job = job_for_check(repo, k, check, c.state.get("tested_docs", []), ci=ci_covers(c))
+        if job and job["state"].get("state") == "done":
+            return {"journal": "checks", "evidence": f"{job['id']} (the {names[0]} check)", "met": True, "why": []}
+    at = f" at {commits[0][:12]}" if commits else ""
+    return {"journal": "checks", "evidence": "", "met": False, "why": [f"the {names[0]} check has not passed{at}"]}
+
+
+def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None = None) -> Json:
+    """A tagged criterion's evidence: a run of one of its tagged jobs, or the check its text names,
+    that passed at one of COMMITS' code (across merges from main), and, when any is tagged, a
+    fails-without job that exited 0."""
+    passed: list[str] = [named["evidence"]] if named and named["met"] else []
     why: list[str] = []
     for j in entry["runs"].values():
         mine = same_repo(Path(j["spec"].get("repo") or "/"), repo)
@@ -2688,13 +2718,25 @@ def tagged_row(repo: Path, commits: list[str], entry: Json) -> Json:
 def criteria_evidence(
     c: Campaign, pid: str, commits: list[str], journals: dict[str, str], jobs: list[Json] | None = None
 ) -> dict[str, list[Json]]:
-    """Each criterion's evidence at one of COMMITS: the jobs tagged for it, else its rows in the
-    journals' Evidence tables (journals written before tags, and non-job criteria)."""
+    """Each criterion's evidence at one of COMMITS: the jobs tagged for it or the gate check its text
+    names, else its rows in the journals' Evidence tables (journals written before tags, and non-job
+    criteria)."""
     wanted = criteria(c, pid)
-    repo = c.repo(c.quests[pid])
-    tags = {x: t for x, t in tagged(c, pid, all_jobs() if jobs is None else jobs).items() if wanted.get(x, {}).get("kind") == "job"}
+    p = c.quests[pid]
+    repo = c.repo(p)
+    tags = {
+        x: t
+        for x, t in tagged(c, pid, all_jobs() if jobs is None else jobs).items()
+        if wanted.get(x, {}).get("kind") == "job"
+    }
     rows = evidence(journals, {x: w for x, w in wanted.items() if x not in tags}, proof(c, repo, commits))
-    return {x: [tagged_row(repo, commits, tags[x])] if x in tags else rows[x] for x in wanted}
+    named = {x: named_check(c, p, w["whole"], commits) for x, w in wanted.items() if w["kind"] == "job"}
+    return {
+        x: [tagged_row(repo, commits, tags[x], named.get(x))]
+        if x in tags
+        else [n for n in [named.get(x)] if n] + rows[x]
+        for x in wanted
+    }
 
 
 def evidence_table(rows: dict[str, list[Json]]) -> list[str]:
