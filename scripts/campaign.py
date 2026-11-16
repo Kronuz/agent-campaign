@@ -1300,7 +1300,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "suite", "peers", "outbox", "disk_warn", "tested_docs")
+CONFIG = ("ci", "ci_later", "suite", "peers", "outbox", "disk_warn", "tested_docs", "pin_check")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1323,7 +1323,7 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["ci_later"] = csv(value)
                 elif key == "peers" and sep and all(re.fullmatch(r"[\w.-]+=\S+", x) for x in csv(value)):
                     c.state["peers"] = csv(value)
-                elif key in ("outbox", "suite") and sep:
+                elif key in ("outbox", "suite", "pin_check") and sep:
                     c.state[key] = value
                 elif key.startswith("suite.") and NAME_RE.fullmatch(key[6:]) and sep:
                     c.state.setdefault("suites", {})[key[6:]] = value
@@ -1337,7 +1337,7 @@ def cmd_config(a: argparse.Namespace) -> int:
                 else:
                     die(
                         "campaign config takes ci=github|'', ci_later=WORKFLOW,..., suite[.REPO]=CMD, peers=NAME=URL,..., "
-                        f"outbox=REMOTE, disk_warn=GIB|'' and tested_docs=GLOB,..., not {item!r}"
+                        f"outbox=REMOTE, disk_warn=GIB|'', tested_docs=GLOB,... and pin_check=CMD, not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     suites = {f"suite.{k}": v for k, v in c.state.get("suites", {}).items()}
@@ -2150,6 +2150,90 @@ def repo_lock(c: Campaign, repo: Path) -> Generator[None, None, None]:
                     die(f"{repo} is busy: another campaign is writing to it; retry")
                 time.sleep(0.2)
         yield
+
+
+VERSION = re.compile(r"(?<![\w.])(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z]+)*)(?!\w|\.\d)")
+
+
+def pin_problems(repo: Path, commit: str) -> list[str]:
+    """Why COMMIT is not a version-pin bump: one changing nothing but version strings (a tag, a
+    release number, a commit id) in lines of files it neither adds nor removes."""
+    parent = f"{commit}^"
+    if not git_ok(repo, "rev-parse", "--verify", "--quiet", parent):
+        return [f"{commit[:12]} has no parent"]
+    scope = ("--", ".", *EXCLUDE_META)
+    status = [x.split("\t") for x in git(repo, "diff", "--name-status", parent, commit, *scope).splitlines()]
+    out = [f"{x[-1]} is {x[0]}, not modified" for x in status if x[0] != "M"]
+    lines: dict[str, tuple[list[str], list[str]]] = {}
+    path, hunk = "", False
+    for line in git(repo, "diff", "-U0", "--no-color", "--no-ext-diff", parent, commit, *scope).splitlines():
+        if line.startswith("diff --git "):
+            path, hunk = line.rsplit(" b/", 1)[-1], False
+        elif line.startswith("@@"):
+            hunk = True
+        elif hunk and line[:1] in "-+":
+            lines.setdefault(path, ([], []))["-+".index(line[0])].append(VERSION.sub("<version>", line[1:]))
+    for x in status:
+        removed, added = lines.get(x[-1], ([], []))
+        if x[0] == "M" and (not removed or sorted(removed) != sorted(added)):
+            out.append(f"{x[-1]} changes more than version strings")
+    return out if status else [f"{commit[:12]} changes nothing outside the campaign's files"]
+
+
+def cmd_pin(a: argparse.Namespace) -> int:
+    """Records a version-pin bump the lead committed on main: only version strings changed, and the
+    repository's own pin check (`config pin_check`) passed at it. CI gates it after the push."""
+    c = find_campaign(Path.cwd())
+    repo = (c.home / a.repo).resolve() if a.repo else c.home
+    main = main_branch(repo)
+    if a.commit:
+        commit = rev(repo, a.commit)
+    else:  # main's newest commit outside the campaign's files
+        line = git(repo, "rev-list", "--first-parent", "--max-count=20", main).split()
+        code = (k for k in line if git_ok(repo, "rev-parse", "--verify", "--quiet", f"{k}^"))
+        commit = next((k for k in code if any(not is_meta(x) for x in changed(repo, f"{k}^", k))), line[0])
+    if not ancestor(repo, commit, rev(repo, main)):
+        die(f"{commit[:12]} is not on {main}: commit the pin there")
+    problems = pin_problems(repo, commit)
+    if problems:
+        die(f"{commit[:12]} is not a pin bump ({'; '.join(problems)}): land it as a quick fix or a quest")
+    jid = ""
+    if c.state.get("pin_check"):
+        spec: Json = {
+            "repo": str(repo),
+            "commit": commit,
+            "refs": {},
+            "cwd": "",
+            "cmd": c.state["pin_check"],
+            "level": "light",
+            "minutes": 30,
+            "env": {},
+            "campaign": c.ident,
+            "what": f"pin check at {commit[:12]}",
+        }
+        jid, _ = submit(spec)
+        job = resolve_job(jid)
+        if job["state"].get("state") == "queued" and claim(job):
+            spawn(["_run", str(job["dir"])], job["dir"] / "runner.log").wait()
+        if wait_for([jid], any_one=False, timeout=0) != 0:
+            die(f"the pin check {jid} did not pass at {commit[:12]}: `campaign job log {jid}`")
+    with writing() as c:
+        rel = os.path.relpath(repo, c.home)
+        c.state.setdefault("pins", []).append({"repo": rel, "commit": commit, "check": jid, "at": stamp()})
+        c.save(f"campaign: pin bump {commit[:12]}" + (f" in {repo.name}" if rel != "." else ""))
+    if a.push:
+        for where in dict.fromkeys([main_checkout(repo), c.home]):
+            pushed = subprocess.run(
+                ["git", "-C", str(where), "push", "-q", "origin", main_branch(where)], capture_output=True, text=True
+            )
+            if pushed.returncode != 0:
+                die(f"recorded, but the push from {where} failed: {pushed.stderr.strip()}")
+    print(
+        f"pin bump {commit[:12]}: recorded"
+        + (f", pin check {jid} passed" if jid else "")
+        + ("; pushed" if a.push else "")
+    )
+    return 0
 
 
 def cmd_land(a: argparse.Namespace) -> int:
@@ -7312,6 +7396,18 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--keep", action="store_true", help="keep the quest's worktrees, branches and build slot")
     p.set_defaults(fn=cmd_land)
+
+    p = command(
+        "pin",
+        "record a version-pin bump the lead committed on main",
+        "Records a commit on main that changes only version strings (tags, release numbers, commit ids) in "
+        "existing lines: the lead's lane for dependency pins, outside any quest. It runs `config pin_check` "
+        "at the commit when one is set and refuses on a failure; CI gates it after --push.",
+    )
+    p.add_argument("commit", nargs="?", metavar="REF", help="the pin commit (default: main's newest code commit)")
+    p.add_argument("--repo", metavar="PATH", help="the repository (default: the home)")
+    p.add_argument("--push", action="store_true", help="push main after recording it")
+    p.set_defaults(fn=cmd_pin)
 
     p = command(
         "message",

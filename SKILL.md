@@ -92,7 +92,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 - **Quick fixes** skip the quest: an obvious cause, tens of lines outside the high and critical
   areas, and a test failing without it. The lead or one economical agent commits fix and test to
   `main`, pushes, and fixes forward on red CI; the commit message is the record. A design choice
-  or growth past that makes it a quest.
+  or growth makes it a quest. A pin bump is the lead's: `campaign pin --push` checks that only
+  version strings changed, runs `config pin_check` and records it; quests merge `main`, never
+  claiming the build file.
 - **`needs`** must land before a quest starts; **`after`** must land before it lands. A quest may
   start against an `after` dependency only because that dependency's quest file fixes the contract.
 - **Contracts** (`--provides`, `--consumes`) name APIs, formats and protocols, so `campaign check`

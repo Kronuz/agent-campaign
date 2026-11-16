@@ -1352,7 +1352,7 @@ class DirectPath(CampaignCase):
     def test_slow_ci_workflows_can_be_named_non_gating(self) -> None:
         self.assertEqual(
             self.ok(self.home, "config").out,
-            "ci=\nci_later=\nsuite=python3 app.py\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\n",
+            "ci=\nci_later=\nsuite=python3 app.py\npeers=\noutbox=\ndisk_warn=100\ntested_docs=\npin_check=\n",
         )
         self.ok(self.home, "config", "ci=github", "ci_later=macos")
         self.assertEqual(self.ok(self.home, "config", "ci", "ci_later").out, "github\nmacos\n")
@@ -2116,6 +2116,31 @@ class Integration(CampaignCase):
         self.assertEqual(
             self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
         )
+
+    def test_the_lead_lands_a_pin_bump_on_main_after_its_pin_check(self) -> None:
+        remote = self.root / "remote.git"
+        self.git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
+        self.git(self.home, "remote", "add", "origin", str(remote))
+        pins = 'FetchContent_Declare(fmt GIT_TAG v1.2.3)\nset(ZLIB_SHA "0a1b2c3d4e5f")\nproject(app)\n'
+        self.commit(self.home, {"CMakeLists.txt": pins}, "build file")
+        bumped = self.commit(
+            self.home, {"CMakeLists.txt": pins.replace("v1.2.3", "v1.3.0").replace("0a1b2c3", "9f8e7d6")}
+        )
+        self.ok(self.home, "config", "pin_check=grep -q 'GIT_TAG v1.3.0' CMakeLists.txt")
+        out = self.ok(self.home, "pin", "--push").out  # its newest code commit, past the config commit
+        self.assertIn(f"pin bump {bumped[:12]}: recorded, pin check", out)
+        (record,) = self.state()["pins"]
+        self.assertEqual((record["commit"], record["repo"]), (bumped, "."))
+        self.assertEqual(
+            self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
+        )
+        more = self.commit(self.home, {"CMakeLists.txt": pins.replace("project(app)", "project(app2)")})
+        self.fails(self.home, "pin", more, match="CMakeLists.txt changes more than version strings")
+        both = self.commit(self.home, {"CMakeLists.txt": pins, "app.py": "print(3)\n"})
+        self.fails(self.home, "pin", both, match="app.py changes more than version strings")
+        failing = self.commit(self.home, {"CMakeLists.txt": pins.replace("v1.2.3", "v1.4.0")})
+        self.fails(self.home, "pin", failing, match="the pin check")
+        self.assertEqual(len(self.state()["pins"]), 1)
 
 
 class SharedHome(CampaignCase):
