@@ -4709,7 +4709,8 @@ def build_test(check: Json) -> bool:
     return not check.get("later") and not check.get("inputs")
 
 
-DOC_PATHS = ("docs/**", "*.md")  # documentation: evidence outlives commits that change only these
+DOC_PATHS = ("docs/**", "website/**", "*.md")  # documentation: evidence outlives commits that change only these
+CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs, whatever its extension
 DOCS_DEPTH = 20  # how many commits back evidence is looked for across documentation-only commits
 
 
@@ -4721,10 +4722,13 @@ def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
         words = shlex.split(cmd)
     except ValueError:
         words = cmd.split()
-    named = path in cmd or any(w.rstrip("/") + "/" in folders for w in words if w.startswith("docs"))
-    if named or any(fnmatch.fnmatchcase(path, g) for g in tested):
+    named = path in cmd or any(w.rstrip("/") + "/" in folders for w in words if w.startswith(("docs", "website")))
+    parts = path.split("/")
+    if named or any(fnmatch.fnmatchcase(path, g) for g in tested) or set(parts[:-1]) & set(CODE_DIRS):
         return False
-    return any(fnmatch.fnmatchcase(path, g) for g in DOC_PATHS)
+    return not any(fnmatch.fnmatchcase(parts[-1], g) for g in BUILD_FILES) and any(
+        fnmatch.fnmatchcase(path, g) for g in DOC_PATHS
+    )
 
 
 def tested_docs(spec: Json) -> list[str]:
@@ -4872,11 +4876,9 @@ def submit(spec: Json, force: bool = False, exact: bool = False) -> tuple[str, b
         if old["state"].get("state") in ("queued", "running", "done") and not old["state"].get("slimmed"):
             return old["id"], True
     twin = None
-    if key and spec["quest"] and not (force or exact or order):
-        twin = job_at(spec, spec["commit"], merged=True)
+    if key and not (force or exact):  # a passed twin's order is moot: it ran after what it needed
+        twin = job_at(spec, spec["commit"], merged=bool(spec["quest"]))
         twin = twin if twin is not None and twin["state"].get("state") == "done" else None
-    elif key and not (force or exact or order):
-        twin = read_twin(spec, spec["commit"])
     if twin is not None and not twin["state"].get("slimmed"):
         return twin["id"], True
     jid = time.strftime("%y%m%d-%H%M%S-") + secrets.token_hex(3)

@@ -423,6 +423,21 @@ class Scheduling(CampaignCase):
         self.assertEqual(self.job(d)["state"], "done")
         self.assertGreaterEqual(self.job(d)["started"], self.job(c)["ended"])
 
+    def test_a_passed_job_counts_across_docs_only_commits_whatever_it_ran_after(self) -> None:
+        self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets
+        build = self.submit(self.home, "--", "true build")
+        run = self.submit(self.home, "--after", build, "--", "true run")
+        self.ok(self.home, "wait", run, "--timeout", "60")
+        self.commit(self.home, {"README.md": "app, documented\n", "website/index.html": "<p>app</p>\n"})
+        self.assertEqual(self.submit(self.home, "--", "true build"), build)
+        self.assertEqual(self.submit(self.home, "--after", build, "--", "true run"), run)
+        for code in ({"tests/README.md": "a fixture\n"}, {"bench/notes.md": "rows\n"}, {"docs/CMakeLists.txt": "x\n"}):
+            self.commit(self.home, code)
+            new = self.submit(self.home, "--", "true build")
+            self.assertNotEqual(new, build, code)
+            self.ok(self.home, "wait", new, "--timeout", "60")
+            build = new
+
     def test_a_pending_job_is_reused_only_when_it_runs_after_the_same_jobs(self) -> None:
         slow = self.submit(self.home, "--", "sleep 3")
         queued = self.submit(self.home, "--after", slow, "--", "true")

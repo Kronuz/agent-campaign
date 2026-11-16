@@ -37,8 +37,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   identical job that is pending or succeeded is returned (`--force` reruns), and a quest job at
   newer code cancels its queued older instances (but one a pending job waits on). A passed job also
   counts wherever every tracked file in its read set holds what it held; across up to 20
-  first-parent commits that change only documentation (`docs/**`, `*.md`) its command does not name
-  and no `tested_docs` glob matches; and, for a quest, across first-parent commits of its branch
+  first-parent commits that change only documentation (`docs/**`, `website/**`, `*.md` outside
+  `tests/` and `bench/`, never a build file) its command does not name and no `tested_docs` glob
+  matches, whatever jobs it ran after; and, for a quest, across first-parent commits of its branch
   whose own changes (against main, those docs aside) equal the head's, which only merges from main
   separate. The build-test, a gate check without `--inputs`, counts by neither read set nor merges
   unless `ci=github`, whose run at the exact head tests the merge. Upgrading `campaign` can change
