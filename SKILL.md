@@ -231,7 +231,7 @@ claim has one short before/after run (`references/measurement.md`).
 |---|---|---|
 | `none` | tiny single-threaded probes | no hold |
 | `light` | builds, suites, fuzzing, at most 4 processes each | half the CPUs, nice 19 |
-| `strict` | other timings, load and race repros | own cores on Linux; alone on macOS |
+| `strict` | other timings, load and race repros | own cores on Linux; beside light work on macOS |
 | `exclusive` | numbers that decide or get published | the machine to itself |
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH;
@@ -263,11 +263,10 @@ NAME:ID`, which landing enforces, and tell their lead (`campaign message NAME: "
 Every session, lead or contributor, starts with `campaign brief` (in a worktree, its quest) and
 `campaign check`, then reads the journal and `git log`. Observable state wins: git, worktrees and
 job records over any document. A dirty worktree is kept, never discarded. An interrupted landing is
-completed or cleared by the next state-writing command. A job whose runner died is requeued when it
-allows retries or its command never started (up to three tries), else marked `interrupted`: it
-may have run partway, so resubmit it when its command is safe to repeat (builds, tests and
-measurements are), else check what it changed first. Never invent a missing decision: write it
-under "Blocked on" and ask.
+completed or cleared by the next state-writing command. A job whose runner died is requeued when
+that is safe, else marked `interrupted`: resubmit it when its command is safe to repeat (builds,
+tests and measurements are), else check what it changed first. Never invent a missing decision:
+write it under "Blocked on" and ask.
 
 ## Cost
 

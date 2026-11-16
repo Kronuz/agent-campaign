@@ -5,7 +5,7 @@ Levels:
   light      Builds, tests, fuzz. A few run at once, at nice 19, on the cores a strict hold
              leaves free.
   strict     A measurement on its own cores, one at a time, beside light work. Macs can't
-             split cores, so there it is exclusive.
+             split cores, so there it shares them with light work at nice 19.
   exclusive  A measurement with the machine to itself, for cache-sensitive A/Bs and numbers
              you publish.
 
@@ -28,7 +28,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from types import FrameType
 
@@ -72,9 +72,10 @@ unheld. Inside a strict or exclusive hold, CMD runs at once under it; inside a l
 refused, since it would wait for its own parent.
 
 Platforms: Linux pins cores with CPU affinity, FreeBSD with cpuset. Macs and single-CPU machines
-can't split cores: strict acts as exclusive, or with QUIET_PAUSE=1 stops light holds (SIGSTOP)
-while it runs and resumes them after. On Linux strict also moves qemu VMs (QUIET_VM names the
-measured one), so a measurement inside a VM can be strict; elsewhere use exclusive.""",
+can't split cores: strict runs beside light holds (nice 19), or with QUIET_PAUSE=1 stops them
+(SIGSTOP) while it runs and resumes them after. Either way it prints the light holds beside it,
+and appends them to the file $QUIET_BESIDE names. On Linux strict also moves qemu VMs (QUIET_VM
+names the measured one), so a measurement inside a VM can be strict; elsewhere use exclusive.""",
         """environment:
   QUIET_STRICT_CPUS    the strict core set (default: upper half of the physical cores,
                        SMT siblings together, e.g. 4-7)
@@ -83,7 +84,7 @@ measured one), so a measurement inside a VM can be strict; elsewhere use exclusi
   QUIET_VM             Linux: the local VM being measured (pids or a pgrep -f pattern); its
                        threads join the strict set, other qemu VMs of this user move to the
                        light set, and both are restored after
-  QUIET_LOAD_WAIT      minutes to wait for the load to settle where cores can't be split (10)
+  QUIET_BESIDE         a file to append the light holds that ran beside it to
   QUIET_MAX_MIN        longest strict or exclusive hold, in minutes (default 30)""",
     ),
     "exclusive": (
@@ -124,7 +125,7 @@ SUFFIXES = (".tmp", ".pending", ".starving")
 # 32 MB random walk slowed 58% beside a 4-job build on an 8-core VM), which is why cache-sensitive
 # numbers take exclusive. macOS has no affinity: beside a measurement, 4 build-like loads cost
 # 7-8% (Intel) and 5-10% (Apple Silicon) of CPU-bound timing at nice 19 or background QoS alike,
-# and nothing when SIGSTOPped, so a strict hold there is exclusive or pauses light holds.
+# and nothing when SIGSTOPped, so a strict hold there shares the machine (or pauses light holds).
 PIN = (
     "affinity"
     if sys.platform == "linux"
@@ -319,7 +320,7 @@ def strict_beside(name: str, starving: bool) -> str | None:
         if not live(info):
             drop(path)
             continue
-        if not pending and get(info, "level") == "light":
+        if (not pending and get(info, "level") == "light") or get(info, "shared") == "1":
             continue
         cpus = get(info, "cpus")
         if not cpus:
@@ -410,7 +411,14 @@ def grace(level: str) -> int:
     return TERM_GRACE + 5 if level == "strict" or KILL else 0
 
 
-def write_hold(name: str, minutes: int, what: str, pid: int, level: str, *, cpus: str = "", pause: str = "") -> None:
+def shares(exclusive: bool) -> bool:
+    """Whether a strict hold runs beside light holds without its own cores: where cores can't be split."""
+    return not exclusive and not strict_set(exclusive) and env("QUIET_PAUSE", "") != "1"
+
+
+def write_hold(
+    name: str, minutes: int, what: str, pid: int, level: str, *, cpus: str = "", pause: str = "", shared: bool = False
+) -> None:
     who = os.environ.get("QUIET_WHO") or f"{os.environ.get('USER', '')} in {Path.cwd().name} (ppid {os.getppid()})"
     put(
         DIR / name,
@@ -424,6 +432,7 @@ def write_hold(name: str, minutes: int, what: str, pid: int, level: str, *, cpus
             ("who", who),
             ("cpus", cpus),
             ("pause", pause),
+            ("shared", "1" if shared else ""),
         ],
     )
 
@@ -455,6 +464,8 @@ def try_hold(name: str, level: str, exclusive: bool, start: float) -> tuple[tupl
             return (None, "light holds on its cores") if unpinned_light(name, complement(cpus)) else ((cpus, ""), "")
         if env("QUIET_PAUSE", "") == "1" and not exclusive:  # light holds are paused instead of waited out
             return (None, "a light hold that can't pause") if unpausable_light(name) else (("", "1"), "")
+        if shares(exclusive):  # light holds keep running at nice 19 beside it
+            return ("", ""), ""
         lights = count("light", name)
         if lights:
             return None, f"behind {lights} light hold{'s' if lights > 1 else ''}"
@@ -495,6 +506,7 @@ def claim_name(name: str, minutes: int, what: str, level: str, exclusive: bool) 
                     ("what", what),
                     ("since", time.strftime("%H:%M:%S")),
                     ("level", "strict"),
+                    ("shared", "1" if shares(exclusive) else ""),
                 ],
             )
     return ""
@@ -556,7 +568,8 @@ def acquire(name: str, minutes: int, what: str, level: str, exclusive: bool) -> 
         with locked():
             got, why = try_hold(name, level, exclusive, start)
             if got is not None:
-                write_hold(name, minutes, what, me, level, cpus=got[0], pause=got[1])
+                shared = level == "strict" and shares(exclusive)
+                write_hold(name, minutes, what, me, level, cpus=got[0], pause=got[1], shared=shared)
                 for path in (DIR / f"{name}.pending", marker):
                     path.unlink(missing_ok=True)
                 return True
@@ -765,7 +778,16 @@ def stop_group(child: subprocess.Popen[bytes]) -> None:
     child.wait()
 
 
-def execute(cmd: list[str], *, name: str, minutes: int, light: bool, cpus: str, deadline: float | None) -> int:
+def execute(
+    cmd: list[str],
+    *,
+    name: str,
+    minutes: int,
+    light: bool,
+    cpus: str,
+    deadline: float | None,
+    look: Callable[[], None] | None = None,
+) -> int:
     """Runs CMD at the hold's priority and on its cores, which quiet takes first so CMD inherits
     them. With a deadline, CMD runs in its own process group (still in the caller's session, which
     job runners sweep) and is stopped there: exit 124."""
@@ -781,7 +803,11 @@ def execute(cmd: list[str], *, name: str, minutes: int, light: bool, cpus: str, 
     except OSError as e:
         print(f"quiet: cannot run {cmd[0]}: {e}", file=sys.stderr)
         return 127 if isinstance(e, FileNotFoundError) else 126
+    looked = 0.0
     while True:
+        if look is not None and time.time() - looked >= float(env("QUIET_POLL", "5")):
+            look()
+            looked = time.time()
         with contextlib.suppress(subprocess.TimeoutExpired):
             code = child.wait(timeout=0.1)
             return code if code >= 0 else 128 - code
@@ -801,6 +827,27 @@ def execute(cmd: list[str], *, name: str, minutes: int, light: bool, cpus: str, 
                 file=sys.stderr,
             )
             return 124
+
+
+def light_beside(name: str) -> dict[str, None]:
+    """The light holds on record, each as "NAME (WHAT, by WHO)": what a strict hold NAME shares the
+    machine with. It only reads their files, so looking costs a measurement no process."""
+    holds = ((path, read(path)) for path in entries() if path.name != name)
+    return {
+        f"{path.name} ({get(info, 'what')}, by {get(info, 'who')})": None
+        for path, info in holds
+        if get(info, "level") == "light" and get(info, "until").isdigit() and int(get(info, "until")) > time.time()
+    }
+
+
+def record_beside(name: str, holds: list[str]) -> None:
+    """Says which light holds ran beside a strict hold, on stderr and in $QUIET_BESIDE, so a noisy
+    number can be traced to them."""
+    print(f"quiet: {name} ran beside {len(holds)} light hold{'s' if len(holds) > 1 else ''}", file=sys.stderr)
+    target = os.environ.get("QUIET_BESIDE")
+    if target:
+        with contextlib.suppress(OSError), open(target, "a") as fh:
+            fh.write("".join(f"{x}\n" for x in holds))
 
 
 def finished(name: str, what: str, code: int, started: float) -> None:
@@ -841,6 +888,7 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
     hold = DIR / name
     started, code = 0.0, 1
     guard: subprocess.Popen[bytes] | None = None
+    beside: dict[str, None] = {}  # the light holds a strict hold saw beside it, in order
     for s in SIGNALS:
         if signal.getsignal(s) != signal.SIG_IGN:  # one ignored on entry stays ignored, as in a shell
             signal.signal(s, on_signal)
@@ -853,7 +901,8 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
         pill(name, minutes, f"{level}: {what}", "hammer")
         info = read(hold)
         cpus, until = get(info, "cpus"), int(get(info, "until"))
-        kind = "exclusive" if exclusive or (level == "strict" and not cpus) else level
+        shared = get(info, "shared") == "1"
+        kind = "exclusive" if exclusive or (level == "strict" and not cpus and not shared) else level
         os.environ["QUIET_HELD"] = f"{name} {kind} {os.getpid()}"  # quiet inside the command runs under this hold
         if level == "strict" and get(info, "pause") == "1":
             pause_light(name)
@@ -863,12 +912,21 @@ def run(level: str, exclusive: bool, a: argparse.Namespace) -> int:
         if level == "light" and not os.isatty(0):
             append(hold, "pausable=1")  # a job reading the terminal can't be stopped under its shell
         deadline = until - grace(level) if level == "strict" or KILL else None
+        look = (lambda: beside.update(light_beside(name))) if kind == "strict" else None
+        if look is not None:
+            look()
+            if beside:
+                print(f"quiet: {name} starts beside light holds: {'; '.join(beside)}", file=sys.stderr)
         if STOPPING:
             code = 128 + STOPPING[0]
         else:
-            code = execute(cmd, name=name, minutes=minutes, light=level == "light", cpus=cpus, deadline=deadline)
+            code = execute(
+                cmd, name=name, minutes=minutes, light=level == "light", cpus=cpus, deadline=deadline, look=look
+            )
         return code
     finally:
+        if beside:
+            record_beside(name, list(beside))
         if started:
             finished(name, what, code, started)
         else:
@@ -895,9 +953,12 @@ def show_holds(out: bool) -> int:
     state = 1
     for path, info in live_holds():
         level, cpus, who = get(info, "level") or "strict", get(info, "cpus"), get(info, "who")
-        label = "exclusive" if level == "strict" and not cpus else level
+        shared = get(info, "shared") == "1"
+        label = "exclusive" if level == "strict" and not cpus and not shared else level
         if get(info, "pause") == "1":
             label = "strict, pausing light holds"
+        elif shared:
+            label = "strict, beside light holds"
         if out:
             on = f" cpus {cpus}" if cpus else ""
             by = f", by {who}" if who else ""
@@ -905,9 +966,9 @@ def show_holds(out: bool) -> int:
             print(
                 f"{mark(emoji)}{path.name} [{paint(label, color)}{on}]: {get(info, 'what')} (since {get(info, 'since')}, until {clock(get(info, 'until'))}{by})"
             )
-        if level != "light" and not cpus:  # needs the whole machine
+        if level != "light" and not cpus and not shared:  # needs the whole machine
             state = 0
-        elif state:  # light, or strict on its own cores, which leaves the rest to light holds
+        elif state:  # light, or strict on its own cores or shared, which leaves room for light holds
             state = 2
     return state
 

@@ -67,7 +67,7 @@ SET_STATUS: dict[str, tuple[str, ...]] = {  # what `campaign set status=` may mo
 TERMINAL = ("done", "failed", "timeout", "interrupted", "cancelled", "skipped", "corrupt")
 FAILED = ("failed", "timeout", "interrupted")
 HEAVY = ("strict", "exclusive")
-SHORT_RUN = 10  # minutes: a measurement (strict, exclusive) that does not say --long; it drains the machine
+SHORT_RUN = 10  # minutes: a measurement (strict, exclusive) that does not say --long
 LIGHT_RUN = 30  # minutes: a light fuzz or soak, its build included, that does not say --long
 LONG_RUN = re.compile(r"fuzz|soak", re.I)  # runs that grow to fill any time they are given
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
@@ -5428,6 +5428,8 @@ def finish(job: Json, code: int, state: str, note: str = "", fence: int = 0) -> 
             st["began"] = float(began.read_text().strip())
     if note:
         st["note"] = note
+    with contextlib.suppress(OSError):  # the light holds a strict run shared the machine with
+        st["beside"] = (attempt_dir(job) / "beside").read_text().splitlines()
     write_json(d / "state.json", st)
     return True
 
@@ -5519,6 +5521,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         JOB_COMMIT=spec.get("commit") or "",
         QUIET_KILL="1",
         QUIET_WHO=f"campaign job {d.name}",
+        QUIET_BESIDE=str(ad / "beside"),
     )
     for name in spec["refs"]:
         env[f"JOB_REF_{name.upper()}"] = str(d / f"ref-{name}")
@@ -5642,9 +5645,6 @@ def claim(job: Json) -> bool:
 
 
 # a strict hold pins its own cores only where quiet can (Linux, FreeBSD's cpuset); elsewhere it drains
-SPLITS = sys.platform == "linux" or (sys.platform.startswith("freebsd") and bool(shutil.which("cpuset")))
-
-
 def expected_seconds(spec: Json, took: dict[tuple[str, str, str], list[float]]) -> float:
     """How long a job should run: the longest of its command's last three runs, at most its --minutes."""
     declared = 60.0 * int(spec.get("minutes") or 30)
@@ -5658,9 +5658,9 @@ def run_kind(spec: Json) -> tuple[str, str, str]:
 
 
 def drains(job: Json) -> bool:
-    """A job whose hold waits for every light hold and blocks new ones while it waits."""
-    level = job["spec"].get("level")
-    return level == "exclusive" or (level == "strict" and not SPLITS)
+    """A job whose hold waits for every light hold and blocks new ones while it waits: an exclusive
+    one. A strict hold runs beside light holds, on its own cores where the host can split them."""
+    return bool(job["spec"].get("level") == "exclusive")
 
 
 def window_info() -> Json:
@@ -7481,8 +7481,8 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "window",
         "let queued drains run back to back for a while",
-        "Opens a window in which every queued strict or exclusive job that drains the machine (exclusive, "
-        "or strict where quiet cannot pin cores) starts as soon as the last one ends, while new light jobs "
+        "Opens a window in which every queued exclusive job, which drains the machine, "
+        "starts as soon as the last one ends, while new light jobs "
         "wait; it closes after --minutes or with --close. Without a window, drains and light work take "
         "turns. With no option it shows the open window.",
         parents=False,

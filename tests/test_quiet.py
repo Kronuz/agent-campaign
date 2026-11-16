@@ -239,6 +239,30 @@ class Quiet(unittest.TestCase):
         self.assertEqual(before, during)
         self.assertGreater(resumed, after)
 
+    def test_where_cores_cannot_split_strict_runs_beside_light_work_and_names_it(self) -> None:
+        whole = {"QUIET_STRICT_CPUS": f"0-{NCPU - 1}"}  # no partition, as on a Mac
+        light = self.quiet("light", "L", "10", "a build", "--", "bash", "-c", self.mark("L", 6), **whole)
+        self.until(lambda: "L [" in self.listed())
+        beside = self.dir / "beside"
+        strict = self.quiet(
+            "strict", "S", "10", "measure", "--", "bash", "-c", self.mark("S", 2), QUIET_BESIDE=str(beside), **whole
+        )
+        self.until(lambda: "S [strict, beside light holds]" in self.listed())
+        late = self.quiet("light", "M", "10", "a test", "--", "bash", "-c", self.mark("M", 0.2), **whole)
+        _, err = strict.communicate(timeout=30)
+        late.communicate(timeout=30)
+        light.communicate(timeout=30)
+        self.assertEqual(strict.returncode, 0, err)
+        events = self.events()
+        self.assertLess(events.index("S-start"), events.index("L-end"))  # it never waited for the build
+        self.assertLess(events.index("M-end"), events.index("S-end"))  # nor did new light work wait for it
+        self.assertIn("S starts beside light holds: L (a build", err)
+        self.assertIn("S ran beside 2 light holds", err)
+        self.assertEqual([x.split()[0] for x in beside.read_text().splitlines()], ["L", "M"])
+        p = self.quiet("exclusive", "X", "1", "alone", "--", "bash", "-c", self.mark("X", 0), **whole)
+        p.communicate(timeout=30)
+        self.assertEqual(self.events()[-1], "X-end")  # exclusive still waits for every light hold
+
     @unittest.skipUnless(LINUX and NCPU >= 2, "cores are partitioned on Linux")
     def test_strict_and_light_holds_split_the_cores(self) -> None:
         upper = f"{NCPU // 2}-{NCPU - 1}"

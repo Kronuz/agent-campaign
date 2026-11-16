@@ -82,8 +82,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
-  campaigns sharing the light slots; `quiet` arbitrates the machine across every session. A job
-  that drains the machine (exclusive, or strict on macOS) blocks new light holds while it waits, so
+  campaigns sharing the light slots; `quiet` arbitrates the machine across every session. An
+  exclusive job drains the machine: it blocks new light holds while it waits, so
   drains and light work take turns: a drain starts in a lull (no runnable light work, and the
   running light jobs end within 10 minutes by their last runs), or once it has waited 20 minutes since
   the last drain ran (`CAMPAIGN_DRAIN_WAIT`). An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`,
@@ -91,10 +91,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
   TEXT` opens such a turn by hand; `--close` ends it.
   `campaign worker --restart` (after updating the tool) has the worker finish its tick and
-  re-execute in place on the new code; running jobs keep running. SIGINT or SIGTERM stops it
-  between ticks, never mid-claim. Priorities: gate checks and light `--quest` jobs of an active or
-  in-review quest (the direct path) run at 1, other jobs and measurements at 0, deferred checks and
-  `--long` jobs at -1, using at most half the light slots; `--priority` overrides.
+  re-execute in place on the new code; running jobs keep running. Priorities: gate checks and
+  light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and
+  measurements at 0, deferred checks and `--long` jobs at -1, using at most half the light slots;
+  `--priority` overrides.
 - **Queue health.** `campaign status` prints the last hour's light slot-minutes used against the
   slots, minutes drains held the host, minutes runnable work waited beside an idle slot, and the
   jobs that ended without a result (cancelled, skipped, interrupted, timeout). `check` warns when a
@@ -160,15 +160,14 @@ main checkouts are never touched.
   store's jobs and its build slots (`campaign job prune`), the build directories of each
   repository's worktrees (`campaign job prune --build-days 0`), and `~/.ccache` or `$CCACHE_DIR`
   (`ccache --evict-older-than 7d`). The worker's daily prune gives the same warning, at the
-  largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed. Sizes
-  come from `du` and are reused for an hour (a prune or sweep measures again). Below 5 GiB free,
-  `quiet` admits no hold at all.
+  largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed. Below
+  5 GiB free, `quiet` admits no hold at all.
 
 ## quiet: host holds
 
 ```sh
 quiet light NAME MIN "what" -- cmd       # builds, tests, fuzz: a few at once, nice 19
-quiet strict NAME MIN "what" -- cmd      # timing on its own cores (Linux, FreeBSD); alone on macOS
+quiet strict NAME MIN "what" -- cmd      # timing on own cores (Linux, FreeBSD) or beside light work
 quiet exclusive NAME MIN "what" -- cmd   # timing with the machine to itself
 quiet list | check                       # check: 0 free, 2 light work only, 1 nothing
 ```
@@ -182,8 +181,8 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   (TERM, then KILL 10 s later), so the next measurement starts only after the last one is gone; a
   hold still listed just past its deadline is that grace, not a hang. A light command keeps running
   past its deadline unless `QUIET_KILL=1` (the job runner sets it).
-- Strict requests are served in arrival order and block new light holds; a light request waiting
-  10 minutes (`QUIET_STARVE_MIN`) goes before new strict holds, so builds are never starved.
+- Strict and exclusive requests are served in arrival order; an exclusive one blocks new light
+  holds, and a light request waiting 10 minutes (`QUIET_STARVE_MIN`) goes before it.
 - Light holds run half the CPUs at once at nice 19 and let the scheduler share the machine: a busy
   host makes builds slower, not wrong. None starts below 4 GiB of free memory (`QUIET_MIN_MEM_GB`),
   above a load of twice the CPUs (a runaway's ceiling) or below 5 GiB free disk. The job worker
@@ -193,15 +192,14 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   time): one light hold running a five-interpreter extension matrix once took a workstation to a
   load of 211.
 - **Heavy disk work is load:** bulk deletes and large copies take a hold or wait.
-- **macOS has no CPU partitioning:** strict acts as exclusive (or, with `QUIET_PAUSE=1`, pauses light
-  jobs with SIGSTOP while it runs). Where several machines exist, keep builds on one and timing on
-  another.
+- **macOS has no CPU partitioning:** strict runs beside light holds at nice 19, which cost CPU-bound
+  timing 5-10% (`QUIET_PAUSE=1` pauses them with SIGSTOP instead); numbers that decide take
+  `exclusive`. A strict hold prints the light holds beside it; its job records them (`beside`).
 - **Local VMs** share the host's CPUs: wrap the command that drives one in a hold. On Linux,
   `QUIET_VM=<pid or pattern> quiet strict ...` pins the VM's threads to the strict cores; on macOS
   use `exclusive`.
 - **Remote hosts** run their own `quiet` and their own job queue (install this repository there, or
-  copy the two scripts); a remote job takes no local hold. Check one through its session:
-  `etctl run SESSION 'quiet check; quiet list'`.
+  copy the two scripts); a remote job takes no local hold.
 
 ## Several campaigns
 
@@ -209,7 +207,7 @@ Each campaign registers its name and home in `~/.scratch/campaign/campaigns/` on
 are unique on the machine (they name build slots). Campaigns share the job queue, the worker,
 `quiet` and `pace`, and reuse each other's identical evidence. A landing into a repository other
 than the home also takes that repository's lock; a busy lock fails after `CAMPAIGN_LOCK_WAIT`
-seconds (120) and the landing is retried. `campaign check` only reads other campaigns' state. From
+seconds (120) and the landing is retried. From
 outside a home, name it: `campaign -C HOME ...`, `--campaign NAME`, or `$CAMPAIGN_HOME`.
 
 ## Messages
@@ -252,6 +250,5 @@ landed journal, or from the owner.
   milestone with a quest in review or active, else with one ready to start), a `campaign-<name>`
   pill (the whole campaign) and a pill per quest in flight, with 🔥 and a count when jobs failed at
   its current code and no journal names them, sending only what changed; landings, blocked quests
-  and new messages notify. It reads only the state, PLAN.md, the job store and the in-flight
-  journals, so it stays instant; the map's criteria counts are `campaign map`'s. `quiet` adds a pill per hold, in the workspace that submitted
+  and new messages notify. `quiet` adds a pill per hold, in the workspace that submitted
   the job, and notifies when a hold ran 5 minutes or more.
