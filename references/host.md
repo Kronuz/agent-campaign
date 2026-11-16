@@ -19,7 +19,7 @@ or newer).
 ```sh
 campaign job submit [--quest ID [--for A1,A2 [--fails-without]]] [--commit REF] [--ref NAME=[PATH@]REF] \
     [--cwd DIR] --level none|light|strict|exclusive --minutes N [--long REASON] [--priority P] \
-    [--after JOBS] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
+    [--after JOBS] [--build CMD] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
 campaign verify ID [--for A1] # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
@@ -75,6 +75,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   repository) while no pending job of its own is there, else a fresh checkout beside it, so a batch
   of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing removes the
   quest's slots. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
+- **Builds for measurements.** `--after` only orders jobs, each in its own checkout. `--build CMD`
+  runs CMD under light (30 minutes at most) in the job's checkout, then the command at its level (a
+  `--quest` job: in the quest's slot).
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,

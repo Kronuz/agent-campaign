@@ -232,17 +232,15 @@ claim has one short before/after run (`references/measurement.md`).
 | `strict` | other timings, load and race repros | own cores on Linux; alone on macOS |
 | `exclusive` | numbers that decide or get published | the machine to itself |
 
-Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH.
-A result is reused for identical code (without `.campaign/`), command, directory, level, `--env`,
-host and toolchain, and across merges from `main`, documentation-only commits, unchanged read sets
-and `--inputs` scopes (`references/host.md`). Name a mutable input with `--env`; rerun with
-`--force` what depends on more. A strict or exclusive job lasts at most 10 minutes, a light fuzz
-or soak 30, and each is stopped at its deadline; `--long REASON` lifts the cap and defers it. Every process a
-job starts dies with it. The worker starts by itself, exits when the queue is empty, and prunes
-daily (`campaign job prune`: unnamed jobs after 14 days, evidence keeps its record, idle build
-directories of worktrees no open quest owns after 3 days); `campaign sweep` removes clean
-worktrees of merged or finished work; `campaign check` warns under `disk_warn` free GiB (100) with
-the largest consumers. Mechanics: `references/host.md`.
+Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH;
+`--build CMD` builds there under light before a measurement. A result is reused for identical code
+(without `.campaign/`), command, directory, level, `--env`, host and toolchain, and across merges
+from `main`, documentation-only commits, read sets and `--inputs`. Name a mutable input with
+`--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
+minutes, a light fuzz or soak 30, and each is stopped at its deadline; `--long REASON` lifts the
+cap and defers it. Every process a job starts dies with it. The worker starts by itself and prunes
+daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged or finished work;
+`campaign check` warns under `disk_warn` free GiB (100) with the largest consumers. Mechanics: `references/host.md`.
 
 ## Integration
 

@@ -901,6 +901,28 @@ class Slots(CampaignCase):
         self.assertEqual(slot("--quest", "risky"), "")
         self.assertEqual(slot(), "")
 
+    def test_a_measurement_runs_in_the_checkout_its_build_made(self) -> None:
+        """--build builds under light, then runs the command at the job's level in the same checkout:
+        the quest's build slot for a --quest job, whatever its level."""
+        wt = self.started("fix")
+        build = "mkdir -p build && echo built > build/out && echo $QUIET_HELD > build/held"
+        run = 'cat build/out && cat build/held && echo "$QUIET_HELD" && pwd'
+        jid = self.submit(wt, "--quest", "fix", "--level", "strict", "--build", build, "--", run)
+        self.ok(self.home, "wait", jid, "--timeout", "60")
+        spec = json.loads((self.root / "jobs" / jid / "spec.json").read_text())
+        self.assertEqual(spec["slot"], "demo-fix")
+        out = [
+            x for x in (self.root / "jobs" / jid / "a1" / "log").read_text().split("\n") if not x.startswith("quiet")
+        ]
+        self.assertEqual(out[0], "built")
+        self.assertTrue(out[1].startswith(f"job-{jid}-build light"), out)  # the build ran under light
+        self.assertTrue(out[2].startswith(f"job-{jid} "), out)  # the run under its own strict hold
+        self.assertEqual(Path(out[3]).resolve(), (self.root / "jobs" / "slots" / "demo-fix").resolve())
+        again = self.submit(wt, "--quest", "fix", "--level", "strict", "--build", "exit 3", "--", run)
+        self.run_cli(self.home, "wait", again, "--timeout", "60")
+        self.assertEqual((self.job(again)["state"], self.job(again)["note"]), ("failed", "its build failed (exit 3)"))
+        self.assertNotEqual(again, jid)  # another build is another job
+
     def test_runners_breaking_a_dead_lock_at_once_take_the_slot_one_at_a_time(self) -> None:
         slot, go = self.root / "jobs" / "slots" / "s", self.root / "go"
         stale = slot.with_name("s.lock")

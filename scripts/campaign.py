@@ -2642,7 +2642,8 @@ def evidence_shape(spec: Json) -> str:
     """A job up to its code: what a tag names, so each run of the same job at later code counts."""
     refs = sorted((name, r.get("repo")) for name, r in spec.get("refs", {}).items())
     fields = [spec.get(k) for k in ("repo", "cmd", "cwd", "level", "inputs")]
-    return json.dumps([*fields, refs, sorted(spec.get("env", {}).items())])
+    build = [spec["build"]] if spec.get("build") else []
+    return json.dumps([*fields, refs, sorted(spec.get("env", {}).items()), *build])
 
 
 def tagged(c: Campaign, pid: str, jobs: list[Json]) -> dict[str, Json]:
@@ -4639,6 +4640,7 @@ def job_key(spec: Json, reads: bool = False) -> str:
         spec["level"],
         sorted(spec["env"].items()),
         *([sorted(spec["scripts"].items())] if spec.get("scripts") else []),  # an evidence job's outside files
+        *([["build", spec["build"]]] if spec.get("build") else []),
     ]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
 
@@ -4901,7 +4903,8 @@ def shape(spec: Json) -> str:
     refs = sorted((name, r.get("repo")) for name, r in spec.get("refs", {}).items())
     env = sorted(spec.get("env", {}).items())
     fields = ("campaign", "quest", "repo", "cmd", "cwd", "level")
-    return json.dumps([*(spec.get(k) for k in fields), refs, env])
+    build = [spec["build"]] if spec.get("build") else []
+    return json.dumps([*(spec.get(k) for k in fields), refs, env, *build])
 
 
 def code_of(spec: Json) -> list[Any]:
@@ -5343,6 +5346,51 @@ def finish(job: Json, code: int, state: str, note: str = "", fence: int = 0) -> 
     return True
 
 
+def attend(
+    argv: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    d: Path,
+    *,
+    began: Path | None = None,
+    minutes: int = 0,
+    limit: float,
+) -> tuple[int, bool, bool]:
+    """Runs one command of a job in its own process group, appending to its log, beating its heart,
+    and killing it on cancel, past LIMIT, or MINUTES after BEGAN appears: (exit, cancelled, timed out)."""
+    beat = d / "heartbeat"
+    job = load_job(d)
+    with open(attempt_dir(job) / "log", "ab") as out:
+        child = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setpgrp,
+        )
+    st = job["state"]
+    st["pgid"] = child.pid
+    write_json(d / "state.json", st)
+    cancelled = timed_out = False
+    while True:
+        try:
+            return child.wait(timeout=BEAT), cancelled, timed_out
+        except subprocess.TimeoutExpired:
+            pass
+        beat.touch()
+        if (d / "cancel").exists() and not cancelled:
+            cancelled = True
+            kill_group(child, beat)
+        elif not timed_out and (
+            (began is not None and began.exists() and time.time() > began.stat().st_mtime + 60 * minutes)
+            or time.time() > limit
+        ):
+            timed_out = True
+            kill_group(child, beat)
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     """One attempt of one job, supervised by this process, the leader of its own session."""
     d = Path(a.jobdir)
@@ -5388,8 +5436,21 @@ def cmd_run(a: argparse.Namespace) -> int:
     )
     for name in spec["refs"]:
         env[f"JOB_REF_{name.upper()}"] = str(d / f"ref-{name}")
+    if spec.get("build"):  # built under light in this checkout, then run at the job's level
+        what = f"build for {spec.get('what') or spec['cmd'][:60]}"
+        built = [*quiet_argv(), "light", f"job-{d.name}-build", str(LIGHT_RUN), what, "--", "bash", "-c", spec["build"]]
+        light_env = {"CMAKE_BUILD_PARALLEL_LEVEL": str(LIGHT_BUILD_JOBS), **env}
+        wait_max = float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
+        code, cancelled, timed_out = attend(built, cwd, light_env, d, limit=time.time() + 60 * LIGHT_RUN + wait_max)
+        sweep(os.getsid(0), beat)
+        if code != 0 or cancelled or timed_out:
+            (ad / "exit").write_text(str(code))
+            release(spec, d)
+            state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "failed"
+            finish(job, code, state, f"its build failed (exit {code})" if state == "failed" else "", fence=me)
+            return 0
     argv = ["bash", "-c", 'date +%s > "$JOB_DIR/began"\n' + spec["cmd"]]
-    traced = tracer() if spec.get("commit") and spec["level"] in ("none", "light") else ""  # never timed
+    traced = tracer() if spec.get("commit") and spec["level"] in ("none", "light") and not spec.get("build") else ""
     if traced:  # what it reads decides where its result counts (record_reads)
         argv = [traced, *STRACE_ARGS, "-o", str(ad / "strace"), "--", *argv]
     if spec["level"] != "none":
@@ -5402,39 +5463,9 @@ def cmd_run(a: argparse.Namespace) -> int:
             "--",
             *argv,
         ]
-    with open(ad / "log", "wb") as log:
-        child = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setpgrp,
-        )
-    st["pgid"] = child.pid
-    write_json(d / "state.json", st)
     limit = time.time() + 60 * spec["minutes"] + float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
-    cancelled = timed_out = False
-    while True:
-        try:
-            code = child.wait(timeout=BEAT)
-            break
-        except subprocess.TimeoutExpired:
-            pass
-        beat.touch()
-        began = ad / "began"
-        if (d / "cancel").exists() and not cancelled:
-            cancelled = True
-            kill_group(child, beat)
-        elif (
-            not timed_out
-            and spec["level"] == "none"
-            and began.exists()
-            and time.time() > began.stat().st_mtime + 60 * spec["minutes"]
-        ) or (not timed_out and time.time() > limit):
-            timed_out = True
-            kill_group(child, beat)
+    began = ad / "began" if spec["level"] == "none" else None
+    code, cancelled, timed_out = attend(argv, cwd, env, d, began=began, minutes=spec["minutes"], limit=limit)
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
     state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "done" if code == 0 else "failed"
@@ -5983,6 +6014,7 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         "retries": a.retries,
         "keep": a.keep,
         "slot": a.slot or "",
+        **({"build": a.build} if a.build else {}),
     }
     spec["env"] = dict(x.split("=", 1) for x in a.env)
     cwd = Path.cwd()
@@ -6017,7 +6049,7 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec["refs"] = dict(parse_ref(top, x) for x in a.ref)
         rel = a.cwd if a.cwd is not None else (os.path.relpath(cwd, invoking) if cwd.is_relative_to(invoking) else "")
         spec["cwd"] = "" if rel == "." else rel
-        if c and a.level == "light" and not (a.slot or a.fresh or a.keep) and p["risk"] != "critical":
+        if c and (a.level == "light" or a.build) and not (a.slot or a.fresh or a.keep) and p["risk"] != "critical":
             name = quest_slot(c, a.quest, top)
             # a free slot builds incrementally; with a job of its own pending, a fresh checkout runs beside it
             if not any(slot_of(j["spec"]) == name and j["state"].get("state") not in TERMINAL for j in all_jobs()):
@@ -7414,8 +7446,13 @@ def parser() -> argparse.ArgumentParser:
         help="higher runs first (default 0; 1 for a light job of an active --quest)",
     )
     p.add_argument("--after", metavar="JOBS", help="jobs that must succeed first")
+    p.add_argument(
+        "--build",
+        metavar="CMD",
+        help=f"build first in the same checkout, under light (at most {LIGHT_RUN} minutes), then run CMD at --level",
+    )
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
-    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest light job)")
+    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest light or --build job)")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
     p.add_argument("--retries", type=int, default=0, metavar="N", help="requeues after a lost runner")
