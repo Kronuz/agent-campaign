@@ -1216,37 +1216,38 @@ def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -
 
 
 def tell_peers(c: Campaign, pid: str) -> list[str]:
-    """Messages for the leads of the other campaigns on this machine whose work a quest just
-    started overlaps: the same files in the same repository, or a contract one changes and the other
-    consumes. Once per finding."""
+    """One message per other campaign on this machine whose work a quest just started overlaps, listing
+    every overlap: the same files in the same repository, a contract the quest changes and a started
+    quest consumes, or a contract it consumes and another is changing. A planned quest consuming a
+    contract is not told: it has not started. A message already left is not repeated."""
     p = c.quests[pid]
-    told: list[str] = []
-    found: list[tuple[str, str]] = [
-        (
-            other.split(":")[0],
-            f"{c.name}:{pid} started and may change files your {other.split(':')[1]} changes; "
-            f"order them (--after {c.name}:{pid}) or narrow the files",
+    found: dict[str, list[str]] = {}
+    for other in cross_overlaps(c, pid):
+        name, _, qid = other.partition(":")
+        found.setdefault(name, []).append(
+            f"may change files your {qid} changes (order them with --after {c.name}:{pid}, or narrow the files)"
         )
-        for other in cross_overlaps(c, pid)
-    ]
     for name, o in campaigns().items():
         if name == c.name:
             continue
         for qid, q in o["state"].get("quests", {}).items():
-            if q.get("status") in ("planned", "active", "review"):
-                found += [
-                    (name, f"{c.name}:{pid} started and changes contract {x}, which your {qid} consumes")
-                    for x in consumed(q.get("consumes", []), changes(c.home, p))
-                ]
-            if q.get("status") in ("active", "review"):
-                found += [
-                    (name, f"{c.name}:{pid} started and builds against contract {x}, which your {qid} is changing")
-                    for x in consumed(p["consumes"], changes(Path(o["home"]), q))
-                ]
-    for name, text in found:
+            if q.get("status") not in ("active", "review"):
+                continue
+            items = found.setdefault(name, [])
+            items += [
+                f"changes contract {x}, which your {qid} consumes"
+                for x in consumed(q.get("consumes", []), changes(c.home, p))
+            ]
+            items += [
+                f"builds against contract {x}, which your {qid} is changing"
+                for x in consumed(p["consumes"], changes(Path(o["home"]), q))
+            ]
+    told: list[str] = []
+    for name, items in found.items():
         other = campaigns().get(name)
-        if other is None:
+        if other is None or not items:
             continue
+        text = f"{c.name}:{pid} started and " + "; ".join(dict.fromkeys(items))
         peer = Campaign(Path(other["home"]), name)
         if any(m["text"] == text for m in inbox(peer, "")):
             continue
@@ -1479,6 +1480,8 @@ def cmd_set(a: argparse.Namespace) -> int:
             c.save(f"campaign: set {a.id} task {a.task} " + " ".join(a.assignments))
             print(f"{a.id} task {a.task}: " + ("dropped" if task.get("status") == "dropped" else "updated"))
             return 0
+        if "status=dropped" not in a.assignments and (why := unparsed_criteria(c, a.id, filled=False)):
+            die(why)
         before = {k: json.loads(json.dumps(p[k])) for k in ("risk", "lenses", "checks")}
         for item in a.assignments:
             key, sep, value = item.partition("=")
@@ -1573,6 +1576,8 @@ def cmd_start(a: argparse.Namespace) -> int:
         else:
             if p["status"] not in ("planned", "blocked"):
                 die(f"{a.id} is {p['status']}")
+            if why := unparsed_criteria(c, a.id):
+                die(why)
             unmet = [d for d in p["needs"] if not c.landed(d)]
             if unmet and not a.force:
                 die(f"{a.id} needs {', '.join(unmet)} landed first (--force REASON to start anyway)")
@@ -2290,6 +2295,8 @@ def cmd_land(a: argparse.Namespace) -> int:
             die("--earlier describes a landing --record records")
         if p["status"] not in ("active", "review"):
             die(f"{a.id} is {p['status']}")
+        if why := unparsed_criteria(c, a.id):
+            die(why)
         final = a.upto is None
         if not final and not a.reason:
             die("an increment needs --reason (why this prefix is safe to land alone)")
@@ -2597,7 +2604,7 @@ def criteria(c: Campaign, pid: str) -> dict[str, Json]:
     """A quest's acceptance criteria (A1, A2, ...) from its quest file: the first line of each and the
     kind of evidence it needs, `- A2 [artifact] ...` (job when untagged)."""
     brief = c.home / c.meta / "quests" / f"{pid}.md"
-    text = section(brief.read_text() if brief.exists() else "", "Acceptance criteria")
+    text = section(brief.read_text() if brief.exists() else "", CRITERIA_HEADING)
     found: dict[str, Json] = {}
     tags = "|".join(PROOF)
     shape = rf"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$((?:\n[ \t]+\S.*)*)"
@@ -2606,6 +2613,28 @@ def criteria(c: Campaign, pid: str) -> dict[str, Json]:
             whole = " ".join(f"{line}{wrapped}".split())
             found.setdefault(cid, {"text": line.strip(), "kind": kind or "job", "whole": whole})
     return found
+
+
+CRITERIA_HEADING = "Acceptance criteria"
+
+
+def unparsed_criteria(c: Campaign, pid: str, *, filled: bool = True) -> str:
+    """Why a quest file's criteria cannot be read, or "": its `## Acceptance criteria` heading is missing
+    (the commonest slip is another title, which parses as no criteria and lands unchecked), or, when
+    FILLED, the section still holds only the template's placeholder. `None ...` is a deliberate answer."""
+    brief = c.home / c.meta / "quests" / f"{pid}.md"
+    text = brief.read_text() if brief.exists() else ""
+    if not re.search(rf"^## {CRITERIA_HEADING}\s*$", text, re.M):
+        other = re.findall(r"^## (.*[Cc]riteri.*?)\s*$", text, re.M)
+        seen = f" (it has `## {other[0]}`)" if other else ""
+        return f"{pid}'s quest file has no `## {CRITERIA_HEADING}` heading{seen}: its criteria parse as none"
+    if (
+        filled
+        and not criteria(c, pid)
+        and re.search(r"^\s*[-*]\s*\**A\d+\b[^\n]*<", section(text, CRITERIA_HEADING), re.M)
+    ):
+        return f"{pid}'s `## {CRITERIA_HEADING}` still holds the template's placeholder: write its criteria (or `None`)"
+    return ""
 
 
 def decisions(c: Campaign) -> set[str]:
@@ -2858,6 +2887,8 @@ def criteria_for(c: Campaign, pid: str, given: str) -> list[str]:
     """--for IDS, checked against the quest file: a job proves only job criteria."""
     wanted = criteria(c, pid)
     ids = csv(given)
+    if ids and not wanted and (why := unparsed_criteria(c, pid)):
+        die(f"--for {given}: {why}")
     for cid in ids:
         if cid not in wanted:
             die(f"--for {cid}: {pid}'s quest file has no criterion {cid} (it has {', '.join(wanted) or 'none'})")

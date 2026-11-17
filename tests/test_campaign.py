@@ -64,6 +64,29 @@ class Quests(CampaignCase):
         self.assertIn(f"{job}  done exit 0", self.ok(self.home, "wait", "--commits", "--timeout", "30").out)
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)
 
+    def test_a_quest_file_without_the_criteria_heading_is_refused_where_it_would_land_unchecked(self) -> None:
+        self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low", "--files", "app.py", "--check", "unit=true")
+        brief = ".campaign/demo/quests/fix.md"
+        wrong = "# fix\n\n## Criteria\n\n- A1 prints: the suite\n"
+        self.commit(self.home, {brief: wrong})
+        for args in (("set", "fix", "files=app.py"), ("start", "fix")):
+            self.fails(self.home, *args, match="no `## Acceptance criteria` heading (it has `## Criteria`)")
+        self.commit(self.home, {brief: "# fix\n\n## Acceptance criteria\n\n- A1 prints: the suite\n"})
+        self.ok(self.home, "start", "fix")
+        self.commit(self.home, {brief: wrong})  # the heading is lost after the start
+        self.fails(self.home, "job", "submit", "--quest", "fix", "--for", "A1", "--", "true", match="## Acceptance")
+        self.fails(self.home, "land", "fix", match="no `## Acceptance criteria` heading")
+        self.ok(self.home, "set", "fix", "status=dropped", "reason=a dropped quest needs no criteria")
+
+    def test_a_template_placeholder_is_no_criteria_but_none_is_an_answer(self) -> None:
+        self.keep_criteria = True
+        self.ok(self.home, "new", "fix", "--title", "fix", "--risk", "low", "--files", "app.py", "--check", "unit=true")
+        self.ok(self.home, "set", "fix", "files=app.py,README.md")  # a lead sets a new quest up before writing it
+        self.fails(self.home, "start", "fix", match="still holds the template's placeholder")
+        brief = ".campaign/demo/quests/fix.md"
+        self.commit(self.home, {brief: "# fix\n\n## Acceptance criteria\n\nNone: a refactor.\n"})
+        self.ok(self.home, "start", "fix")
+
     def test_mistakes_get_messages_that_say_what_to_do(self) -> None:
         self.fails(self.home, "new", "Bad_ID", "--title", "x", match="quest id 'Bad_ID': use lowercase letters")
         self.started("fix", files="app.py")
@@ -1689,6 +1712,38 @@ class Campaigns(CampaignCase):
         self.assertIn("api: changes contract lib-api, which other:use consumes", self.run_cli(self.home, "check").out)
         self.assertIn("use: contract lib-api is changing in demo:api", self.run_cli(self.other, "check").out)
 
+    def test_one_start_sends_one_message_listing_every_overlap_with_a_started_quest(self) -> None:
+        for pid, files, consumes in (("cons", "app.py", "o-api,o-fmt"), ("plan", "README.md", "o-api")):
+            self.ok(self.home, "new", pid, "--title", pid, "--risk", "low", "--files", files, "--check", "unit=true")
+            self.ok(self.home, "set", pid, f"consumes={consumes}")
+        self.ok(self.home, "start", "cons")  # `plan` stays planned
+        self.ok(
+            self.other,
+            "new",
+            "prov",
+            "--title",
+            "prov",
+            "--risk",
+            "low",
+            "--files",
+            "o.py",
+            "--provides",
+            "o-api,o-fmt",
+            "--check",
+            "unit=true",
+        )
+        started = self.ok(self.other, "start", "prov")
+        self.assertEqual(started.out.count("told campaign demo's lead"), 1)
+        told = self.ok(self.home, "status").out
+        self.assertEqual(told.count("for the lead, from campaign other"), 1, told)
+        for text in ("changes contract o-api, which your cons consumes", "changes contract o-fmt, which your cons"):
+            self.assertIn(text, told)
+        self.assertNotIn("your plan", told, "a planned consumer has not started")
+        self.ok(self.home, "start", "plan")  # once started, it tells the provider's lead
+        again = self.ok(self.other, "status").out
+        self.assertEqual(again.count("for the lead, from campaign demo"), 1, again)
+        self.assertIn("demo:plan started and builds against contract o-api, which your prov is changing", again)
+
     def test_campaigns_see_each_other_and_land_a_shared_library_in_order(self) -> None:
         self.fails(self.repo("third", {"t.py": "1\n"}), "init", "--name", "demo", match="already runs from")
         api = self.lib_quest(self.home, "api", "--files", "lib.py", "--provides", "lib-api")
@@ -1716,7 +1771,8 @@ class Campaigns(CampaignCase):
         self.assertIn("told campaign demo's lead that use overlaps its work", started.out)
         told = self.ok(self.home, "status").out  # demo's lead hears it from the tool
         self.assertIn("msg-1 for the lead, from campaign other: other:use started and may change files", told)
-        self.assertIn("msg-2 for the lead, from campaign other: other:use started and builds against", told)
+        self.assertIn("; builds against contract lib-api, which your api is changing", told)  # one message, not two
+        self.assertNotIn("msg-2", told)
         mine, theirs = self.run_cli(self.home, "check").out, self.run_cli(self.other, "check").out
         self.assertIn("api: changes contract lib-api, which other:use consumes", mine)
         self.assertIn("api: files may overlap other:use", mine)
