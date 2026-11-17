@@ -556,7 +556,6 @@ class Evidence(CampaignCase):
         self.assertEqual(record["evidence"][0]["state"], "done")
 
     def test_status_counts_failures_only_at_the_code_the_quest_has_now(self) -> None:
-        self.keep_criteria = True
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
@@ -566,7 +565,7 @@ class Evidence(CampaignCase):
         # the check passed, the probe did not, and no journal mentions it yet
         self.assertIn("jobs at this code: 1 passed, 1 failed; not in a journal yet (`campaign job log ID`):", out)
         self.assertIn(f"    {failed}  exit 1 at ", out)  # which job and what it ran
-        self.assertNotIn("criterion with evidence", out)  # the template's <criterion> is not one
+        self.assertNotIn("criterion with evidence", out)  # a quest with no criteria shows none
         self.commit(wt, {".campaign/demo/journal/fix.md": "a journal commit keeps the code\n"})
         self.assertIn(f"    {failed}  exit 1 at ", self.ok(self.home, "status").out)
         self.commit(wt, {".campaign/demo/journal/fix.md": f"{failed} ran the wrong command\n"})
