@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import select as os_select
 import shlex
 import shutil
 import signal
@@ -7691,6 +7692,52 @@ def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
     return heads
 
 
+def watch(paths: list[Path], timeout: float) -> None:
+    """Sleeps up to TIMEOUT seconds, waking as soon as an entry of one of the directories PATHS is
+    created, replaced or removed: kqueue on macOS and the BSDs, inotify on Linux, else a plain sleep."""
+    dirs = list(dict.fromkeys(p for p in paths if p.is_dir()))
+    fds: list[int] = []
+    kq: Any = None
+    try:
+        if dirs and hasattr(os_select, "kqueue"):
+            kq = os_select.kqueue()
+            changes = []
+            for d in dirs:
+                with contextlib.suppress(OSError):
+                    fd = os.open(d, getattr(os, "O_EVTONLY", os.O_RDONLY))
+                    fds.append(fd)
+                    note = os_select.KQ_NOTE_WRITE | os_select.KQ_NOTE_DELETE | os_select.KQ_NOTE_RENAME
+                    changes.append(
+                        os_select.kevent(
+                            fd, os_select.KQ_FILTER_VNODE, os_select.KQ_EV_ADD | os_select.KQ_EV_CLEAR, note
+                        )
+                    )
+            kq.control(changes, 1, timeout)
+            return
+        if dirs and sys.platform.startswith("linux"):
+            import ctypes  # noqa: PLC0415  # Linux only
+
+            libc = ctypes.CDLL(None, use_errno=True)
+            fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+            if fd >= 0:
+                fds.append(fd)
+                # IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE
+                if sum(
+                    libc.inotify_add_watch(fd, os.fsencode(d), 0x8 | 0x40 | 0x80 | 0x100 | 0x200) >= 0 for d in dirs
+                ):
+                    os_select.select([fd], [], [], timeout)
+                    return
+    except OSError:
+        pass
+    finally:
+        if kq is not None:
+            kq.close()
+        for fd in fds:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+    time.sleep(timeout)
+
+
 def wait_events(c: Campaign, timeout: float) -> int:
     """Returns at the first commit on a quest branch in flight or job of this campaign that ended
     since the lead last saw them (recorded in the home's .git), so nothing that happens
@@ -7718,15 +7765,23 @@ def wait_events(c: Campaign, timeout: float) -> int:
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
     start = time.time()
 
+    mine: list[Json] = []
+
     def current() -> tuple[dict[str, str], dict[str, Json]]:
         with frozen():  # each look reads the branches once
             heads = {f"{name} {branch}": head for (name, branch), head in branch_heads(c).items()}
-        ended = {
-            j["id"]: j
-            for j in all_jobs()
-            if j["spec"].get("campaign") == c.ident and j["state"].get("state") in TERMINAL
-        }
+        mine[:] = [j for j in all_jobs() if j["spec"].get("campaign") == c.ident]
+        ended = {j["id"]: j for j in mine if j["state"].get("state") in TERMINAL}
         return heads, ended
+
+    def places() -> list[Path]:  # where a message, a job's end or a branch's move writes
+        mail = mailbox(c, "")
+        mail.mkdir(parents=True, exist_ok=True)
+        found = [mail, mail.parent, *(x for x in mail.parent.iterdir() if x.is_dir()), jobs_dir()]
+        found += [j["dir"] for j in mine if j["state"].get("state") not in TERMINAL]
+        for repo in {c.repo(p) for p in c.quests.values() if p["status"] in FLIGHT}:
+            found.append(Path(common_dir(repo)) / "refs" / "heads" / "quest" / c.name)
+        return found
 
     heads, ended = current()
     if recorded is None:  # the first wait starts from now
@@ -7747,7 +7802,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
         arrived = sorted(set(waiting) - seen_messages)
         if moved or finished or arrived:
             break
-        running = [j for j in all_jobs() if j["spec"].get("campaign") == c.ident]
+        running = mine
         if not heads and not peers(c) and not any(j["state"].get("state") not in TERMINAL for j in running):
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
@@ -7756,7 +7811,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
             return 3
         if any(j["state"].get("state") == "queued" for j in running):
             ensure_worker()
-        time.sleep(tick)
+        watch(places(), tick)
     for key in moved:
         name, branch = key.split(" ", 1)
         print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch)}")

@@ -45,6 +45,28 @@ class Quests(CampaignCase):
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
 
+    def test_wait_wakes_on_a_message_or_a_jobs_end_not_on_its_tick(self) -> None:
+        self.started("fix", files="app.py")
+        self.env["CAMPAIGN_WAIT_TICK"] = "40"  # far longer than either event takes to arrive
+        self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)  # starts from now
+        for event in ("message", "job"):
+            waiting = subprocess.Popen(
+                [sys.executable, str(CAMPAIGN), "wait", "--commits", "--timeout", "60"],
+                cwd=self.home,
+                env=self.env,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(2)
+            start = time.time()
+            if event == "message":
+                self.ok(self.home, "message", "demo:", "pins moved", "--from", "peer")
+            else:
+                self.submit(self.home, "--quest", "fix", "--", "true")
+            out, _ = waiting.communicate(timeout=60)
+            self.assertLess(time.time() - start, 20, f"the {event} waited for the tick:\n{out}")
+            self.assertIn("pins moved" if event == "message" else "done exit 0", out)
+
     def test_wait_misses_nothing_that_happened_between_two_waits(self) -> None:
         a = self.started("one", files="app.py")
         b = self.started("two", files="README.md")
