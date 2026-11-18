@@ -197,8 +197,8 @@ class Quests(CampaignCase):
     def test_status_transitions_are_validated(self) -> None:
         self.started("fix", files="app.py")
         self.fails(self.home, "set", "fix", "status=landed", match="cannot become landed")
-        self.fails(self.home, "set", "fix", "status=blocked", match="needs a reason")
-        self.ok(self.home, "set", "fix", "status=blocked", "reason=waiting on the owner")
+        self.fails(self.home, "set", "fix", "status=blocked", "until=owner", match="needs a reason")
+        self.ok(self.home, "set", "fix", "status=blocked", "until=owner", "reason=waiting on the owner")
         self.ok(self.home, "set", "fix", "status=active")
         self.assertNotIn("reason", self.quest("fix"))
 
@@ -223,7 +223,7 @@ class Ownership(CampaignCase):
         self.ok(self.home, "new", "root", *new, "app.py")
         self.ok(self.home, "new", "tail", *new, "tail.py", "--needs", "root")  # waits on root
         self.ok(self.home, "new", "parked", *new, "parked.py")
-        self.ok(self.home, "set", "parked", "status=blocked", "reason=owner")
+        self.ok(self.home, "set", "parked", "status=blocked", "until=owner", "reason=owner")
         out = self.ok(self.home, "status").out
         self.assertIn("  launchable now: root, leaf\n  held by file sets: one holds clash\n", out)
         self.assertIn("  hunt list: 0 open (.campaign/demo/hunt.md)\n", out)  # init wrote it
@@ -237,6 +237,54 @@ class Ownership(CampaignCase):
         rows = "| slow merge | job J1 row 3 | lib/merge.py | . | open |\n| x | y | z | . | closed: fixed |\n"
         hunt.write_text(hunt.read_text() + rows)
         self.assertIn("  hunt list: 1 open", self.ok(self.home, "status").out)
+
+    def test_a_landing_prints_and_mails_what_it_unlocks(self) -> None:
+        wt = self.started("lib", files="lib/**", check="unit=true")
+        new = ("--title", "t", "--risk", "low", "--check", "unit=true", "--files")
+        self.ok(self.home, "new", "tail", *new, "tail.py", "--needs", "lib")
+        self.ok(self.home, "new", "clash", *new, "lib/util.py")
+        self.ok(self.home, "new", "parked", *new, "parked.py")
+        self.ok(self.home, "new", "later", *new, "later.py")
+        self.fails(self.home, "set", "tail", "status=blocked", "until=lib", "reason=r", match="block is derived")
+        self.fails(self.home, "set", "parked", "status=blocked", "reason=r", match="names until=")
+        self.ok(self.home, "set", "parked", "status=blocked", "until=lib", "reason=after lib")
+        self.ok(self.home, "set", "later", "status=blocked", "until=owner", "reason=the owner decides")
+        self.commit(wt, {"lib/util.py": "X = 2\n"})
+        self.verified("lib")
+        out = self.ok(self.home, "land", "lib").out
+        unlocked = (
+            "unlocks: tail; parked (until lib met: `campaign set parked status=planned`); frees lib/util.py for clash\n"
+        )
+        self.assertIn(unlocked, out)
+        self.assertNotIn("later", out, "a park until owner waits for the owner")
+        status = self.ok(self.home, "status").out
+        self.assertEqual(status.count("from campaign: lib landed: unlocks tail;"), 1, status)
+        self.assertIn("parked: parked until lib met", self.run_cli(self.home, "check").out)
+        self.ok(self.home, "start", "tail")
+        self.ok(self.home, "start", "clash")
+        self.ok(self.home, "set", "parked", "status=planned")
+        self.assertIn("lib landed: unlocks", self.ok(self.home, "brief").out, "parked has not started")
+        self.ok(self.home, "start", "parked")
+        self.assertNotIn("unlocks", self.ok(self.home, "brief").out)
+        self.assertEqual(self.state()["messages"][-1]["closed"], "its quests started")
+
+    def test_stored_blocks_become_derived_needs_or_parks_until_owner(self) -> None:
+        new = ("--title", "t", "--risk", "low", "--files")
+        self.ok(self.home, "new", "seg", *new, "seg.py")
+        self.ok(self.home, "new", "words", *new, "words.py")
+        self.ok(self.home, "new", "book", *new, "book.md")
+        state = self.state()
+        state["quests"]["words"].update(status="blocked", reason="needs seg (D43)")
+        state["quests"]["book"].update(status="blocked", reason="owner: later, after seg")
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-qam", "old blocks")
+        self.assertIn("words planned", self.ok(self.home, "brief").out)
+        self.ok(self.home, "set", "seg", "title=segmenter")
+        words, book = self.quest("words"), self.quest("book")
+        self.assertEqual((words["status"], words["needs"], "reason" in words), ("planned", ["seg"], False))
+        self.assertEqual(
+            (book["status"], book["until"], book["reason"]), ("blocked", ["owner"], "owner: later, after seg")
+        )
 
     def test_landing_refuses_changes_outside_the_file_set(self) -> None:
         wt = self.started("fix", files="app.py", check="unit=true")
@@ -2583,7 +2631,7 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "status")
         self.assertIn("set-status|campaign-demo-a|a: active · 🔥 1 failed job|", calls.read_text())
         calls.write_text("")
-        self.ok(self.home, "set", "a", "status=blocked", "reason=owner")
+        self.ok(self.home, "set", "a", "status=blocked", "until=owner", "reason=owner")
         self.assertIn("clear-status|campaign-demo-a|", calls.read_text(), "a blocked quest keeps no pill")
         self.ok(self.home, "set", "a", "status=active")
         self.commit(self.wt("a"), {"app.py": "print(2)\n"})
@@ -2595,7 +2643,7 @@ class Sidebar(CampaignCase):
         self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", log)
         self.env.pop("CMUX_WORKSPACE_ID")
         calls.write_text("")
-        self.ok(self.home, "set", "b", "status=blocked", "reason=owner")
+        self.ok(self.home, "set", "b", "status=blocked", "until=owner", "reason=owner")
         self.assertEqual(calls.read_text(), "", "outside cmux nothing is drawn")
 
 

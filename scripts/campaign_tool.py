@@ -635,6 +635,7 @@ QUEST_FIELDS: dict[str, type] = {
     "messages": list,
     "history": list,  # changes to risk, lenses and checks
     "reason": str,
+    "until": list,  # a park's conditions: quest ids, PLAN decision ids, or owner
     "milestone": str,
     "updated": str,
 }
@@ -690,6 +691,8 @@ def validate(data: Json) -> list[str]:
                 errors.append(f"{pid}: a check needs name, cmd, level and minutes: {check}")
         if p.get("status") in ("blocked", "dropped") and not p.get("reason"):
             errors.append(f"{pid}: {p.get('status')} needs a reason")
+        if (p.get("status") == "blocked") != bool(p.get("until")):
+            errors.append(f"{pid}: a park, and only a park, names until= (quest ids, PLAN decision ids or owner)")
         if p.get("status") == "landed" and not any(x.get("final") for x in p.get("landed", [])):
             errors.append(f"{pid}: landed without a final landing record")
     errors.extend(cycles(quests))
@@ -796,6 +799,8 @@ class Campaign:
         data = read_json(self.path)
         if data is None:
             die(f"{self.path} does not exist")
+        self.migrated = migrate_parks(data)
+        self.closing: list[Path] = []  # message files the next save removes, once the state records them
         errors = validate(data)
         if errors:
             die("state.json is invalid:\n  " + "\n  ".join(errors))
@@ -832,7 +837,10 @@ class Campaign:
         errors = validate(self.state)
         if errors:
             die("refusing to write invalid state:\n  " + "\n  ".join(errors))
+        closed = settle_mail(self)
         write_json(self.path, self.state)
+        for f in closed:
+            f.unlink(missing_ok=True)
         register(self.state["campaign"], self.home)
         sidebar(self)
         if os.environ.get("CAMPAIGN_NO_COMMIT") == "1":
@@ -1044,6 +1052,109 @@ def waiting_on(live: dict[str, Json], pid: str) -> set[str]:
     return found
 
 
+def migrate_parks(data: Json) -> list[str]:
+    """Turns stored `blocked` statuses without until= into derived blocks or parks: a planned quest whose
+    reason names only quests (and not the owner) needs them instead; any other keeps its text, until owner."""
+    quests = data.get("quests")
+    notes: list[str] = []
+    for pid, p in quests.items() if isinstance(quests, dict) else ():
+        if not isinstance(p, dict) or p.get("status") != "blocked" or p.get("until"):
+            continue
+        reason = str(p.get("reason", ""))
+        named = [q for q in quests if q != pid and re.search(rf"(?<![\w-]){re.escape(q)}(?![\w-])", reason)]
+        if named and not p.get("branch") and not re.search(r"\bowner\b", reason, re.I):
+            needs = list(dict.fromkeys([*p.get("needs", []), *named]))
+            if not cycles({**quests, pid: {**p, "needs": needs}}):
+                p.update(status="planned", needs=needs)
+                p.pop("reason", None)
+                notes.append(f"{pid} was blocked on {', '.join(named)}: now it needs them, a derived block")
+                continue
+        p["until"] = ["owner"]
+        notes.append(f"{pid} was blocked: parked until owner ({reason})")
+    return notes
+
+
+def park_target(c: Campaign, token: str) -> str:
+    """What a park's until= item names: "owner", "quest" (this campaign's or NAME:ID) or "decision"."""
+    if token == "owner":
+        return "owner"
+    if token in c.quests or re.fullmatch(r"[\w.-]+:[a-z0-9]+(-[a-z0-9]+)*", token):
+        return "quest"
+    if re.fullmatch(r"[A-Za-z][\w.-]*", token) and not re.fullmatch(r"[a-z0-9-]+", token):
+        return "decision"
+    die(f"until={token}: name quest ids, PLAN decision ids (D12) or owner")
+
+
+def park_met(c: Campaign, p: Json) -> str:
+    """The met condition of a parked quest ("until a landed"), or "" while one still holds."""
+    if p["status"] != "blocked" or not p.get("until") or "owner" in p["until"]:
+        return ""
+    for token in p["until"]:
+        if park_target(c, token) == "quest":
+            q = foreign(token) if ":" in token else c.quests.get(token)
+            if q is None or q.get("status") not in ("landed", "dropped"):
+                return ""
+        elif token not in decisions(c):
+            return ""
+    return f"until {', '.join(p['until'])} met"
+
+
+def blockers(c: Campaign) -> dict[str, Json]:
+    """Each quest not started: launchable ({}), or what it waits on: needs, file sets or a park."""
+    out: dict[str, Json] = {}
+    for k, p in c.quests.items():
+        if p["status"] == "blocked":
+            out[k] = {} if park_met(c, p) else {"park": p["until"]}
+        elif p["status"] == "planned":
+            unmet = [d for d in p["needs"] if not c.landed(d)]
+            held = [] if unmet else clashes(c, k)
+            out[k] = {"needs": unmet} if unmet else {"files": held} if held else {}
+    return out
+
+
+def unlocks(c: Campaign, before: dict[str, Json], event: str) -> str:
+    """What became launchable since BEFORE (`blockers`): needs met, a file set freed, a park's condition met.
+    Leaves one lead message listing every such quest not started yet, which closes itself once they
+    start, and returns the line to print, or ""."""
+    items: dict[str, str] = {}
+    for k, now in blockers(c).items():
+        was = before.get(k)
+        if now or was is None or not was:
+            continue
+        p = c.quests[k]
+        if p["status"] == "blocked":
+            items[k] = f"{k} ({park_met(c, p)}: `campaign set {k} status={'active' if p.get('branch') else 'planned'}`)"
+        elif "files" in was:
+            freed = [g for g in p["files"] if any(overlap([g], c.quests[x]["files"]) for x in was["files"])]
+            items[k] = f"frees {', '.join(freed or p['files'])} for {k}"
+        else:
+            items[k] = k
+    if not items:
+        return ""
+    rank = {k: (text.startswith("frees "), text != k) for k, text in items.items()}  # needs met, parks, file sets
+    items = dict(sorted(items.items(), key=lambda kv: rank[kv[0]]))
+    line = "unlocks: " + "; ".join(items.values())
+    for m in inbox(c, ""):
+        start = (m.get("settles") or {}).get("start")
+        if m.get("by") == "campaign" and start:
+            for k, text in (m.get("items") or {}).items():
+                if k in start and k not in items and c.quests.get(k, {}).get("status") in ("planned", "blocked"):
+                    items[k] = text
+            c.state.setdefault("messages", []).append({**m, "closed": "superseded"})
+            c.closing.append(mailbox(c, "") / f"{m['id']}.json")
+    text = f"{event}: unlocks " + "; ".join(items.values())
+    leave_message(c, "", text, "campaign", settles={"start": sorted(items)}, items=items)
+    return line
+
+
+def settled(c: Campaign, m: Json) -> str:
+    """Why a message the tool left has closed itself, or "": the quests it announced started."""
+    start = (m.get("settles") or {}).get("start")
+    if start and all(c.quests.get(k, {}).get("status") not in ("planned", "blocked") for k in start):
+        return "its quests started"
+    return ""
+
+
 def hunt_open(c: Campaign) -> int | None:
     """The open rows of the hunt list (`hunt.md`, Status `open`), or None without one."""
     path = c.home / c.meta / "hunt.md"
@@ -1118,6 +1229,10 @@ def writing() -> Generator[Campaign, None, None]:
         fcntl.flock(fh, fcntl.LOCK_EX)
         c = Campaign(home, os.environ.get("CAMPAIGN") or pinned)
         recover_landing(c)
+        if c.migrated:
+            c.save("campaign: derive dependency blocks; park the rest until owner")
+            for note in c.migrated:
+                print(f"campaign: {note}", file=sys.stderr)
         yield c
 
 
@@ -1312,16 +1427,18 @@ def mailbox(c: Campaign, pid: str) -> Path:
     return Path(common) / "campaign-mail" / c.state["campaign"] / (pid or "@")
 
 
-def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "") -> str:
-    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies."""
+def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "", **extra: Any) -> str:
+    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies. EXTRA holds what
+    closes a message the tool leaves by itself (`settled`)."""
     folder = mailbox(c, pid)
     folder.mkdir(parents=True, exist_ok=True)
     record = c.quests[pid] if pid else c.state
-    taken = [m["id"] for m in [*inbox(c, pid), *record.get("messages", [])]]
+    taken = [m["id"] for m in [*inbox(c, pid, settled_too=True), *record.get("messages", [])]]
     n = 1 + max([int(str(x).partition("-")[2] or 0) for x in taken] or [0])
     tmp = folder / f".message.{os.getpid()}.tmp"
     while True:  # a fresh id even when two agents write at once
         message = {"id": f"msg-{n}", "at": stamp(), "by": by, "text": text, **({"origin": origin} if origin else {})}
+        message.update(extra)
         tmp.write_text(json.dumps(message, indent=2) + "\n")
         try:
             os.link(tmp, folder / f"msg-{n}.json")
@@ -1376,16 +1493,28 @@ def tell_peers(c: Campaign, pid: str) -> list[str]:
     return told
 
 
-def inbox(c: Campaign, pid: str) -> list[Json]:
-    """The open messages for a quest ("" for the lead), oldest first."""
+def inbox(c: Campaign, pid: str, settled_too: bool = False) -> list[Json]:
+    """The open messages for a quest ("" for the lead), oldest first; a lead's message the tool left
+    is closed once `settled`."""
     found: list[Json] = []
     folder = mailbox(c, pid)
     for f in folder.glob("*-*.json") if folder.is_dir() else []:
         with contextlib.suppress(CampaignError):
             message = read_json(f)
-            if message:
+            if message and (settled_too or pid or not settled(c, message)):
                 found.append(message)
     return sorted(found, key=lambda n: int(str(n["id"]).partition("-")[2] or 0))
+
+
+def settle_mail(c: Campaign) -> list[Path]:
+    """Records the lead's messages that closed themselves (`settled`) in the state; returns their files,
+    to remove once the state is written."""
+    gone, c.closing = c.closing, []
+    for m in inbox(c, "", settled_too=True):
+        if (f := mailbox(c, "") / f"{m['id']}.json") not in gone and (why := settled(c, m)):
+            c.state.setdefault("messages", []).append({**m, "closed": why})
+            gone.append(f)
+    return gone
 
 
 def answered(message: Json, journals: Collection[str]) -> bool:
@@ -1602,6 +1731,7 @@ def cmd_set(a: argparse.Namespace) -> int:
             return 0
         if "status=dropped" not in a.assignments and (why := unparsed_criteria(c, a.id, filled=False)):
             die(why)
+        waited = blockers(c)
         before = {k: json.loads(json.dumps(p[k])) for k in ("risk", "lenses", "checks")}
         for item in a.assignments:
             key, sep, value = item.partition("=")
@@ -1611,7 +1741,7 @@ def cmd_set(a: argparse.Namespace) -> int:
                 if value not in SET_STATUS.get(p["status"], ()):
                     die(f"{a.id}: {p['status']} cannot become {value} by set (start and land do that)")
                 p["status"] = value
-            elif key in ("needs", "after", "provides", "consumes", "files", "lenses"):
+            elif key in ("needs", "after", "provides", "consumes", "files", "lenses", "until"):
                 p[key] = csv(value)
             elif key == "risk" and value not in RISKS:
                 die(f"risk is one of {', '.join(RISKS)}, not {value!r}")
@@ -1619,8 +1749,9 @@ def cmd_set(a: argparse.Namespace) -> int:
                 p[key] = value
             else:
                 die(
-                    f"no field {key} to set; the fields are title, status, risk, reason, repo, milestone, needs, "
-                    f"after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, --later and --inputs"
+                    f"no field {key} to set; the fields are title, status, risk, reason, until, repo, milestone, "
+                    f"needs, after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, "
+                    "--later and --inputs"
                 )
         if a.check:
             p["checks"] = [placed(x, p["risk"]) for x in a.check] + deferred(p)
@@ -1657,7 +1788,19 @@ def cmd_set(a: argparse.Namespace) -> int:
             die("--weaken: nothing here weakens the quest")
         if p["status"] not in ("blocked", "dropped") and not any(x.startswith("reason=") for x in a.assignments):
             p.pop("reason", None)
+        if p["status"] != "blocked":
+            p.pop("until", None)
+        elif not p.get("until"):
+            die("a park names until=IDS: quests to land, PLAN decision ids, or owner")
+        else:
+            kinds = {x: park_target(c, x) for x in p["until"]}
+            needed = [x for x, kind in kinds.items() if kind == "quest" and x in p["needs"] and not p.get("branch")]
+            if needed:
+                die(f"{a.id} needs {', '.join(needed)} already: that block is derived; leave it planned")
+            if met := park_met(c, p):
+                die(f"{a.id}: its park is {met} already")
         p["updated"] = stamp()
+        opened = unlocks(c, waited, f"{a.id} dropped" if p["status"] == "dropped" else f"set {a.id}")
         c.save(
             f"campaign: set {a.id} "
             + " ".join(
@@ -1671,6 +1814,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         if any(x == "status=blocked" for x in a.assignments):
             notify(f"Blocked: {a.id}", p.get("reason", ""))
     print(f"{a.id}: {p['status']}")
+    if opened:
+        print(opened)
     return 0
 
 
@@ -2431,6 +2576,7 @@ def cmd_land(a: argparse.Namespace) -> int:
         p = c.quest(a.id)
         repo = c.repo(p)
         held.enter_context(repo_lock(c, repo))
+        waited = blockers(c)
         main = main_branch(repo)
         checkout = main_checkout(repo)
         if a.record:
@@ -2466,6 +2612,7 @@ def cmd_land(a: argparse.Namespace) -> int:
                 land_journals(c, a.id)
             kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
             p["updated"] = stamp()
+            opened = unlocks(c, waited, f"{a.id} landed") if final else ""
             c.save(
                 f"campaign: record {a.id} landed at {target[:12]}" + (" (unverified)" if unverified else ""),
                 extra=refresh_map(c),
@@ -2475,6 +2622,8 @@ def cmd_land(a: argparse.Namespace) -> int:
             )
             for item in kept:
                 print(f"kept {item} (`campaign clean {a.id}` once resolved)")
+            if opened:
+                print(opened)
             return 0
         if a.earlier:
             die("--earlier describes a landing --record records")
@@ -2561,6 +2710,7 @@ def cmd_land(a: argparse.Namespace) -> int:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
         kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
         p["updated"] = stamp()
+        opened = unlocks(c, waited, f"{a.id} landed") if final else ""
         c.save(message + f" at {landed[:12]}", extra=refresh_map(c))
         for m in filed:
             (mailbox(c, a.id) / f"{m['id']}.json").unlink(missing_ok=True)
@@ -2578,6 +2728,8 @@ def cmd_land(a: argparse.Namespace) -> int:
     print(f"{a.id}: landed {target[:12]} on {main}{via}" + ("" if final else " (increment)"))
     for item in kept:
         print(f"kept {item} (`campaign clean {a.id}` once resolved)")
+    if opened:
+        print(opened)
     return 0
 
 
@@ -3225,6 +3377,9 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
     for pids, paths in sorted(overlaps.items()):
         out.append(("warning", f"one writer per file: {' and '.join(pids)} both change {', '.join(paths[:5])}"))
     for pid, p in c.quests.items():
+        if met := park_met(c, p):
+            back = "active" if p.get("branch") else "planned"
+            out.append(("error", f"{pid}: parked {met}: `campaign set {pid} status={back}`"))
         live = p["status"] in ("planned", "active", "review")
         for dep in [*p["needs"], *p["after"]]:
             if ":" in dep and live and foreign(dep) is None:
@@ -3318,7 +3473,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
     elif clash:
         view["missing"] = [f"files may overlap {', '.join(clash)}: start once it lands, or narrow files"]
     elif p["status"] == "blocked":
-        view["missing"] = [f"blocked: {p.get('reason', '')}"]
+        view["missing"] = [f"blocked until {', '.join(p.get('until', []))}: {p.get('reason', '')}"]
     repo = c.repo(p)
     mine = quest_jobs(jobs, c.ident, pid)
     view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
@@ -4763,6 +4918,7 @@ def cmd_check(a: argparse.Namespace) -> int:
     data = read_json(path)
     if data is None:
         die(f"{path} does not exist")
+    migrate_parks(data)  # the next writer records it
     errors = validate(data)
     for e in errors:
         print_problem("error", e)
@@ -7745,8 +7901,10 @@ def parser() -> argparse.ArgumentParser:
     p = command(
         "set",
         "change a quest's fields",
-        "Sets a quest's fields: title, status, risk, reason, repo, milestone, needs, after, provides, consumes, "
-        "files, lenses, and with --check or --later its checks. A blocked or dropped status needs reason=R. "
+        "Sets a quest's fields: title, status, risk, reason, until, repo, milestone, needs, after, provides, "
+        "consumes, files, lenses, and with --check or --later its checks. A dropped status needs reason=R; a "
+        "park, status=blocked, also until=IDS (quests to land, PLAN decision ids, or owner): unmet needs block a "
+        "quest without one. "
         "Lowering the risk, removing a lens, or removing, changing, deferring or narrowing the inputs of a check "
         "needs --weaken REASON: "
         "the change is recorded in the quest's history and voids its review acceptances; any risk change voids "

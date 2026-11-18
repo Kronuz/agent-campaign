@@ -95,8 +95,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   or growth makes it a quest. A pin bump is the lead's: `campaign pin --push` checks that only
   version strings changed, runs `config pin_check` and records it; quests merge `main`, never
   claiming the build file.
-- **`needs`** must land before a quest starts; **`after`** must land before it lands. A quest may
-  start against an `after` dependency only because that dependency's quest file fixes the contract.
+- **`needs`** must land before a quest starts; **`after`** before it lands, which a quest may
+  start against only because that quest file fixes the contract. Any other wait is a park (`set ID
+  status=blocked until=IDS|DECISION|owner reason=R`); `land` prints and mails what it unlocks.
 - **Contracts** (`--provides`, `--consumes`) name APIs, formats and protocols, so `campaign check`
   sees two quests touching one. A quest in another repository changes that repository's contracts:
   a quest building on a library names it (`--consumes http`, or `http:client` for one part), and its
@@ -143,9 +144,8 @@ job passing at the exact commit; it queues no local job.
 1. `campaign start ID` creates `quest/<campaign>/ID` in its own worktree with a journal. Launch a
    contributor **in the background**, so it can be resumed by message, with the "Contributor"
    prompt (`references/prompts.md`). Keep every **launchable** quest running, critical path
-   first, capped by what the lead can review and land and by the host's light slots. A quest is
-   launchable when it is planned, its `needs` have landed, and its file set overlaps no active or
-   review quest's in its repository; `campaign status` lists them in that order.
+   first, capped by what the lead can review and land and by the host's light slots; `campaign
+   status` lists them (planned, `needs` landed, files free) in that order.
 2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs
    tagged with the criteria they prove: `campaign verify ID --for A1` and `campaign job submit
    --quest ID --for A2 -- CMD`. When only jobs remain, it records their ids and ends its turn.
