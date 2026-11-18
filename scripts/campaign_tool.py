@@ -3108,6 +3108,25 @@ def evidence(
     return rows
 
 
+def stray_rows(journals: dict[str, str], wanted: Collection[str]) -> list[str]:
+    """Criterion rows (a table row whose first cell names a criterion) under another heading than
+    Evidence, where landing never reads them."""
+    found: list[str] = []
+    for name, text in journals.items():
+        heading = ""
+        for line in text.splitlines():
+            if line.startswith("## "):
+                heading = line[3:].strip()
+            elif heading != "Evidence" and line.lstrip().startswith("|"):
+                ids = [x for x in re.findall(r"\bA\d+\b", table_cells(line)[0]) if x in wanted]
+                if ids:
+                    where = f"under `## {heading}`" if heading else "above every heading"
+                    found.append(
+                        f"{name}'s journal has a row for {', '.join(ids)} {where}: landing reads only `## Evidence`"
+                    )
+    return found
+
+
 def evidence_shape(spec: Json) -> str:
     """A job up to its code: what a tag names, so each run of the same job at later code counts."""
     refs = sorted((name, r.get("repo")) for name, r in spec.get("refs", {}).items())
@@ -3577,6 +3596,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
             "next": next_step(journal),
         }
     view["replaced"] = replaced_citations(texts, mine)
+    view["stray"] = stray_rows(texts, criteria(c, pid)) if brief and texts else []
     ended = ended_at_head(c, pid, mine)
     view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
     view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
@@ -4184,6 +4204,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
         ]
         q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
         q["replaced"] = v["replaced"]
+        q["stray"] = v["stray"]
         q["pending"] = {s: k for s, k in v["jobs"].items() if k}
         if "evidence" in v:
             q["evidence"] = v["evidence"]
@@ -4218,6 +4239,8 @@ def print_brief(b: Json) -> None:
             print(f"  - {m['id']} from {m['by']}: {m['text']}")
         for f in q["failed"]:
             print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
+        for note in q["stray"]:
+            print(f"  - {note}")
         for r in q["replaced"]:
             print(
                 f"  - {r['criteria']} in {r['journal']} cites {r['job']}; {r['by']} replaces it "

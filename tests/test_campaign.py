@@ -404,6 +404,17 @@ class Evidence(CampaignCase):
         self.assertIn("check unit is not green", self.ok(self.home, "brief", "fix").out)
         self.assertIn("tested_docs=docs/site/**", self.ok(self.home, "config").out)
 
+    def test_brief_warns_of_a_criterion_row_outside_the_evidence_section(self) -> None:
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 [manual] reads well\n- A5 [manual] ok"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        journal = "## Evidence\n\n| A1 | the lead read it |\n\n## Result\n\n| Row | Value |\n|---|---|\n| A5 | ok |\n"
+        self.commit(wt, {".campaign/demo/journal/fix.md": journal})
+        out = self.ok(wt, "brief").out
+        self.assertIn("  - fix's journal has a row for A5 under `## Result`: landing reads only `## Evidence`\n", out)
+        self.assertNotIn("row for A1", out)
+
     def test_each_criterion_needs_the_kind_of_evidence_it_names(self) -> None:
         wt = self.started("fix", files="app.py,docs/**")
         brief = self.home / ".campaign/demo/quests/fix.md"
