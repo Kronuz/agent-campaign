@@ -134,21 +134,27 @@ def read_json(path: Path) -> Json | None:
     return data
 
 
-_parsed: dict[Path, tuple[tuple[int, int, int], Json | None]] = {}
+_parsed: dict[tuple[Path, Callable[..., Any]], tuple[tuple[int, int, int], Any]] = {}
 
 
-def read_json_shared(path: Path) -> Json | None:
-    """read_json, parsed once per process while the file keeps its inode, mtime and size; every
-    caller gets the same object, so none may change it."""
+def shared(path: Path, parse: Callable[[Path], Any]) -> Any:
+    """parse(PATH), once per process while the file keeps its inode, mtime and size; None when it
+    does not exist. Every caller gets the same object, so none may change it."""
     try:
         st = path.stat()
     except FileNotFoundError:
         return None
     ident = (st.st_ino, st.st_mtime_ns, st.st_size)
-    hit = _parsed.get(path)
+    hit = _parsed.get((path, parse))
     if hit is None or hit[0] != ident:
-        hit = _parsed[path] = (ident, read_json(path))
+        hit = _parsed[(path, parse)] = (ident, parse(path))
     return hit[1]
+
+
+def read_json_shared(path: Path) -> Json | None:
+    """read_json, parsed once per process while the file is the same (shared)."""
+    data: Json | None = shared(path, read_json)
+    return data
 
 
 def csv(value: str | None) -> list[str]:
@@ -271,12 +277,32 @@ def frozen() -> Generator[None, None, None]:
 def branch_head(repo: Path, ref: str) -> str | None:
     if not _heads or SHA.fullmatch(ref):
         return None
+    return repo_refs(repo).get(f"refs/heads/{ref}")
+
+
+def repo_refs(repo: Path) -> dict[str, str]:
+    """While frozen, a repository's refs and the commits they name (tags peeled), listed once."""
     snapshot = _heads[0]
     if str(repo) not in snapshot:
-        listing = git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", check=False)
-        pairs = (x.partition(" ") for x in listing.splitlines())
-        snapshot[str(repo)] = {r[len("refs/heads/") :]: sha for sha, _, r in pairs}
-    return snapshot[str(repo)].get(ref)
+        listing = git(repo, "for-each-ref", "--format=%(objectname) %(*objectname) %(refname)", check=False)
+        rows = (x.split(" ") for x in listing.splitlines())
+        snapshot[str(repo)] = {r[2]: r[1] or r[0] for r in rows if len(r) == 3}
+    return snapshot[str(repo)]
+
+
+REF_NAME = re.compile(r"(?![0-9a-f]+$)(?![A-Z_]+$)[\w.-]+(/[\w.-]+)*")  # a ref's name: no id, HEAD or rev expression
+
+
+def frozen_ref(repo: Path, ref: str) -> str | None:
+    """While frozen, the commit a ref's name names (a branch first, then git's order), or "" when no
+    ref has that name; None when only git can say (not frozen, a commit id, HEAD, an expression)."""
+    if not _heads or not REF_NAME.fullmatch(ref):
+        return None
+    refs = repo_refs(repo)
+    for name in (f"refs/heads/{ref}", ref, f"refs/{ref}", f"refs/tags/{ref}", f"refs/remotes/{ref}"):
+        if name.startswith("refs/") and name in refs:
+            return refs[name]
+    return refs.get(f"refs/remotes/{ref}/HEAD", "")
 
 
 def on_commits(key: tuple[str, ...], ask: Callable[[], Any]) -> Any:
@@ -298,11 +324,12 @@ def on_commits(key: tuple[str, ...], ask: Callable[[], Any]) -> Any:
 
 
 def rev(repo: Path, ref: str) -> str:
-    return branch_head(repo, ref) or git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return frozen_ref(repo, ref) or git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
 
 
 def has_ref(repo: Path, ref: str) -> bool:
-    return bool(branch_head(repo, ref)) or git_ok(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    known = frozen_ref(repo, ref)
+    return bool(known) if known is not None else git_ok(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
 
 
 def ancestor(repo: Path, a: str, b: str) -> bool:
@@ -2187,6 +2214,7 @@ def landing_gaps(
 ) -> list[str]:
     """What keeps a quest from landing TARGET, each with what to do about it; empty when it can
     land. `land` refuses with these and `status` lists them."""
+    warm_fingerprint()
     p = c.quests[pid]
     repo = c.repo(p)
     main = main_branch(repo)
@@ -2463,7 +2491,8 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{checkout} is not on {main}")
         if git(checkout, "status", "--porcelain", "--untracked-files=no"):
             die(f"{checkout} has uncommitted changes")
-        gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
+        with frozen():  # the gaps only read
+            gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
             die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
         evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]
@@ -2789,8 +2818,12 @@ def unparsed_criteria(c: Campaign, pid: str, *, filled: bool = True) -> str:
 
 def decisions(c: Campaign) -> set[str]:
     """The ids in PLAN.md's Decisions table: what a [decision] criterion's evidence names."""
-    plan = c.home / c.meta / "PLAN.md"
-    rows = section(plan.read_text() if plan.exists() else "", "Decisions").splitlines()
+    found: set[str] = shared(c.home / c.meta / "PLAN.md", plan_decisions) or set()
+    return found
+
+
+def plan_decisions(plan: Path) -> set[str]:
+    rows = section(plan.read_text(), "Decisions").splitlines()
     ids = (table_cells(r)[0] for r in rows if r.startswith("|"))
     return {x for x in ids if x and x.lower() != "id" and not set(x) <= set("-: ")}
 
@@ -2912,16 +2945,22 @@ def evidence_shape(spec: Json) -> str:
 def tagged(c: Campaign, pid: str, jobs: list[Json]) -> dict[str, Json]:
     """Each criterion the quest's jobs are tagged for (`job submit --for`): the newest job of each
     tagged command ("runs"), and the jobs tagged as failing without the fix ("fails")."""
+
+    def index(jobs: list[Json]) -> dict[tuple[Any, Any], list[tuple[Json, Json]]]:
+        tags: dict[tuple[Any, Any], list[tuple[Json, Json]]] = {}
+        for j in sorted(jobs, key=lambda j: j["spec"].get("submitted", 0)):
+            for t in j.get("tags", []):
+                tags.setdefault((t.get("campaign"), t.get("quest")), []).append((j, t))
+        return tags
+
     out: dict[str, Json] = {}
-    for j in sorted(jobs, key=lambda j: j["spec"].get("submitted", 0)):
-        for t in j.get("tags", []):
-            if t.get("campaign") == c.ident and t.get("quest") == pid:
-                for cid in t.get("for", []):
-                    entry = out.setdefault(cid, {"runs": {}, "fails": []})
-                    if t.get("fails_without"):
-                        entry["fails"].append(j)
-                    else:
-                        entry["runs"][evidence_shape(j["spec"])] = j
+    for j, t in derived(jobs, "tags", index).get((c.ident, pid), []):
+        for cid in t.get("for", []):
+            entry = out.setdefault(cid, {"runs": {}, "fails": []})
+            if t.get("fails_without"):
+                entry["fails"].append(j)
+            else:
+                entry["runs"][evidence_shape(j["spec"])] = j
     return out
 
 
@@ -3367,21 +3406,30 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
     return view
 
 
-_grouped: dict[int, tuple[list[Json], dict[tuple[Any, Any], list[Json]]]] = {}
+_derived: dict[tuple[str, int], tuple[list[Json], Any]] = {}
+
+
+def derived(jobs: list[Json], name: str, make: Callable[[list[Json]], Any]) -> Any:
+    """make(JOBS), once per list of jobs, for a command that asks the same of it for every quest."""
+    held = _derived.get((name, id(jobs)))
+    if held is None or held[0] is not jobs:
+        if len(_derived) >= 16:
+            del _derived[next(iter(_derived))]
+        held = _derived[(name, id(jobs))] = (jobs, make(jobs))
+    return held[1]
 
 
 def quest_jobs(jobs: list[Json], campaign: str, pid: str) -> list[Json]:
-    """A quest's jobs among JOBS, in order: a list of jobs is grouped by quest once, for a command
-    that asks about every quest."""
-    held = _grouped.get(id(jobs))
-    if held is None or held[0] is not jobs:
+    """A quest's jobs among JOBS, in order."""
+
+    def group(jobs: list[Json]) -> dict[tuple[Any, Any], list[Json]]:
         groups: dict[tuple[Any, Any], list[Json]] = {}
         for j in jobs:
             groups.setdefault((j["spec"].get("campaign"), j["spec"].get("quest")), []).append(j)
-        if len(_grouped) >= 8:
-            del _grouped[next(iter(_grouped))]
-        held = _grouped[id(jobs)] = (jobs, groups)
-    return held[1].get((campaign, pid), [])
+        return groups
+
+    found: list[Json] = derived(jobs, "quest", group).get((campaign, pid), [])
+    return found
 
 
 def checkouts(c: Campaign, name: str, rel: str) -> list[Path | None]:
@@ -3488,8 +3536,10 @@ def quest_map(c: Campaign, pid: str, jobs: list[Json]) -> Json:
     if final:
         start = final[-1].get("from") or p.get("base", "")
         if start:
-            changed = git(
-                repo, "diff", "--name-only", "--diff-filter=AM", start, final[-1]["commit"], "--", "docs", check=False
+            end = final[-1]["commit"]
+            changed = on_commits(
+                ("docs-added", str(repo), start, end),
+                lambda: git(repo, "diff", "--name-only", "--diff-filter=AM", start, end, "--", "docs", check=False),
             )
             prefix = "" if repo == c.home.resolve() else f"{repo.name}:"
             docs = [prefix + x for x in changed.splitlines()]
@@ -3562,6 +3612,7 @@ def map_data(c: Campaign, only: str = "") -> Json:
         c.quest(only)
     jobs = all_jobs()
     with frozen():
+        warm_repos([c.home, *(c.repo(p) for x, p in c.quests.items() if not only or x == only)])
         quests = {pid: quest_map(c, pid, jobs) for pid in c.quests if not only or pid == only}
     plan = c.home / c.meta / "PLAN.md"
     goals: list[str] = []
@@ -4710,11 +4761,12 @@ def cmd_check(a: argparse.Namespace) -> int:
         print_problem("error", e)
     if errors:
         return 1
-    reap()
-    c = Campaign(home)
-    found = problems(c)
-    notes = [*oversized_checks(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
-    notes += stalls(all_jobs(), time.time())
+    with frozen():  # check only reads
+        reap()
+        c = Campaign(home)
+        found = problems(c)
+        notes = [*oversized_checks(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
+        notes += stalls(all_jobs(), time.time())
     for severity, message in [*found, *notes]:
         print_problem(severity, message)
     if not any(s != "note" for s, _ in [*found, *notes]):
@@ -7481,7 +7533,8 @@ def wait_events(c: Campaign, timeout: float) -> int:
     start = time.time()
 
     def current() -> tuple[dict[str, str], dict[str, Json]]:
-        heads = {f"{name} {branch}": head for (name, branch), head in branch_heads(c).items()}
+        with frozen():  # each look reads the branches once
+            heads = {f"{name} {branch}": head for (name, branch), head in branch_heads(c).items()}
         ended = {
             j["id"]: j
             for j in all_jobs()
@@ -7530,7 +7583,8 @@ def wait_events(c: Campaign, timeout: float) -> int:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
     remember(heads, ended)
-    flight = [f"{name} ({journal_state(c, name, branch)})" for (name, branch) in branch_heads(c)]
+    with frozen():
+        flight = [f"{name} ({journal_state(c, name, branch)})" for (name, branch) in branch_heads(c)]
     pending = sum(
         1 for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
     )

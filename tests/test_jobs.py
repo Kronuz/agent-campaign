@@ -972,6 +972,41 @@ class JobIndex(CampaignCase):
             os.replace(keys / ".k.tmp", keys / "k")  # as submit files a newer job under the key
             self.assertEqual(campaign_module().key_links("k"), ["261117-000001-bbbbbb"])
 
+    def test_a_frozen_ref_names_what_git_names_and_moves_after(self) -> None:
+        first = self.git(self.home, "rev-parse", "HEAD")
+        self.git(self.home, "tag", "-a", "v1", "-m", "v1")
+        self.git(self.home, "tag", "lw")
+        self.git(self.home, "update-ref", "refs/remotes/origin/main", first)
+        self.git(self.home, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.git(self.home, "branch", "feat")
+        later = self.commit(self.home, {"app.py": "print(2)\n"})
+        m = campaign_module()
+        names = ["main", "feat", "v1", "lw", "origin/main", "origin", "refs/heads/feat", "HEAD", first, "nope"]
+        unfrozen = [(m.has_ref(self.home, x), m.has_ref(self.home, x) and m.rev(self.home, x)) for x in names]
+        with m.frozen():
+            frozen = [(m.has_ref(self.home, x), m.has_ref(self.home, x) and m.rev(self.home, x)) for x in names]
+            self.git(self.home, "branch", "-f", "feat", later)
+            self.assertEqual(m.rev(self.home, "feat"), first, "a frozen command reads the branches once")
+        self.assertEqual(frozen, unfrozen)
+        self.assertEqual(m.rev(self.home, "feat"), later)
+
+    def test_a_shared_parse_follows_its_file(self) -> None:
+        m = campaign_module()
+        parsed: list[str] = []
+
+        def parse(p: Path) -> str:
+            parsed.append(p.read_text())
+            return parsed[-1]
+
+        plan = self.root / "PLAN.md"
+        plan.write_text("one")
+        self.assertEqual([m.shared(plan, parse), m.shared(plan, parse)], ["one", "one"])
+        plan.write_text("three")  # another size
+        self.assertEqual(m.shared(plan, parse), "three")
+        self.assertEqual(parsed, ["one", "three"])
+        plan.unlink()
+        self.assertIsNone(m.shared(plan, parse))
+
 
 class CiCache(CampaignCase):
     def test_only_a_passed_ci_answer_outlives_its_command(self) -> None:
