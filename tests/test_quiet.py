@@ -246,11 +246,24 @@ class Quiet(unittest.TestCase):
         light = self.quiet("light", "L", "10", "a build", "--", "bash", "-c", self.mark("L", 6), **whole)
         self.until(lambda: "L [" in self.listed())
         beside = self.dir / "beside"
+        # S ends once M has: a slow runner admits M late, and S must still run beside it
+        wait_m = (
+            f"echo S-start >> {self.log}; for i in $(seq 300); do grep -q M-end {self.log} && break; sleep 0.1; done"
+        )
         strict = self.quiet(
-            "strict", "S", "10", "measure", "--", "bash", "-c", self.mark("S", 2), QUIET_BESIDE=str(beside), **whole
+            "strict",
+            "S",
+            "10",
+            "measure",
+            "--",
+            "bash",
+            "-c",
+            f"{wait_m}; echo S-end >> {self.log}",
+            QUIET_BESIDE=str(beside),
+            **whole,
         )
         self.until(lambda: "S [strict, beside light holds]" in self.listed())
-        late = self.quiet("light", "M", "10", "a test", "--", "bash", "-c", self.mark("M", 0.2), **whole)
+        late = self.quiet("light", "M", "10", "a test", "--", "bash", "-c", self.mark("M", 1), **whole)  # 5 polls
         _, err = strict.communicate(timeout=30)
         late.communicate(timeout=30)
         light.communicate(timeout=30)
