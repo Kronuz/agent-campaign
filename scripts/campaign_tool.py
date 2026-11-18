@@ -6409,6 +6409,21 @@ def camp(job: Json) -> str:
     return str(job["spec"].get("campaign") or "")
 
 
+def queue_order(queued: list[Json], aged: set[str], holds: Counter[str] | None = None) -> list[Json]:
+    """The order the worker tries queued jobs in: priority, the campaign holding fewer light slots, the
+    AGED in submit order before the rest shortest first; ties in submit order, since a job's id holds
+    only its second and a random suffix."""
+    held: Counter[str] = holds if holds is not None else Counter()
+
+    def key(j: Json) -> tuple[Any, ...]:
+        spec = j["spec"]
+        aging = j["id"] in aged
+        minutes = 0 if aging else int(spec.get("minutes", 0) or 0)
+        return (-int(spec.get("priority", 0)), held[camp(j)], not aging, minutes, float(spec.get("submitted") or 0))
+
+    return sorted(queued, key=lambda j: (*key(j), j["id"]))
+
+
 def light_slots(heavy: bool = False) -> int:
     """Light jobs at once, as quiet admits them: half the CPUs (a quarter beside a heavy job)."""
     if os.environ.get("CAMPAIGN_LIGHT_JOBS"):
@@ -6598,10 +6613,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
             reap()
             jobs = all_jobs()
             states = {j["id"]: j["state"].get("state") for j in jobs}
-            queued = sorted(
-                (j for j in jobs if states[j["id"]] == "queued"),
-                key=lambda j: (-int(j["spec"].get("priority", 0)), j["id"]),
-            )
+            queued = queue_order([j for j in jobs if states[j["id"]] == "queued"], set())
             running = [j for j in jobs if states[j["id"]] == "running"]
             busy = {slot_of(j["spec"]) for j in running} - {""}  # a slot is one build directory: one job at a time
             if not queued and not running:
@@ -6624,15 +6636,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
             # shortest first, except that a job queued past `age` goes ahead in submit order, so a
             # stream of short jobs never starves a long one
             aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
-            queued.sort(
-                key=lambda j: (
-                    -int(j["spec"].get("priority", 0)),
-                    holds[camp(j)],
-                    j["id"] not in aged,
-                    0 if j["id"] in aged else int(j["spec"].get("minutes", 0) or 0),
-                    j["id"],
-                )
-            )
+            queued = queue_order(queued, aged, holds)
             # how long each command took, oldest run first
             took: dict[tuple[str, str, str], list[float]] = {}
             for j in sorted(jobs, key=lambda j: j["id"]):

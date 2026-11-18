@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, campaign_module, session_members
@@ -423,6 +424,16 @@ class Identity(CampaignCase):
 
 
 class Scheduling(CampaignCase):
+    def test_jobs_submitted_in_one_second_run_in_submit_order(self) -> None:
+        """A job id holds its second and a random suffix, so ids alone misorder jobs of one second."""
+        order = campaign_module().queue_order
+
+        def job(jid: str, submitted: float, level: str = "exclusive") -> dict[str, Any]:
+            return {"id": jid, "spec": {"submitted": submitted, "level": level, "minutes": 1, "campaign": "c"}}
+
+        first, second = job("261118-010101-ffffff", 100.25), job("261118-010101-000000", 100.75)
+        self.assertEqual([j["id"] for j in order([second, first], set())], [first["id"], second["id"]])
+
     def test_after_runs_in_order_and_skips_on_failure(self) -> None:
         a = self.submit(self.home, "--", "exit 1")
         b = self.submit(self.home, "--after", a, "--", "true")
