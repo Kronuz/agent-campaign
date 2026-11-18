@@ -232,7 +232,7 @@ claim has one short before/after run (`references/measurement.md`).
 | `none` | tiny single-threaded probes | no hold |
 | `light` | builds, suites, fuzzing, at most 4 processes each | half the CPUs, nice 19 |
 | `strict` | other timings, load and race repros | own cores on Linux; beside light work on macOS |
-| `exclusive` | numbers that decide or get published | the machine to itself |
+| `exclusive` | one short job per number that decides or gets published | the machine to itself |
 
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH;
 `--build CMD` builds there under light before a measurement. A result is reused for identical code
@@ -242,7 +242,7 @@ from `main`, documentation-only commits, read sets and `--inputs`. Name a mutabl
 minutes, a light fuzz or soak 30, and each is stopped at its deadline; `--long REASON` lifts the
 cap and defers it. Every process a job starts dies with it. The worker starts by itself and prunes
 daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged or finished work;
-`campaign check` warns under `disk_warn` free GiB (100) with the largest consumers. Mechanics: `references/host.md`.
+`campaign check` warns when disk runs low. Mechanics: `references/host.md`.
 
 ## Integration
 

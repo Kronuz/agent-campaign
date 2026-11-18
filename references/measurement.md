@@ -1,6 +1,6 @@
 # Measurement
 
-Read before planning, running or judging a benchmark. A number names the commits, host and
+Read before planning or judging a benchmark. A number names the commits, host and
 toolchain it measured, and expires with them.
 
 ## Short runs
@@ -12,12 +12,11 @@ soaks and recovery tails are milestone checks.
 | Stage | Length | Level | Purpose |
 |---|---|---|---|
 | Smoke | ≤ 3 min | `strict` | Every arm runs end to end with its effective configuration printed and asserted (the arm's settings applied, the server under test the one named, counters non-zero); a failed assertion aborts. |
-| Row | ≤ 10 min | `strict`; `exclusive` decides or publishes | One job per row, holding its interleaved A/B pairs (`--ref base=<commit>`; `$JOB_REF_BASE` is the baseline checkout). It decides by the rule (metric, arms, noise floor, threshold) the quest file fixed first; a rule changed after data is a Decisions row, every row rerun under it. |
+| Row | ≤ 10 min | `strict`; one `exclusive` job per decision, never trials, A/As or platform repeats | One job per row, holding its interleaved A/B pairs (`--ref base=<commit>`; `$JOB_REF_BASE` is the baseline checkout). It decides by the rule (metric, arms, noise floor, threshold) the quest file fixed first; a rule changed after data is a Decisions row, every row rerun under it. |
 
 Run a row a second time only when its interval straddles the target. Chain the stages with
 `--after`, so a row runs only when its smoke passed; `--build` builds in the row's checkout. On
-macOS strict shares the machine with light work (the job's `beside`): a deciding number takes
-`exclusive`.
+macOS strict shares the machine with light work (`beside`).
 
 ## A/B rules
 
