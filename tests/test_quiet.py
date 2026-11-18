@@ -46,6 +46,7 @@ class Quiet(unittest.TestCase):
             QUIET_LOAD_WAIT="0",
             QUIET_MAX_LOAD="1000",
             QUIET_DISK_MIN_GB="0",
+            QUIET_MIN_MEM_GB="0",  # a CI runner has less free memory than the default floor
             QUIET_STARVE_MIN="2",
         )
 

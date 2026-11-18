@@ -115,6 +115,7 @@ class CampaignCase(unittest.TestCase):
             QUIET_LOAD_WAIT="0",
             QUIET_MAX_LOAD="1000",
             QUIET_DISK_MIN_GB="0",
+            QUIET_MIN_MEM_GB="0",  # a CI runner has less free memory than the default floor
             QUIET_LIGHT_SLOTS="4",
             CAMPAIGN_LIGHT_JOBS="4",
             CAMPAIGN_AUTO_PRUNE="0",  # a test that wants the worker's daily prune turns it on
