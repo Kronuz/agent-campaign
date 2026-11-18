@@ -1502,6 +1502,18 @@ class Campaigns(CampaignCase):
         self.ok(self.home, "wait", ours[3], "--timeout", "60", timeout=90)
         self.assertLess(self.job(theirs)["started"], self.job(ours[3])["started"], "the later campaign waited out ours")
 
+    def test_a_long_job_queued_past_its_age_runs_before_shorter_ones(self) -> None:
+        """Shortest first never starves a long job: past CAMPAIGN_AGE it runs in submit order."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_AGE="2")
+        first = self.submit(self.home, "--level", "light", "--force", "--", "sleep 4")
+        self.wait_until(lambda: self.job(first)["state"] == "running")
+        long = self.submit(self.home, "--level", "light", "--minutes", "100", "--force", "--", "true")
+        short = [
+            self.submit(self.home, "--level", "light", "--minutes", "1", "--force", "--", f"true {i}") for i in range(3)
+        ]
+        self.ok(self.home, "wait", first, long, *short, "--timeout", "60", timeout=90)
+        self.assertLess(self.job(long)["started"], self.job(short[0])["started"], "the long job starved")
+
     def test_a_draining_job_waits_for_queued_light_work(self) -> None:
         """An exclusive hold blocks new light holds while it waits, so it starts after queued light work."""
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"

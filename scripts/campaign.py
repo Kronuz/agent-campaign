@@ -5960,6 +5960,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
+    age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
     try:
         while True:
             try:
@@ -5993,15 +5994,19 @@ def cmd_worker(a: argparse.Namespace) -> int:
             holds = Counter(camp(j) for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
             wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
             share = max(1, slots // max(1, len(wanting | {c for c, n in holds.items() if n})))
+            now = time.time()
+            # shortest first, except that a job queued past `age` goes ahead in submit order, so a
+            # stream of short jobs never starves a long one
+            aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
             queued.sort(
                 key=lambda j: (
                     -int(j["spec"].get("priority", 0)),
                     holds[camp(j)],
-                    int(j["spec"].get("minutes", 0) or 0),
+                    j["id"] not in aged,
+                    0 if j["id"] in aged else int(j["spec"].get("minutes", 0) or 0),
                     j["id"],
                 )
             )
-            now = time.time()
             # how long each command took, oldest run first
             took: dict[tuple[str, str, str], list[float]] = {}
             for j in sorted(jobs, key=lambda j: j["id"]):
