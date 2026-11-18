@@ -242,8 +242,8 @@ def alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return not stat.strip().startswith("Z")
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")  # "": reaped since the kill
 
 
 def live(info: Hold) -> bool:

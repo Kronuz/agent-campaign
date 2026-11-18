@@ -82,6 +82,7 @@ LONG_RUN = re.compile(r"fuzz|soak", re.I)  # runs that grow to fill any time the
 STALE = float(os.environ.get("CAMPAIGN_STALE_SECONDS", "60"))
 UNSTARTED_ATTEMPTS = 3  # a runner that dies before the command starts is requeued, up to this many tries
 BEAT = float(os.environ.get("CAMPAIGN_HEARTBEAT_SECONDS", "15"))
+KILL_GRACE = 20  # seconds a stopped job's processes get between TERM and KILL
 HOST = socket.gethostname().split(".")[0]
 
 Json = dict[str, Any]
@@ -175,8 +176,8 @@ def alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return not stat.strip().startswith("Z")
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")  # "": reaped since the kill
 
 
 def template(name: str, **fields: str) -> str:
@@ -1060,7 +1061,9 @@ def migrate_parks(data: Json) -> list[str]:
     reason names only quests (and not the owner) needs them instead; any other keeps its text, until owner."""
     quests = data.get("quests")
     notes: list[str] = []
-    for pid, p in quests.items() if isinstance(quests, dict) else ():
+    if not isinstance(quests, dict):
+        return notes
+    for pid, p in quests.items():
         if not isinstance(p, dict) or p.get("status") != "blocked" or p.get("until"):
             continue
         reason = str(p.get("reason", ""))
@@ -1110,7 +1113,7 @@ def blockers(c: Campaign) -> dict[str, Json]:
             out[k] = {} if park_met(c, p) else {"park": p["until"]}
         elif p["status"] == "planned":
             unmet = [d for d in p["needs"] if not c.landed(d)]
-            held = [] if unmet else clashes(c, k)
+            held: list[str] = [] if unmet else clashes(c, k)
             out[k] = {"needs": unmet} if unmet else {"files": held} if held else {}
     return out
 
@@ -1526,7 +1529,8 @@ def inbox(c: Campaign, pid: str, settled_too: bool = False) -> list[Json]:
 def settle_mail(c: Campaign) -> list[Path]:
     """Records the lead's messages that closed themselves (`settled`) in the state; returns their files,
     to remove once the state is written."""
-    gone, c.closing = c.closing, []
+    gone = c.closing
+    c.closing = []
     for m in inbox(c, "", settled_too=True):
         if (f := mailbox(c, "") / f"{m['id']}.json") not in gone and (why := settled(c, m)):
             c.state.setdefault("messages", []).append({**m, "closed": why})
@@ -2846,7 +2850,9 @@ def drop_quest_slot(spec: Json) -> None:
     dropped and no pending job names it (landing kept it for them)."""
     name, campaign, quest = slot_of(spec), str(spec.get("campaign") or ""), str(spec.get("quest") or "")
     state = read_json_shared(Path(campaign) / "state.json") if campaign and quest and name else None
-    q = (state or {}).get("quests", {}).get(quest, {})
+    if state is None:
+        return
+    q = state.get("quests", {}).get(quest, {})
     if q.get("status") not in ("landed", "dropped") or name.partition("@")[0] != f"{state['campaign']}-{quest}":
         return
     if any(slot_of(j["spec"]) == name and j["state"].get("state") not in TERMINAL for j in all_jobs()):
@@ -5816,12 +5822,23 @@ def sweep(sid: int, beat: Path | None = None) -> None:
         time.sleep(2 if sig == signal.SIGTERM else 0.2)
 
 
+def tracees(sid: int) -> list[int]:
+    """The processes traced by a process of session SID: a job's strace follows its command's helpers."""
+    found: list[int] = []
+    for status in Path("/proc").glob("[0-9]*/status"):
+        with contextlib.suppress(OSError, ValueError):
+            tracer = re.search(r"^TracerPid:\s*(\d+)", status.read_text(), re.M)
+            if tracer and int(tracer.group(1)) and os.getsid(int(tracer.group(1))) == sid:
+                found.append(int(status.parent.name))
+    return found
+
+
 def kill_group(child: subprocess.Popen[bytes], beat: Path) -> None:
-    """TERMs a job's process group, then KILLs it if it outlives 20 seconds. The leader is reaped as
+    """TERMs a job's process group, then KILLs it if it outlives KILL_GRACE. The leader is reaped as
     it goes: on Linux a zombie leader keeps its group signalable."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(child.pid, signal.SIGTERM)
-    for _ in range(100):
+    for _ in range(KILL_GRACE * 5):
         child.poll()
         beat.touch()
         try:
@@ -6302,11 +6319,14 @@ def attend(
     d: Path,
     *,
     began: Path | None = None,
+    ended: Path | None = None,
     minutes: int = 0,
     limit: float,
 ) -> tuple[int, bool, bool]:
     """Runs one command of a job in its own process group, appending to its log, beating its heart,
-    and killing it on cancel, past LIMIT, or MINUTES after BEGAN appears: (exit, cancelled, timed out)."""
+    and killing it on cancel, past LIMIT, or MINUTES after BEGAN appears: (exit, cancelled, timed out).
+    Once ENDED names the traced command's shell, the helpers it left are stopped: they keep its tracer,
+    and so the job, running."""
     beat = d / "heartbeat"
     job = load_job(d)
     with open(attempt_dir(job) / "log", "ab") as out:
@@ -6323,12 +6343,21 @@ def attend(
     st["pgid"] = child.pid
     write_json(d / "state.json", st)
     cancelled = timed_out = False
+    stopping = 0.0
     while True:
         try:
-            return child.wait(timeout=BEAT), cancelled, timed_out
+            return child.wait(timeout=BEAT if ended is None else min(BEAT, 1.0)), cancelled, timed_out
         except subprocess.TimeoutExpired:
             pass
         beat.touch()
+        shell = ended.read_text().strip() if ended is not None and ended.exists() else ""
+        if shell:
+            stopping = stopping or time.time()
+            sig = signal.SIGTERM if time.time() - stopping < KILL_GRACE else signal.SIGKILL
+            for pid in tracees(os.getsid(0)):
+                if str(pid) != shell:  # it exits on its own, with the command's code
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.kill(pid, sig)
         if (d / "cancel").exists() and not cancelled:
             cancelled = True
             kill_group(child, beat)
@@ -6473,7 +6502,9 @@ def cmd_run(a: argparse.Namespace) -> int:
     argv = ["bash", "-c", 'date +%s > "$JOB_DIR/began"\n' + spec["cmd"]]
     traced = tracer() if spec.get("commit") and spec["level"] in ("none", "light") and not spec.get("build") else ""
     if traced:  # what it reads decides where its result counts (record_reads)
-        argv = [traced, *STRACE_ARGS, "-o", str(ad / "strace"), "--", *argv]
+        # strace waits for every helper the command leaves: the shell says when the command ended
+        script = f'date +%s > "$JOB_DIR/began"\n(\n{spec["cmd"]}\n)\ns=$?\necho $$ > "$JOB_DIR/ended"\nexit $s'
+        argv = [traced, *STRACE_ARGS, "-o", str(ad / "strace"), "--", "bash", "-c", script]
     if spec["level"] != "none":
         argv = [
             *quiet_argv(),
@@ -6486,7 +6517,10 @@ def cmd_run(a: argparse.Namespace) -> int:
         ]
     limit = time.time() + 60 * spec["minutes"] + float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
     began = ad / "began" if spec["level"] == "none" else None
-    code, cancelled, timed_out = attend(argv, cwd, env, d, began=began, minutes=spec["minutes"], limit=limit)
+    ended = ad / "ended" if traced else None
+    code, cancelled, timed_out = attend(
+        argv, cwd, env, d, began=began, ended=ended, minutes=spec["minutes"], limit=limit
+    )
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
     state, note = outcome(spec, code, cancelled, timed_out)
@@ -8093,7 +8127,7 @@ def watch(paths: list[Path], timeout: float) -> None:
     fds: list[int] = []
     kq: Any = None
     try:
-        if dirs and hasattr(os_select, "kqueue"):
+        if dirs and sys.platform != "linux" and sys.platform != "win32" and hasattr(os_select, "kqueue"):
             kq = os_select.kqueue()
             changes = []
             for d in dirs:
@@ -8108,7 +8142,7 @@ def watch(paths: list[Path], timeout: float) -> None:
                     )
             kq.control(changes, 1, timeout)
             return
-        if dirs and sys.platform.startswith("linux"):
+        if dirs and sys.platform == "linux":
             import ctypes  # noqa: PLC0415  # Linux only
 
             libc = ctypes.CDLL(None, use_errno=True)
@@ -8119,7 +8153,7 @@ def watch(paths: list[Path], timeout: float) -> None:
                 if sum(
                     libc.inotify_add_watch(fd, os.fsencode(d), 0x8 | 0x40 | 0x80 | 0x100 | 0x200) >= 0 for d in dirs
                 ):
-                    os_select.select([fd], [], [], timeout)
+                    os_select.select([fd], (), (), timeout)
                     return
     except OSError:
         pass

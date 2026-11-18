@@ -14,10 +14,20 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest import mock
 
 from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, campaign_module, session_members
+
+
+def recording(reads: list[str], real: Callable[[Path], Any]) -> Callable[[Path], Any]:
+    """REAL, recording each path it reads in READS."""
+
+    def read(path: Path) -> Any:
+        reads.append(str(path))
+        return real(path)
+
+    return read
 
 
 class Races(unittest.TestCase):
@@ -518,7 +528,7 @@ class Identity(CampaignCase):
         brief = self.home / ".campaign/demo/quests/fix.md"
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
         self.git(self.home, "commit", "-qam", "criteria")
-        jid = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "true")
+        jid = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "cat app.py")  # reads what changes next
         self.ok(self.home, "wait", jid)
         self.commit(wt, {"app.py": "print(2)\n"})
         new = self.ok(self.home, "job", "rerun", jid).out.split()[0].rstrip(":")
@@ -1098,7 +1108,7 @@ class WorkerCache(CampaignCase):
         real = module.read_json
         with (
             mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
-            mock.patch.object(module, "read_json", lambda p: reads.append(str(p)) or real(p)),
+            mock.patch.object(module, "read_json", recording(reads, real)),
         ):
             first = module.all_jobs(seen)
             for _ in range(3):
@@ -1108,7 +1118,9 @@ class WorkerCache(CampaignCase):
             self.assertEqual(first[0]["state"], {"state": "done"})
             (self.root / "jobs" / "b-queued" / "state.json").write_text(json.dumps({"state": "done"}))
             self.assertEqual({j["id"]: j["state"]["state"] for j in module.all_jobs(seen)}["b-queued"], "done")
-            shutil.rmtree(done)  # pruned, then submitted again under the same id
+            # pruned, then submitted again under the same id; moved aside, not removed, so the new
+            # directory never gets the old inode back (ext4 and tmpfs reuse a freed one at once)
+            done.rename(self.root / "jobs" / ".pruned")
             self.make("a-done", "queued")
             self.assertEqual(module.all_jobs(seen)[0]["state"]["state"], "queued")
             shutil.rmtree(self.root / "jobs" / "b-queued")
@@ -1130,7 +1142,7 @@ class WorkerCache(CampaignCase):
 
         with (
             mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
-            mock.patch.object(module, "read_json", lambda p: reads.append(str(p)) or real(p)),
+            mock.patch.object(module, "read_json", recording(reads, real)),
             mock.patch.object(module, "ensure_worker", lambda: None),
             mock.patch.object(module, "watch_leads", lambda: None),
             mock.patch.object(module.time, "sleep", sleep),

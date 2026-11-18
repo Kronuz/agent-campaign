@@ -783,7 +783,8 @@ class Evidence(CampaignCase):
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 the probe passes: a probe"))
         self.git(self.home, "commit", "-qam", "criteria")
         self.commit(b, {"lib/util.py": "X = 2\n", "notes/n.txt": "1\n2\n3\n4\n5\n6 b\n"})
-        probe = self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py")
+        check = "grep -q 2 lib/util.py && grep -q 6 notes/n.txt"  # also reads the file main changes below
+        probe = self.submit(b, "--quest", "b", "--", check)
         self.verified("b")
         self.commit(b, {".campaign/demo/journal/b.md": f"## Evidence\n\n| A1 | {probe} |\n"})
         self.ok(self.home, "land", "a")
@@ -793,7 +794,7 @@ class Evidence(CampaignCase):
         out = self.ok(self.home, "verify", "b").out
         self.assertIn("(reused: passed at ", out)
         self.assertIn("only merges from main since", out)
-        self.assertEqual(self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py"), probe)
+        self.assertEqual(self.submit(b, "--quest", "b", "--", check), probe)
         self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs, "a merge from main reran evidence")
         brief_out = self.ok(self.home, "brief", "b").out
         self.assertNotIn("not green", brief_out)

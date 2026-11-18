@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+TEST_TIMEOUT = 300  # seconds: a hung test fails with its output instead of stalling the suite
 
 
 def cases(suite: unittest.TestSuite) -> Iterator[unittest.TestCase]:
@@ -40,15 +42,22 @@ def alone(test: unittest.TestCase) -> bool:
 
 def run(test_id: str) -> tuple[str, int, float, str]:
     start = time.time()
-    p = subprocess.run(
+    with subprocess.Popen(
         [sys.executable, "-m", "unittest", test_id],
         cwd=HERE,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-    )
-    return test_id, p.returncode, time.time() - start, p.stdout
+        start_new_session=True,
+    ) as p:
+        try:
+            out, _ = p.communicate(timeout=TEST_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            out, _ = p.communicate()
+            return test_id, -1, time.time() - start, f"{out}\ntimed out after {TEST_TIMEOUT} s"
+    return test_id, p.returncode, time.time() - start, out
 
 
 def main(argv: list[str] | None = None) -> int:
