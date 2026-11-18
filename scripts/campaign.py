@@ -4817,8 +4817,30 @@ def attempt_dir(job: Json) -> Path:
     return job["dir"] / f"a{int(job['state'].get('attempt', 1))}"
 
 
-def all_jobs() -> list[Json]:
-    return [load_job(d) for d in sorted(jobs_dir().iterdir()) if d.is_dir() and (d / "spec.json").exists()]
+def all_jobs(cache: dict[str, tuple[int, Json]] | None = None) -> list[Json]:
+    """Every job, by id. A long-lived caller passes CACHE, a dict it keeps: a terminal job is read once
+    (its state never changes again) and served from it while its directory is the same, so a tick reads
+    only the jobs still in flight. Cached jobs carry no tags: that caller ignores them."""
+    jobs: list[Json] = []
+    with os.scandir(jobs_dir()) as it:
+        entries = sorted((e for e in it if e.is_dir()), key=lambda e: e.name)
+    for e in entries:
+        hit = cache.pop(e.name, None) if cache is not None else None
+        if hit is not None and hit[0] == e.inode():
+            cache[e.name] = hit
+            jobs.append(hit[1])
+            continue
+        d = Path(e.path)
+        if not (d / "spec.json").exists():
+            continue
+        job = load_job(d)
+        if cache is not None and job["state"].get("state") in TERMINAL:
+            cache[e.name] = (e.inode(), {k: v for k, v in job.items() if k != "tags"})
+        jobs.append(job)
+    if cache is not None:
+        for k in cache.keys() - {e.name for e in entries}:
+            del cache[k]  # pruned
+    return jobs
 
 
 def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = (), ci: bool = False) -> Json | None:
@@ -5659,9 +5681,9 @@ def cmd_run(a: argparse.Namespace) -> int:
     return 0
 
 
-def reap() -> None:
+def reap(cache: dict[str, tuple[int, Json]] | None = None) -> None:
     """Finds jobs whose runner died (crash, kill, reboot): records, requeues or interrupts them."""
-    for job in all_jobs():
+    for job in all_jobs(cache):
         d, st, spec = job["dir"], job["state"], job["spec"]
         if st.get("state") != "running":
             continue
@@ -5961,6 +5983,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
     age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
+    seen: dict[str, tuple[int, Json]] = {}  # terminal jobs, read once
     try:
         while True:
             try:
@@ -5969,8 +5992,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
             except FileNotFoundError:
                 return 0
             (home / "heartbeat").touch()
-            reap()
-            jobs = all_jobs()
+            reap(seen)
+            jobs = all_jobs(seen)
             states = {j["id"]: j["state"].get("state") for j in jobs}
             queued = sorted(
                 (j for j in jobs if states[j["id"]] == "queued"),

@@ -873,6 +873,41 @@ class Prune(CampaignCase):
         self.assertTrue((self.root / "jobs" / again).exists(), "the worker pruned twice in a day")
 
 
+class WorkerCache(CampaignCase):
+    def make(self, jid: str, state: str) -> Path:
+        d = self.root / "jobs" / jid
+        d.mkdir(parents=True)
+        (d / "spec.json").write_text(json.dumps({"cmd": "true"}))
+        (d / "state.json").write_text(json.dumps({"state": state}))
+        return d
+
+    def test_a_tick_reads_only_the_jobs_in_flight(self) -> None:
+        module = campaign_module()
+        done = self.make("a-done", "done")
+        self.make("b-queued", "queued")
+        seen: dict[str, tuple[int, dict[str, object]]] = {}
+        reads: list[str] = []
+        real = module.read_json
+        with (
+            mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
+            mock.patch.object(module, "read_json", lambda p: reads.append(str(p)) or real(p)),
+        ):
+            first = module.all_jobs(seen)
+            for _ in range(3):
+                self.assertEqual([j["id"] for j in module.all_jobs(seen)], ["a-done", "b-queued"])
+            self.assertEqual(sum(r.startswith(str(done)) for r in reads), 2, "a terminal job was read again")
+            self.assertEqual(sum("b-queued" in r for r in reads), 8, "a queued job must be read every tick")
+            self.assertEqual(first[0]["state"], {"state": "done"})
+            (self.root / "jobs" / "b-queued" / "state.json").write_text(json.dumps({"state": "done"}))
+            self.assertEqual({j["id"]: j["state"]["state"] for j in module.all_jobs(seen)}["b-queued"], "done")
+            shutil.rmtree(done)  # pruned, then submitted again under the same id
+            self.make("a-done", "queued")
+            self.assertEqual(module.all_jobs(seen)[0]["state"]["state"], "queued")
+            shutil.rmtree(self.root / "jobs" / "b-queued")
+            self.assertEqual([j["id"] for j in module.all_jobs(seen)], ["a-done"])
+            self.assertEqual(set(seen), set(), "a pruned or reopened job stayed cached")
+
+
 class Slots(CampaignCase):
     def test_jobs_sharing_a_slot_take_turns_without_holding_up_others(self) -> None:
         go = self.root / "go"
