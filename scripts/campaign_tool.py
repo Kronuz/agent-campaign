@@ -4361,7 +4361,7 @@ def show_status(a: argparse.Namespace) -> int:
     print(
         f"  {mark('🔬')}jobs: {queue['queued']} queued, {queue['running']} running; {mark('⚡' if up else '💤')}{worker}"
     )
-    for line in health_lines(queue_health(jobs, time.time())) if not a.id else []:
+    for line in [*health_lines(queue_health(jobs, time.time())), *cpu_lines(jobs)] if not a.id else []:
         print(f"  {line}")
     for m in inbox(c, "") if not a.id else []:
         print(f"  {mark('📨')}" + paint(f"{m['id']} for the lead, from {m['by']}", "yellow") + f": {m['text']}")
@@ -5015,7 +5015,25 @@ def cmd_check(a: argparse.Namespace) -> int:
 
 
 LIGHT_BUILD_JOBS = int(os.environ.get("CAMPAIGN_LIGHT_BUILD_JOBS") or 4)  # per light job; several run at once
-PARALLEL = re.compile(r"(?:\s-j\s*|--parallel[=\s]+)(\d+)")
+PARALLEL = re.compile(r"(?:\s-j\s*|--jobs[=\s]+|--parallel[=\s]+|\s-P\s*)(\d+)")
+BACKGROUND = re.compile(r"(?<![&>|])&(?![&>])")  # a lone &: not &&, >&, &> or |&
+LOOP_BODY = re.compile(r"\b(?:for|while|until)\b.*?\bdo\b(.*)\bdone\b", re.S)  # to the last done: loops nest
+GNU_PARALLEL = re.compile(r"(?:^|[\s;&|(])parallel(?=\s)")
+
+
+def copies(cmd: str) -> tuple[int, str]:
+    """How many copies of its work a command visibly runs at once, and what shows it: its largest -j,
+    --jobs, --parallel or -P N, its commands sent to the background, GNU parallel's one per CPU, or a
+    loop that backgrounds each pass (counted as every CPU)."""
+    ncpu = os.cpu_count() or 4
+    if any(BACKGROUND.search(body) for body in LOOP_BODY.findall(cmd)):
+        return ncpu, "a loop that sends each pass to the background"
+    found = [(int(m.group(1)), m.group(0).strip()) for m in PARALLEL.finditer(cmd)]
+    if GNU_PARALLEL.search(cmd) and not found:
+        found.append((ncpu, "parallel, one copy per CPU"))
+    if n := len(BACKGROUND.findall(cmd)):
+        found.append((n, f"{plural(n, 'command')} in the background"))
+    return max(found, default=(1, ""))
 
 
 CTEST = re.compile(r"(?:^|[\s;&|(/])ctest(?=[\s;&|)]|$)")
@@ -6694,6 +6712,161 @@ def light_slots(heavy: bool = False) -> int:
     return max(1, ncpu // 4) if heavy else max(1, ncpu // 2)
 
 
+CPU_WINDOW = float(os.environ.get("CAMPAIGN_CPU_WINDOW", "120"))  # seconds of use a light job's charge averages
+CPU_SAMPLE = float(os.environ.get("CAMPAIGN_CPU_SAMPLE", "10"))  # seconds between the worker's CPU samples
+
+
+def slot_cores() -> float:
+    """The cores one light slot stands for: the CPUs over the light slots."""
+    return (os.cpu_count() or 4) / light_slots()
+
+
+def slots_for(cores: float) -> int:
+    """The light slots CORES of use take: the nearest whole number, one at least, every slot at most."""
+    return max(1, min(light_slots(), math.floor(cores / slot_cores() + 0.5)))
+
+
+def light_weight(j: Json, charges: dict[str, int]) -> int:
+    """The light slots a job takes: those its --cpus declares, or those its measured use was charged."""
+    cpus = float(j["spec"].get("cpus") or 0)
+    return max(slots_for(cpus) if cpus else 1, charges.get(j.get("job", j)["id"], 1))
+
+
+def ps_seconds(text: str) -> float:
+    """CPU seconds from ps's [[DD-]HH:]MM:SS[.CC]."""
+    days, _, clock = text.rpartition("-")
+    seconds = 0.0
+    for part in clock.split(":"):
+        seconds = 60 * seconds + float(part)
+    return seconds + 86400 * int(days or 0)
+
+
+def proc_table() -> dict[int, tuple[int, float]]:
+    """Each process's parent and CPU seconds, its reaped children's included: /proc on Linux, else
+    `ps -S` (FreeBSD's sums reaped children; macOS's does not, so tree_cpu asks libproc there)."""
+    table: dict[int, tuple[int, float]] = {}
+    if not Path("/proc/self/stat").exists():
+        for line in sh(["ps", "-A", "-S", "-o", "pid=,ppid=,time="], check=False).splitlines():
+            with contextlib.suppress(ValueError):
+                pid, ppid, used = line.split()
+                table[int(pid)] = (int(ppid), ps_seconds(used))
+        return table
+    tick = os.sysconf("SC_CLK_TCK")
+    for name in os.listdir("/proc"):
+        if name.isdigit():
+            try:
+                with open(f"/proc/{name}/stat") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            f = text[text.rindex(")") + 2 :].split()  # state ppid ... utime stime cutime cstime
+            table[int(name)] = (int(f[1]), sum(int(x) for x in f[11:15]) / tick)
+    return table
+
+
+_libproc: list[Any] = []  # macOS: libproc, a rusage_info buffer, a pid buffer and the timebase in seconds
+
+
+def darwin_tree_cpu(root: int) -> float:
+    """The CPU seconds of ROOT's process tree on macOS, from each member's rusage_info (its own time
+    and its reaped children's), walked with proc_listchildpids: no process is started."""
+    import ctypes  # noqa: PLC0415
+
+    if not _libproc:
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+
+        class Timebase(ctypes.Structure):
+            _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+        tb = Timebase()
+        ctypes.CDLL(None).mach_timebase_info(ctypes.byref(tb))  # rusage_info counts mach time units
+        _libproc.extend([lib, (ctypes.c_uint64 * 40)(), (ctypes.c_int * 4096)(), tb.numer / tb.denom / 1e9])
+    lib, info, pids, unit = _libproc
+    total, todo = 0.0, [root]
+    while todo:
+        pid = todo.pop()
+        if lib.proc_pid_rusage(pid, 2, info) == 0:  # RUSAGE_INFO_V2: user, system, then children's at 12, 13
+            total += (info[2] + info[3] + info[12] + info[13]) * unit
+        n = lib.proc_listchildpids(pid, pids, ctypes.sizeof(pids))
+        todo += pids[: max(0, min(n, len(pids)))]
+    return total
+
+
+def tree_cpu(roots: Collection[int]) -> dict[int, float]:
+    """The CPU seconds each root's process tree has used, its reaped descendants' included."""
+    if sys.platform == "darwin":
+        return {r: darwin_tree_cpu(r) for r in roots}
+    table = proc_table()
+    kids: dict[int, list[int]] = {}
+    for pid, (ppid, _) in table.items():
+        kids.setdefault(ppid, []).append(pid)
+    out: dict[int, float] = {}
+    for root in roots:
+        total, todo = 0.0, [root]
+        while todo:
+            pid = todo.pop()
+            total += table.get(pid, (0, 0.0))[1]
+            todo += kids.get(pid, [])
+        out[root] = total
+    return out
+
+
+def meter(jobs: list[Json], seen: dict[str, list[tuple[float, float]]], now: float) -> dict[str, Json]:
+    """Samples the CPU of each running light job (its runner's process tree) into SEEN and returns,
+    for each whose samples span CPU_WINDOW, the cores it used over that window and the slots they take."""
+    runners = {
+        j["id"]: int(j["state"]["runner"])
+        for j in jobs
+        if j["state"].get("state") == "running"
+        and j["state"].get("runner")
+        and (j["spec"].get("level") == "light" or j["state"].get("phase") == "build")
+    }
+    for gone in seen.keys() - runners.keys():
+        del seen[gone]
+    used = tree_cpu(set(runners.values())) if runners else {}
+    out: dict[str, Json] = {}
+    for jid, pid in runners.items():
+        s = seen.setdefault(jid, [])
+        cpu = max(used.get(pid, 0.0), s[-1][1] if s else 0.0)  # a zombie's or an orphan's seconds never count back
+        s.append((now, cpu))
+        while len(s) > 2 and now - s[1][0] >= CPU_WINDOW:
+            del s[0]
+        t0, c0 = s[0]
+        if now - t0 >= CPU_WINDOW:
+            cores = (cpu - c0) / (now - t0)
+            out[jid] = {"cores": round(cores, 2), "slots": slots_for(cores)}
+    return out
+
+
+def cpu_lines(jobs: list[Json]) -> list[str]:
+    """The running light jobs the worker's last sample found over a slot's share, and by how much."""
+    try:
+        use = json.loads((jobs_dir() / ".worker" / "cpu.json").read_text())
+    except (OSError, ValueError):
+        return []
+    running = {j["id"]: j for j in jobs if j["state"].get("state") == "running"}
+    share = float(use.get("share") or slot_cores())
+    over = [
+        f"{jid} ({Path(camp(running[jid])).name or 'no campaign'}: {str(running[jid]['spec'].get('what', ''))[:40]}) "
+        f"{u['cores']:.1f} cores, {u['cores'] / share:.1f} times a slot's {share:g}, charged {plural(u['slots'], 'slot')}"
+        for jid, u in sorted(use.get("jobs", {}).items())
+        if jid in running and u.get("slots", 1) > 1
+    ]
+    return [f"light jobs over their share: {'; '.join(over)}"] if over else []
+
+
+def reap_runners(pids: set[int]) -> None:
+    """Waits for the runners in PIDS that exited, so none stays a zombie: the worker spawns them and
+    never waits otherwise, and a worker re-executed in place is still their parent."""
+    for pid in list(pids):
+        try:
+            done = os.waitpid(pid, os.WNOHANG)[0]
+        except ChildProcessError:  # reaped already, or not this process's child
+            done = pid
+        if done:
+            pids.discard(pid)
+
+
 STALL = 30  # minutes runnable work may wait beside idle slots before `check` warns
 WASTED = ("cancelled", "skipped", "interrupted", "timeout")  # ended without a result
 
@@ -6887,12 +7060,16 @@ def phases(jobs: list[Json]) -> list[Json]:
     return out
 
 
-def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Json], Json]:
-    """One worker tick, decided from the job records alone: the queued jobs to start, in order (a heavy
-    one's state carries its batch), the jobs to skip (one they run after did not succeed), and the drain
-    turn's record ({} for none). A heavy job with a build starts it as light work (state phase "build");
-    once built, it waits in the heavy queue's order for its hold (phase "run": the worker admits it)."""
+def plan(
+    jobs: list[Json], now: float, turn: Json, charges: dict[str, int] | None = None
+) -> tuple[list[Json], list[Json], Json]:
+    """One worker tick, decided from the job records and CHARGES (the light slots measured use takes, by
+    job): the queued jobs to start, in order (a heavy one's state carries its batch), the jobs to skip
+    (one they run after did not succeed), and the drain turn's record ({} for none). A heavy job with a
+    build starts it as light work (state phase "build"); once built, it waits in the heavy queue's order
+    for its hold (phase "run": the worker admits it)."""
     jobs = phases(jobs)
+    charges = charges or {}
     # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
@@ -6906,11 +7083,19 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
     busy = {slot_of(j["spec"]) for j in running + built} - {""}
     heavy = any(j["spec"].get("level") in HEAVY for j in running)
     # a "none" job takes no hold: it never waits for a light slot, and has its own as many
-    light = sum(1 for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+    # a light job takes the slots it declares or is measured using
+    lights = [j for j in running if j["spec"].get("level") not in (*HEAVY, "none")]
+    light = sum(light_weight(j, charges) for j in lights)
     bare = sum(1 for j in running if j["spec"].get("level") == "none")
-    late = sum(1 for j in running if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0)
+    late = sum(
+        light_weight(j, charges) if j in lights else 1
+        for j in running
+        if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0
+    )
     # fair share: campaigns with light work split the slots; within one, the shortest job first
-    holds = Counter(camp(j) for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+    holds: Counter[str] = Counter()
+    for j in lights:
+        holds[camp(j)] += light_weight(j, charges)
     wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
     sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
     slots = light_slots(heavy)
@@ -6981,6 +7166,7 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
         queued.sort(key=lambda j: (j["spec"].get("level") in HEAVY) != room)
     start: list[Json] = []
     skip: list[Json] = []
+    reserved = False  # an aged light job too wide for the free slots: the light work behind it waits
     for j in queued:
         deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
         if any(s not in ("queued", "running", "done") for s in deps):
@@ -6989,12 +7175,12 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
         is_heavy = j["spec"].get("level") in HEAVY
         is_bare = j["spec"].get("level") == "none"
         is_late = int(j["spec"].get("priority", 0)) < 0
-        if (
-            any(s != "done" for s in deps)
-            or (is_heavy and heavy)
-            or (is_bare and bare >= slots)
-            or (not is_heavy and not is_bare and light >= slots)
-        ):
+        weight = 0 if is_heavy or is_bare else min(light_weight(j, charges), slots)
+        waiting = any(s != "done" for s in deps)
+        if weight and light + weight > slots and not waiting:
+            reserved = reserved or j["id"] in aged
+            continue
+        if waiting or (is_heavy and heavy) or (is_bare and bare >= slots) or (weight and reserved):
             continue
         if drains(j) and j not in overdue and (not drain_ok or wanting):
             continue  # for a lull in light work, or its turn after an hour of it
@@ -7017,10 +7203,10 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
         start.append({**of, "state": {**state, "phase": "run" if is_heavy else "build"} if of is not j else state})
         busy |= {slot_of(j["spec"])} - {""}
         heavy = heavy or is_heavy
-        light += 0 if is_heavy or is_bare else 1
+        light += weight
         bare += 1 if is_bare else 0
-        holds[camp(j)] += 0 if is_heavy or is_bare else 1
-        late += 1 if is_late and not is_heavy else 0
+        holds[camp(j)] += weight
+        late += (weight or 1) if is_late and not is_heavy else 0
     return start, skip, turn
 
 
@@ -7074,6 +7260,15 @@ def cmd_worker(a: argparse.Namespace) -> int:
             return 0
     (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
+    # the runners it spawned, kept across a restart; each job's CPU samples and its charge
+    runners: set[int] = set()
+    with contextlib.suppress(OSError):
+        runners = {int(x) for x in (home / "runners").read_text().split()}
+    seen: dict[str, list[tuple[float, float]]] = {}
+    use: dict[str, Json] = {}
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        use = dict(json.loads((home / "cpu.json").read_text()).get("jobs", {}))
+    sampled = 0.0
     try:
         while True:
             try:
@@ -7082,14 +7277,20 @@ def cmd_worker(a: argparse.Namespace) -> int:
             except FileNotFoundError:
                 return 0
             (home / "heartbeat").touch()
+            reap_runners(runners)
             reap()
             jobs = all_jobs()
             if not any(j["state"].get("state") in ("queued", "running") for j in jobs):
                 if daily_prune((home / "heartbeat").touch):
                     continue  # whatever arrived while it pruned
                 return 0
+            if time.time() - sampled >= CPU_SAMPLE:
+                sampled = time.time()
+                running = {j["id"] for j in jobs if j["state"].get("state") == "running"}
+                use = {k: v for k, v in use.items() if k in running} | meter(jobs, seen, sampled)
+                atomic_write(home / "cpu.json", json.dumps({"share": slot_cores(), "jobs": use}) + "\n")
             turn = window_info()
-            start, skip, window = plan(jobs, time.time(), turn)
+            start, skip, window = plan(jobs, time.time(), turn, {k: int(v["slots"]) for k, v in use.items()})
             if window != turn:
                 if window:
                     atomic_write(jobs_dir() / ".window", json.dumps(window) + "\n")
@@ -7102,10 +7303,11 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 if j["state"].get("state") == "running":
                     admit(j)  # built: its runner takes its hold
                 elif claim(j):
-                    spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")
+                    runners.add(spawn(["_run", str(j["dir"])], j["dir"] / "runner.log").pid)
             if "stop" in asked:
                 return 0
             if asked:  # a restart keeps the pid and the home: no starter sees the worker gone
+                atomic_write(home / "runners", "".join(f"{x}\n" for x in runners))
                 sys.stdout.flush()
                 os.execv(sys.executable, [sys.executable, str(ENTRY), "worker"])
             time.sleep(tick)
@@ -7185,6 +7387,7 @@ def parsed_submit(spec: Json, a: argparse.Namespace, ids: list[str]) -> str:
         "cwd": spec.get("cwd"),
         "slot": spec.get("slot"),
         "build": spec.get("build"),
+        "cpus": spec.get("cpus"),
         "after": ",".join(spec.get("after", [])),
         "env": " ".join(f"{k}={v}" for k, v in spec["env"].items()),
     }
@@ -7270,6 +7473,16 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         )
     if warning := ctest_warning(command):
         print(f"warning: this job {warning}", file=sys.stderr)
+    light_work = [x for x, light in ((command, a.level == "light"), (a.build or "", bool(a.build))) if light]
+    n, shown = max((copies(x) for x in light_work), default=(1, ""))
+    if a.cpus:
+        spec["cpus"] = a.cpus
+    elif n > slot_cores():
+        print(
+            f"warning: this light job runs {shown}, more than a light slot's {slot_cores():g} cores: --cpus N "
+            "declares them, else the worker charges it the slots it is measured using",
+            file=sys.stderr,
+        )
     if a.quest and spec.get("commit"):
         spec["scripts"] = script_digests(command, spec["repo"])
         if spec["scripts"]:
@@ -8738,6 +8951,12 @@ def parser() -> argparse.ArgumentParser:
         "--build",
         metavar="CMD",
         help=f"build first in the same checkout, under light (at most {LIGHT_RUN} minutes), then run CMD at --level",
+    )
+    p.add_argument(
+        "--cpus",
+        type=int,
+        metavar="N",
+        help="the cores a light job keeps busy at once: it takes their light slots from its start",
     )
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
     p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest light or --build job)")

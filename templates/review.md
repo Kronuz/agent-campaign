@@ -14,7 +14,7 @@ REJECT: the approach is wrong; the quest is re-planned.
 
 ## What I checked myself
 
-<Probe jobs; their scripts under `.scratch/review-{id}-{lens}/`, to rerun on a fix.>
+<Probe jobs; scripts under `.scratch/{campaign}/review-{id}-{lens}/`, to rerun on a fix.>
 
 ## Findings
 

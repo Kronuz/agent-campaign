@@ -15,9 +15,9 @@ not the story.
   Which do successful jobs at this commit already establish? Spend your effort on what they do not,
   and on any claim you doubt. Do not rebuild or rerun what a passing job at this commit shows;
   reusing a result is not trusting it: a job record is evidence, a sentence in the journal is not.
-- Probe by running things: jobs (`campaign job submit --quest <id> ...`; the checkout is
-  `$JOB_SRC`, outputs go to `$JOB_OUT`) from scripts under `.scratch/review-<id>-<lens>/` in the
-  home checkout, kept so the lead can rerun them to confirm fixes. Every finding names its probe
+- Probe with jobs (`campaign job submit --quest <id> ...`; the checkout is `$JOB_SRC`, outputs
+  go to `$JOB_OUT`) from scripts under `.scratch/<campaign>/review-<id>-<lens>/` (a one-line
+  `.purpose`) in the home checkout, kept so the lead can rerun them. Every finding names its probe
   job or `file:line`.
 - Stop when the named risks are answered. List non-blocking notes in a line each; do not chase
   improvements outside the quest. A consequential question you cannot settle is a blocking gap,

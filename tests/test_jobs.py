@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from unittest import mock
 
-from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, campaign_module, session_members
+from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, alone, campaign_module, session_members
 
 
 def recording(reads: list[str], real: Callable[[Path], Any]) -> Callable[[Path], Any]:
@@ -227,6 +227,96 @@ case "$(cat "$STRACE_MODE")" in
 esac
 exit $code
 """
+
+
+class CpuUse(unittest.TestCase):
+    """A light job takes the slots it declares (--cpus) or is measured keeping busy: on a 16-CPU host,
+    8 light slots of 2 cores each."""
+
+    def setUp(self) -> None:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CAMPAIGN_")}
+        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(os, "cpu_count", lambda: 16)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.module = campaign_module()
+
+    def job(self, n: int, state: str, submitted: float, **st: Any) -> dict[str, Any]:
+        after: list[str] = []
+        spec = {"level": "light", "minutes": 10, "submitted": submitted, "after": after, "cmd": f"job {n}", "cwd": ""}
+        return {"id": f"{n:06d}", "spec": {**spec, "campaign": "c", "repo": ""}, "state": {"state": state, **st}}
+
+    def test_a_light_job_takes_the_slots_it_declares_or_is_charged(self) -> None:
+        now = 1_800_000_000.0
+        running = [self.job(10 + n, "running", now - 900, claimed=now - 60, started=now - 60) for n in range(4)]
+        queued = [self.job(20 + n, "queued", now - 100) for n in range(4)]
+
+        def started(jobs: list[dict[str, Any]], charges: dict[str, int] | None = None) -> list[str]:
+            return [j["id"] for j in self.module.plan(jobs, now, {}, charges)[0]]
+
+        self.assertEqual(len(started(running + queued)), 4)
+        # one running job keeps 7 cores busy: charged 4 slots, it leaves one of the 8 free
+        self.assertEqual(len(started(running + queued, {running[0]["id"]: 4})), 1)
+        # --cpus 6 takes 3 slots from the start: it and one more fill the 4 free
+        wide = self.job(30, "queued", now - 200)
+        wide["spec"]["cpus"] = 6
+        self.assertEqual(started([*running, wide, *queued]), [wide["id"], queued[0]["id"]])
+        # too wide for the free slots, it lets the light work behind it go, until it has waited an hour
+        wide["spec"]["cpus"] = 16
+        self.assertEqual(len(started([*running, wide, *queued])), 4)
+        wide["spec"]["submitted"] = now - 7200
+        self.assertEqual(started([*running, wide, *queued]), [])
+
+    def test_the_charge_follows_the_cores_used_over_the_window(self) -> None:
+        job = self.job(1, "running", 0, runner=4242)
+        seen: dict[str, list[tuple[float, float]]] = {}
+        used = {4242: 0.0}
+        got: list[dict[str, Any]] = []
+
+        def tree_cpu(roots: list[int]) -> dict[int, float]:
+            return {r: used[r] for r in roots}
+
+        with (
+            mock.patch.object(self.module, "tree_cpu", tree_cpu),
+            mock.patch.object(self.module, "CPU_WINDOW", 60),
+        ):
+            for t in range(0, 190, 10):
+                used[4242] += 70.0 if t <= 120 else 15.0  # 7 cores, then 1.5
+                got.append(self.module.meter([job], seen, 1000.0 + t))
+            self.assertEqual(got[5], {}, "charged before a whole window")
+            self.assertEqual(got[6][job["id"]], {"cores": 7.0, "slots": 4})
+            self.assertEqual(got[-1][job["id"]], {"cores": 1.5, "slots": 1})
+            self.module.meter([], seen, 2000.0)
+        self.assertEqual(seen, {}, "an ended job keeps its samples")
+
+    def test_a_process_tree_counts_its_live_and_its_reaped_descendants(self) -> None:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("CAMPAIGN_TEST_TMP")) as directory:
+            mark = Path(directory) / "burned"
+            burn = "import time\nt = time.process_time()\nwhile time.process_time() - t < 0.5: pass\n"
+            script = f"python3 -c \"{burn}\"; python3 -c \"{burn}open('{mark}', 'w'); time.sleep(30)\" & sleep 30"
+            shell = subprocess.Popen(["bash", "-c", script], start_new_session=True)
+            try:
+                deadline = time.time() + 60
+                while not mark.exists() and time.time() < deadline:
+                    time.sleep(0.05)
+                used = self.module.tree_cpu([shell.pid])[shell.pid]
+            finally:
+                os.killpg(shell.pid, signal.SIGKILL)
+                shell.wait()
+        self.assertGreaterEqual(used, 0.95, "a burner's seconds are missing")
+        self.assertLess(used, 5)
+
+    def test_submit_sees_concurrent_copies(self) -> None:
+        copies = self.module.copies
+        self.assertEqual(copies("cmake --build b -j 8 && ctest --parallel 6"), (8, "-j 8"))
+        self.assertEqual(copies("xargs -P 3 ./t"), (3, "-P 3"))
+        self.assertEqual(copies("./a & ./b & wait"), (2, "2 commands in the background"))
+        self.assertEqual(
+            copies("for t in a b; do ./$t & done; wait")[1], "a loop that sends each pass to the background"
+        )
+        nested = "for i in 1 2; do (while :; do :; done) & done; sleep 9"
+        self.assertEqual(copies(nested)[1], "a loop that sends each pass to the background")
+        self.assertEqual(copies("parallel ./t ::: 1 2"), (16, "parallel, one copy per CPU"))
+        self.assertEqual(copies("make 2>&1 && ./t &> log"), (1, ""))
 
 
 class ReadSets(CampaignCase):
@@ -765,6 +855,54 @@ class Scheduling(CampaignCase):
         self.assertEqual(self.job(late[1])["state"], "queued", "deferred work took every slot")
         go.touch()
         self.ok(self.home, "wait", *late, "--timeout", "30")
+
+    def test_the_worker_leaves_no_zombie_runners(self) -> None:
+        """The worker reaps each runner it spawned, those of the code it re-executed over included."""
+        go = self.root / "go"
+        blocker = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        self.wait_until(lambda: self.job(blocker)["state"] == "running")
+        worker = int((self.root / "jobs" / ".worker" / "pid").read_text())
+        for turn in range(2):
+            quick = [self.submit(self.home, "--force", "--", f"echo {turn} {n}") for n in range(6)]
+            self.ok(self.home, "wait", *quick, "--timeout", "60")
+            if not turn:
+                self.ok(self.home, "worker", "--restart")
+        time.sleep(1)  # a few ticks
+        listed = subprocess.run(["ps", "-A", "-o", "ppid=,stat="], capture_output=True, text=True).stdout
+        zombies = [x for x in listed.splitlines() if x.split()[0] == str(worker) and x.split()[1].startswith("Z")]
+        self.assertEqual(zombies, [], "finished runners left as zombies")
+        go.touch()
+        self.ok(self.home, "wait", blocker, "--timeout", "30")
+
+    def test_submit_records_cpus_and_warns_of_undeclared_copies(self) -> None:
+        self.env["CAMPAIGN_LIGHT_JOBS"] = str(os.cpu_count() or 4)  # a core a slot
+        r = self.ok(self.home, "job", "submit", "--", "make -j 8")
+        self.assertIn("this light job runs -j 8, more than a light slot's 1 cores: --cpus N declares them", r.err)
+        r = self.ok(self.home, "job", "submit", "--cpus", "8", "--force", "--", "make -j 8")
+        self.assertNotIn("more than a light slot", r.err)
+        self.assertIn("cpus: 8", r.err)
+        self.assertEqual(json.loads((self.root / "jobs" / r.out.split()[0] / "spec.json").read_text())["cpus"], 8)
+
+    @alone
+    def test_a_light_job_over_its_share_is_charged_and_shown(self) -> None:
+        # a sixteenth of a core a slot: charged on a loaded host too, where nice 19 gets little CPU
+        slots = str(16 * (os.cpu_count() or 4))
+        self.env.update(CAMPAIGN_LIGHT_JOBS=slots, CAMPAIGN_CPU_WINDOW="1", CAMPAIGN_CPU_SAMPLE="0.2")
+        busy = "for i in 1 2 3 4 5 6 7 8; do (while :; do :; done) & done; sleep 60"
+        r = self.ok(self.home, "job", "submit", "--", busy)
+        self.assertIn("a loop that sends each pass to the background", r.err)
+        jid = r.out.split()[0]
+        use = self.root / "jobs" / ".worker" / "cpu.json"
+
+        def charged() -> int:
+            try:
+                return int(json.loads(use.read_text())["jobs"].get(jid, {}).get("slots", 0))
+            except (OSError, ValueError):
+                return 0
+
+        self.wait_until(lambda: charged() >= 2, timeout=60)
+        self.assertIn(f"light jobs over their share: {jid} (demo: ", self.ok(self.home, "status").out)
+        self.ok(self.home, "job", "cancel", jid)
 
     def test_a_job_that_takes_no_hold_never_waits_for_a_light_slot(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = "1"

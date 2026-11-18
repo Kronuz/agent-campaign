@@ -19,7 +19,7 @@ or newer).
 ```sh
 campaign job submit [--quest ID [--for A1,A2 [--fails-without]]] [--commit REF] [--ref NAME=[PATH@]REF] \
     [--cwd DIR] --level none|light|strict|exclusive --minutes N [--long REASON] [--priority P] \
-    [--after JOBS] [--build CMD] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
+    [--after JOBS] [--build CMD] [--cpus N] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
 campaign verify ID [--for A1] # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
@@ -132,8 +132,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 | No worker can run | `--sync` runs the job in the foreground through the same runner and records the same result |
 | A job's state file is corrupt | it counts as finished (`corrupt`), never as evidence |
 
-Retries are off by default because a command may not be safe to run twice; checks queued by
-`campaign verify` retry once.
+Retries are off by default (a command may not be safe twice); `campaign verify`'s checks retry once.
 
 `campaign job prune [--days N] [--build-days N] [--dry-run]` acts on finished jobs that ended more
 than N days ago (14). It keeps whole every job of a quest not landed or dropped and every job such a
@@ -170,8 +169,7 @@ main checkouts are never touched.
   (`campaign config disk_warn=N`, default 100; `CAMPAIGN_DISK_WARN_GB` overrides it), naming the
   five largest consumers (jobs, build slots, worktrees' build directories, the ccache) and what
   reclaims each. The worker's daily prune gives the same warning, at the
-  largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed. Below
-  5 GiB free, `quiet` admits no hold at all.
+  largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed.
 
 ## quiet: host holds
 
@@ -195,11 +193,11 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   holds, and a light request waiting 10 minutes (`QUIET_STARVE_MIN`) goes before it.
 - Light holds run half the CPUs at once at nice 19 and let the scheduler share the machine: a busy
   host makes builds slower, not wrong. None starts below 4 GiB of free memory (`QUIET_MIN_MEM_GB`),
-  above a load of twice the CPUs or below 5 GiB free disk. The job worker
-  launches as many, split fairly across the campaigns that have light work queued, shortest first;
-  a `none` job takes no slot.
-- **A hold counts jobs, not processes.** Cap fan-out inside the command (`-j4`, one interpreter at a
-  time).
+  or above a load of twice the CPUs; a `none` job takes no slot.
+- **A light job takes the slots it uses:** one whose process tree averages over a slot's cores
+  (CPUs over slots) for 2 minutes is charged the nearest whole number of slots; `--cpus N`
+  declares them. `job submit` warns of undeclared copies (`-j`, `&` loops, `parallel`); `campaign
+  status` names who is over.
 - **Heavy disk work is load:** bulk deletes and large copies take a hold or wait.
 - **macOS has no CPU partitioning:** strict runs beside light holds at nice 19, which cost CPU-bound
   timing 5-10% (`QUIET_PAUSE=1` pauses them with SIGSTOP instead); numbers that decide take

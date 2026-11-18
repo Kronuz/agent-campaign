@@ -76,14 +76,13 @@ You are the <lens> reviewer for quest <ID> of campaign <name> (<home repo path>)
 the contributor's reasoning; do not ask for it.
 Review commit <sha> on <branch> in <worktree>: `git log main..<sha>` and its diffs<, plus the landed
 increments <ranges>>. Quest: <home>/.campaign/<campaign>/quests/<ID>.md. Journal: <journal path>
-(its evidence and rulings; `campaign get <ID> journal` names the worktree for a quest in another
-repository).
+(its evidence and rulings; `campaign get <ID> journal` locates it in another repository).
 Risks to probe: <three to five concrete questions>.<
 Re-review of a fix: only <sha-before>..<sha>, for findings <ids>.>
 
-You run beside the suite job: do not rebuild what its jobs or CI show. Probe from
-<home>/.scratch/review-<ID>-<lens>/. Write only <home>/.campaign/<campaign>/reviews/<ID>-<lens>.md,
-naming `Commit: <sha>`.
+Do not rebuild what the suite job or CI shows. Probe from
+<home>/.scratch/<campaign>/review-<ID>-<lens>/ (a one-line `.purpose` first). Write only
+<home>/.campaign/<campaign>/reviews/<ID>-<lens>.md, naming `Commit: <sha>`.
 ```
 
 Lenses and what each asks are in `references/review.md`. A design review gets the quest file and the

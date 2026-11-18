@@ -48,10 +48,10 @@ The reviewer carries every question the lead names; the lens decides the emphasi
 
 ## How a review runs
 
-1. **Start from the evidence.** `campaign status <ID>` lists each criterion with the jobs tagged for
-   it. Do not rebuild what they prove, nor what CI runs.
+1. **Start from the evidence.** `campaign status <ID>` lists each criterion with its tagged jobs. Do
+   not rebuild what they or CI prove.
 2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
-   `.scratch/review-<ID>-<lens>/` in the home checkout. Each blocking finding names the test its
+   `.scratch/<campaign>/review-<ID>-<lens>/` (a one-line `.purpose`) in the home checkout. Each blocking finding names the test its
    fix must add; the suite passing it confirms the fix, with no second review.
 3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
    blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
