@@ -83,10 +83,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   without a slot they live under the job's own directory. `job submit` prints the parsed command
   and options to stderr, and warns when a submit flag such as `--ref` follows `--`. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
 - **Builds for measurements.** `--after` only orders jobs, each in its own checkout. `--build CMD`
-  runs CMD under light (30 minutes at most) in the job's checkout, then the command at its level (a
-  `--quest` job: in the quest's slot).
+  runs CMD as a light job (30 minutes, outside `--minutes`) in the job's checkout (a `--quest` job's
+  slot); a passed build's command then queues for its heavy hold.
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
-  jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
+  jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns sharing the light slots; `quiet` arbitrates across sessions. Ready heavy jobs run back
   to back behind one drain before light work returns, up to 6 jobs or 30 minutes
   (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`). An

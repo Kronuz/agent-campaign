@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -66,22 +67,73 @@ class Batches(unittest.TestCase):
             running = sum(j["state"]["state"] == "running" for j in jobs)  # beside a strict job, its share
             self.assertEqual(levels.count("light"), (4 if joined else 8) - running)
 
+    def test_a_heavy_jobs_build_takes_a_light_slot_and_its_command_then_waits_its_turn(self) -> None:
+        now = 1_800_000_000.0
+        strict = self.job(1, "strict", "running", now - 900, claimed=now - 60, started=now - 60)
+        built = {"started": now - 300, "ended": now - 30, "exit": 0}
+        lights = [self.job(10 + n, "light", "running", now - 900, claimed=now - 60, started=now - 60) for n in range(4)]
+        measure = self.job(2, "strict", "queued", now - 600)
+        measure["spec"].update(build="make", commit="c0ffee", slot="s")
+        light = self.job(3, "light", "queued", now - 900)
+        light["spec"].update(commit="c0ffee", slot="s")
+        heavy = self.module.HEAVY
+
+        def started(*jobs: dict[str, Any]) -> dict[str, dict[str, Any]]:
+            return {j["id"]: j["state"] for j in self.module.plan(list(jobs), now, {})[0]}
+
+        # its build is light work: beside a strict job, in a light slot (4 of 8) when one is free
+        self.assertEqual(started(strict, measure, *lights), {})
+        self.assertEqual(started(strict, measure, *lights[1:])[measure["id"]]["phase"], "build")
+        # building, it holds no heavy slot: a ready strict job starts beside it
+        building = {**measure, "state": {"state": "running", "phase": "build", "claimed": now - 300, "build": built}}
+        self.assertIn(strict["id"], started(building, {**strict, "state": {"state": "queued"}}))
+        # built, it waits for the running strict job, keeping its slot from the light job behind it
+        waiting = {**building, "state": {**building["state"], "phase": "built"}}
+        self.assertEqual(started(strict, waiting, light), {})
+        done = {
+            **strict,
+            "state": {**strict["state"], "state": "done", "ended": now - 1, "batch": {"since": now, "jobs": 1}},
+        }
+        admitted = started(done, waiting, light)
+        self.assertEqual(set(admitted), {measure["id"]})
+        self.assertEqual((admitted[measure["id"]]["phase"], admitted[measure["id"]]["state"]), ("run", "running"))
+        self.assertEqual(admitted[measure["id"]]["batch"]["jobs"], 2)
+        # a job it runs after failed: it is skipped before its build
+        measure["spec"]["after"] = [strict["id"]]
+        failed = {**strict, "state": {"state": "failed", "ended": now}}
+        self.assertEqual([j["id"] for j in self.module.plan([failed, measure], now, {})[1]], [measure["id"]])
+        self.assertTrue(all(lv in heavy for lv in ("strict", "exclusive")))
+
     def test_batches_cut_the_drains_of_a_replayed_queue(self) -> None:
-        """The host's queue of 2026-11-18 (12 h, 661 jobs, 81 strict or exclusive), replayed with each
-        job's recorded length: 4.75 drains an hour with no batches, 3.17 with them (BATCH_JOBS 6,
+        """The host's queue (12 h to 2026-11-18 07:38, 719 jobs, 81 strict or exclusive), replayed with
+        each job's recorded length: 5.33 drains an hour with no batches, 2.83 with them (BATCH_JOBS 6,
         BATCH_MINUTES 30); a drain is a heavy job started after light work was readmitted."""
-        queue = json.loads((Path(__file__).parent / "fixtures" / "queue-12h.json").read_text())
         with mock.patch.object(self.module, "BATCH_JOBS", 1):
-            before = self.replay(queue)
-        after = self.replay(queue)
+            before = self.replay()["drains"]
+        after = self.replay()["drains"]
         self.assertLess(after, 0.7 * before, f"{before:.2f} drains an hour before, {after:.2f} after")
 
-    def replay(self, queue: dict[str, Any], tick: float = 30.0) -> float:
-        """Drains per hour of QUEUE run through plan, tick by tick."""
+    def test_builds_leave_the_heavy_slot_in_a_replayed_queue(self) -> None:
+        """The same queue with its 18 heavy jobs' builds (94 of 391 heavy minutes) as light work: heavy
+        holds shrink by exactly the builds and light work keeps its full slots meanwhile, so light jobs
+        wait less (p50 70.4 to 39.3 minutes) and use more (50% to 57%), at 2.83 drains an hour, not 3.08;
+        builds queue behind light work of their priority, so heavy jobs wait more (p50 3.6 to 10.3)."""
+        before, after = self.replay(staged=False), self.replay()
+        self.assertAlmostEqual(before["heavy"] - after["heavy"], 94, delta=1)
+        self.assertLess(after["light_wait"], 0.7 * before["light_wait"])
+        self.assertGreater(after["light_use"], before["light_use"])
+        self.assertLessEqual(after["drains"], before["drains"])
+
+    def replay(self, staged: bool = True, tick: float = 30.0) -> dict[str, float]:
+        """The host's queue run through plan, tick by tick: drains an hour, heavy hold minutes, heavy and
+        light jobs' wait p50 (minutes, every phase's), and light slot use (builds' too). STAGED builds a
+        heavy job's --build as light work; else its build holds its heavy slot, as before."""
+        queue = json.loads((Path(__file__).parent / "fixtures" / "queue-12h.json").read_text())
         base = 1_800_000_000.0
         pending = sorted(queue["jobs"], key=lambda j: float(j["submitted"]))
         jobs: dict[str, dict[str, Any]] = {}
         took: dict[str, float] = {}
+        built: dict[str, float] = {}
         turn: dict[str, Any] = {}
         t = 0.0
         while pending or any(j["state"]["state"] in ("queued", "running") for j in jobs.values()):
@@ -91,29 +143,61 @@ class Batches(unittest.TestCase):
                 job = self.job(q["id"], q["level"], "queued", base + q["submitted"])
                 job["spec"].update(minutes=q["minutes"], priority=q["priority"], campaign=str(q["campaign"]))
                 job["spec"]["after"] = [f"{x:06d}" for x in q["after"]]
-                jobs[job["id"]], took[job["id"]] = job, q["took"]
+                jobs[job["id"]], took[job["id"]] = job, q["took"] + (0 if staged else q.get("build", 0))
+                if staged and "build" in q:
+                    job["spec"]["build"], built[job["id"]] = f"build {q['id']}", q["build"]
             for jid, j in jobs.items():
                 st = j["state"]
-                if st["state"] == "running" and st["started"] + took[jid] <= now:
+                if st.get("phase") == "build" and st["build"]["started"] + built[jid] <= now:
+                    st.update(phase="built", build={**st["build"], "ended": st["build"]["started"] + built[jid]})
+                elif st["state"] == "running" and st.get("started") and st["started"] + took[jid] <= now:
                     j["state"] = {**st, "state": "done", "ended": st["started"] + took[jid]}
             start, skip, turn = self.module.plan(list(jobs.values()), now, turn)
             for j in skip:
                 jobs[j["id"]]["state"] = {"state": "skipped", "ended": now}
             for n, j in enumerate(start):  # claims within a tick keep their order
-                jobs[j["id"]] = {**j, "state": {**j["state"], "state": "running", "claimed": now + n / 1000}}
-                jobs[j["id"]]["state"]["started"] = now
+                st = {**j["state"], "state": "running"}
+                if j["state"]["state"] == "running":  # admitted to its hold once built
+                    st.update(admitted=now + n / 1000, started=now)
+                else:
+                    st.update(
+                        claimed=now + n / 1000, **({"build": {"started": now}} if "phase" in st else {"started": now})
+                    )
+                jobs[j["id"]] = {**j, "state": st}
             t += tick
+        done = [j for j in jobs.values() if j["state"]["state"] == "done"]
+        views = self.module.phases(done)
         heavy = sorted(
-            (j["state"] for j in jobs.values() if j["spec"]["level"] in self.module.HEAVY), key=lambda s: s["claimed"]
+            (v["state"] for v in views if v["spec"]["level"] in self.module.HEAVY), key=lambda s: s["claimed"]
         )
-        light = [j["state"]["claimed"] for j in jobs.values() if j["spec"]["level"] == "light"]
+        light = [v["state"]["claimed"] for v in views if v["spec"]["level"] == "light"]
         drains = sum(
             i == 0 or any(heavy[i - 1]["ended"] < c < st["claimed"] for c in light) for i, st in enumerate(heavy)
         )
-        for st in heavy:  # every batch keeps to its bound
+        for st in heavy:  # every batch keeps to its bound, and a command starts once its build ended
             self.assertLessEqual(st["batch"]["jobs"], self.module.BATCH_JOBS)
             self.assertLess(st["claimed"] - st["batch"]["since"], 60 * self.module.BATCH_MINUTES)
-        return drains / float(queue["hours"])
+            self.assertGreaterEqual(st["started"], st.get("build", {}).get("ended", 0))
+        waited: dict[str, float] = {j["id"]: 0.0 for j in done}
+        for v, a, b in self.module.waits(done, base + t):
+            waited[v.get("job", v)["id"]] += (b - a) / 60
+        held = {level: 0.0 for level in ("light", *self.module.HEAVY)}
+        for v, a, b in self.module.spans(done, base + t):
+            held[v["spec"]["level"]] += (b - a) / 60
+        hours = float(queue["hours"])
+
+        def p50(heavy: bool) -> float:
+            return statistics.median(
+                waited[j["id"]] for j in done if (j["spec"]["level"] in self.module.HEAVY) == heavy
+            )
+
+        return {
+            "drains": drains / hours,
+            "heavy": held["strict"] + held["exclusive"],
+            "heavy_wait": p50(True),
+            "light_wait": p50(False),
+            "light_use": held["light"] / (self.module.light_slots() * t / 60),
+        }
 
 
 HAS_CMAKE = all(map(shutil.which, ("cmake", "ninja", "cc")))
@@ -1251,10 +1335,33 @@ class Slots(CampaignCase):
         self.assertTrue(out[1].startswith(f"job-{jid}-build light"), out)  # the build ran under light
         self.assertTrue(out[2].startswith(f"job-{jid} "), out)  # the run under its own strict hold
         self.assertEqual(Path(out[3]).resolve(), (self.root / "jobs" / "slots" / "demo-fix").resolve())
+        st = self.job(jid)  # its build's times, then its hold's, admitted by the worker once built
+        self.assertEqual((st["phase"], st["build"]["exit"]), ("run", 0))
+        self.assertLessEqual(st["build"]["started"], st["build"]["ended"])
+        self.assertLessEqual(st["build"]["ended"], st["admitted"])
+        self.assertLessEqual(st["admitted"], st["started"])
         again = self.submit(wt, "--quest", "fix", "--level", "strict", "--build", "exit 3", "--", run)
         self.run_cli(self.home, "wait", again, "--timeout", "60")
         self.assertEqual((self.job(again)["state"], self.job(again)["note"]), ("failed", "its build failed (exit 3)"))
+        self.assertEqual(self.job(again)["build"]["exit"], 3)
+        self.assertNotIn("started", self.job(again))  # it never asked for its strict hold
+        self.assertFalse((self.root / "jobs" / again / "admitted").exists())
+        self.assertNotIn(f"quiet: job-{again} ", (self.root / "jobs" / again / "a1" / "log").read_text())
         self.assertNotEqual(again, jid)  # another build is another job
+
+    def test_a_built_job_cancelled_before_its_hold_never_takes_it(self) -> None:
+        d = self.root / "jobs" / "built"
+        d.mkdir(parents=True)
+        (d / "spec.json").write_text("{}")
+        (d / "state.json").write_text(json.dumps({"state": "running", "phase": "built"}))
+        (d / "cancel").touch()
+        module = campaign_module()
+        self.assertEqual(module.admission(d, time.time() + 60), "cancelled")
+        self.assertFalse(module.admit(module.load_job(d)), "the worker admits it after its cancel")
+        (d / "cancel").unlink()
+        shutil.rmtree(d / "admitted")
+        self.assertTrue(module.admit({**module.load_job(d), "state": {"state": "running", "phase": "run"}}))
+        self.assertEqual(module.admission(d, time.time()), "")  # admitted wins over its limit
 
     def test_runners_breaking_a_dead_lock_at_once_take_the_slot_one_at_a_time(self) -> None:
         slot, go = self.root / "jobs" / "slots" / "s", self.root / "go"

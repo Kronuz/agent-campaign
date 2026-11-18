@@ -6360,13 +6360,45 @@ def outcome(spec: Json, code: int, cancelled: bool = False, timed_out: bool = Fa
     return "done", f"the test failed without the fix, as it must (exit {code})"
 
 
+def admission(d: Path, limit: float) -> str:
+    """Waits for the worker to admit a built job to its hold (""), or for its cancel or LIMIT first
+    ("cancelled", "timeout"). The `admitted` directory decides a race between them: who makes it wins."""
+    gate, beat = d / "admitted", d / "heartbeat"
+    while load_job(d)["state"].get("phase") != "run":
+        made = mtime(gate)
+        if made is not None and time.time() - made > 10:
+            return ""  # the worker died between its two writes: it admitted the job
+        why = "cancelled" if (d / "cancel").exists() else "timeout" if time.time() > limit else ""
+        if why and made is None:
+            with contextlib.suppress(FileExistsError):
+                gate.mkdir()
+                return why
+        if time.time() - (mtime(beat) or 0) > BEAT:
+            beat.touch()
+        time.sleep(0.5)
+    return ""
+
+
+def admit(job: Json) -> bool:
+    """Admits a built job (its runner waits in `admission`) to its hold, with the state plan gave it."""
+    try:
+        (job["dir"] / "admitted").mkdir()
+    except FileExistsError:
+        return False
+    write_json(job["dir"] / "state.json", {**job["state"], "admitted": time.time()})
+    return True
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     """One attempt of one job, supervised by this process, the leader of its own session."""
     d = Path(a.jobdir)
     job = load_job(d)
     spec, st = job["spec"], job["state"]
     me = os.getpid()
-    st.update(state="running", runner=me, sid=os.getsid(0), boot=boot_id(), host=HOST, started=time.time())
+    # a staged job's build is light work: its hold, and so its start, comes once the worker admits it
+    staged = st.get("phase") == "build"
+    began = {"build": {"started": time.time()}} if staged else {"started": time.time()}
+    st.update(state="running", runner=me, sid=os.getsid(0), boot=boot_id(), host=HOST, **began)
     write_json(d / "state.json", st)
     job["state"] = st
     beat = d / "heartbeat"
@@ -6421,8 +6453,17 @@ def cmd_run(a: argparse.Namespace) -> int:
         built = [*quiet_argv(), "light", f"job-{d.name}-build", str(LIGHT_RUN), what, "--", "bash", "-c", spec["build"]]
         light_env = {"CMAKE_BUILD_PARALLEL_LEVEL": str(LIGHT_BUILD_JOBS), **env}
         wait_max = float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
+        since = float(st.get("build", {}).get("started") or time.time())
         code, cancelled, timed_out = attend(built, cwd, light_env, d, limit=time.time() + 60 * LIGHT_RUN + wait_max)
         sweep(os.getsid(0), beat)
+        st["build"] = {"started": since, "ended": time.time(), "exit": code}
+        if code == 0 and not cancelled and not timed_out and staged:
+            st["phase"] = "built"
+            write_json(d / "state.json", st)
+            why = admission(d, time.time() + wait_max) or ("cancelled" if (d / "cancel").exists() else "")
+            st = job["state"] = {**load_job(d)["state"], **({} if why else {"phase": "run", "started": time.time()})}
+            write_json(d / "state.json", st)
+            cancelled, timed_out = why == "cancelled", why == "timeout"
         if code != 0 or cancelled or timed_out:
             (ad / "exit").write_text(str(code))
             release(spec, d)
@@ -6502,6 +6543,7 @@ def reap() -> None:
             unstarted = not (attempt_dir(job) / "began").exists()  # its command never ran: safe to repeat
             if attempt <= int(spec.get("retries", 0)) or (unstarted and attempt < UNSTARTED_ATTEMPTS):
                 shutil.rmtree(d / "claim", ignore_errors=True)
+                shutil.rmtree(d / "admitted", ignore_errors=True)
                 why = "lost its runner before its command started" if unstarted else "lost its runner"
                 write_json(
                     d / "state.json",
@@ -6623,9 +6665,9 @@ WASTED = ("cancelled", "skipped", "interrupted", "timeout")  # ended without a r
 
 
 def spans(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
-    """Each job that held a slot, from its runner's start to its end (now while it runs)."""
+    """Each job phase that held a slot, from its start to its end (now while it runs)."""
     out: list[tuple[Json, float, float]] = []
-    for j in jobs:
+    for j in phases(jobs):
         st = j["state"]
         end = st.get("ended") or (now if st.get("state") == "running" else None)
         if st.get("started") and end and j["spec"].get("level") != "none":
@@ -6635,7 +6677,8 @@ def spans(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
 
 def waits(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
     """Each job's runnable wait: from its submission or its last dependency's end to its start (its
-    cancellation, or now while queued). A job behind a dependency that did not pass has none."""
+    cancellation, or now while queued), per phase. A job behind a dependency that did not pass has none."""
+    jobs = phases(jobs)
     by_id = {j["id"]: j for j in jobs}
     out: list[tuple[Json, float, float]] = []
     for j in jobs:
@@ -6669,7 +6712,7 @@ def idle_minutes(
     """Minute by minute since SINCE: per job (of ONLY), the minutes it waited runnable beside a free slot
     it could take; the minutes any job did; and the minutes a drain held the machine."""
     held = [x for x in spans(jobs, now) if x[2] > since]
-    waiting = [x for x in waits(jobs, now) if x[2] > since and (only is None or x[0]["id"] in only)]
+    waiting = [x for x in waits(jobs, now) if x[2] > since and (only is None or x[0].get("job", x[0])["id"] in only)]
     if only is not None:  # sample only from the first wait
         since = max(since, min((a for _, a, _ in waiting), default=now))
     slots = light_slots()
@@ -6678,7 +6721,7 @@ def idle_minutes(
     for t in range(int(since) + 30, int(now), 60):
         live = [j for j, a, b in held if a <= t < b]
         drained += any(drains(j) for j in live)
-        stuck = [j["id"] for j, a, b in waiting if a <= t < b and idle_for(j, live, slots)]
+        stuck = [j.get("job", j)["id"] for j, a, b in waiting if a <= t < b and idle_for(j, live, slots)]
         per_job.update(stuck)
         idle += bool(stuck)
     return dict(per_job), idle, drained
@@ -6750,7 +6793,7 @@ def long_timeouts(jobs: list[Json], ident: str, now: float) -> list[tuple[str, s
 
 def stalls(jobs: list[Json], now: float) -> list[tuple[str, str]]:
     """A warning when a queued job waited over STALL minutes beside idle slots: the lead's to fix."""
-    queued = {j["id"] for j in jobs if j["state"].get("state") == "queued"}
+    queued = {j["id"] for j in jobs if j["state"].get("state") == "queued" or j["state"].get("phase") == "built"}
     per_job: dict[str, int] = idle_minutes(jobs, now, now - 86400, queued)[0] if queued else {}
     stuck = {k: m for k, m in per_job.items() if m > STALL}
     if not stuck:
@@ -6781,10 +6824,41 @@ def batch_of(jobs: list[Json]) -> Json:
     return {} if readmitted else dict(last["state"]["batch"])
 
 
+def phases(jobs: list[Json]) -> list[Json]:
+    """The jobs as the holds they take. A heavy job the worker builds in two phases (queued, or its
+    state names a phase) is two: its build under light, then its command at its level after it. Each
+    phase keeps the job it is of under "job"; a built job waiting for its hold keeps its checkout."""
+    out: list[Json] = []
+    for j in jobs:
+        spec, st = j["spec"], j["state"]
+        if not (spec.get("build") and spec.get("level") in HEAVY and (st.get("phase") or st.get("state") == "queued")):
+            out.append(j)
+            continue
+        b = st.get("build") or {}
+        build = {
+            **j,
+            "id": f"{j['id']}:build",
+            "job": j,
+            "spec": {**spec, "level": "light", "cmd": spec["build"], "minutes": LIGHT_RUN},
+            "state": {
+                "state": "done" if st.get("phase") in ("built", "run") else st["state"],
+                "claimed": st.get("claimed"),
+                "started": b.get("started"),
+                "ended": b.get("ended"),
+            },
+        }
+        waiting = st["state"] == "running" and st.get("phase") != "run"
+        run = {**st, "state": "queued" if waiting else st["state"], "claimed": st.get("admitted")}
+        out += [build, {**j, "job": j, "spec": {**spec, "after": [build["id"]]}, "state": run}]
+    return out
+
+
 def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Json], Json]:
     """One worker tick, decided from the job records alone: the queued jobs to start, in order (a heavy
     one's state carries its batch), the jobs to skip (one they run after did not succeed), and the drain
-    turn's record ({} for none)."""
+    turn's record ({} for none). A heavy job with a build starts it as light work (state phase "build");
+    once built, it waits in the heavy queue's order for its hold (phase "run": the worker admits it)."""
+    jobs = phases(jobs)
     # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
@@ -6793,7 +6867,9 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
     states = {j["id"]: j["state"].get("state") for j in jobs}
     queued = [j for j in jobs if states[j["id"]] == "queued"]
     running = [j for j in jobs if states[j["id"]] == "running"]
-    busy = {slot_of(j["spec"]) for j in running} - {""}  # a slot is one build directory: one job at a time
+    # a slot is one build directory: one job at a time, a built one keeping it while it waits for its hold
+    built = [j for j in queued if j["state"].get("phase") == "built"]
+    busy = {slot_of(j["spec"]) for j in running + built} - {""}
     heavy = any(j["spec"].get("level") in HEAVY for j in running)
     # a "none" job takes no hold: it never waits for a light slot, and has its own as many
     light = sum(1 for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
@@ -6874,7 +6950,7 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
     for j in queued:
         deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
         if any(s not in ("queued", "running", "done") for s in deps):
-            skip.append(j)
+            skip.append(j.get("job", j))
             continue
         is_heavy = j["spec"].get("level") in HEAVY
         is_bare = j["spec"].get("level") == "none"
@@ -6896,13 +6972,15 @@ def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Jso
             continue  # deferred work never takes every slot from the direct path
         if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
             continue  # its campaign has its share while another campaign waits
-        if slot_of(j["spec"]) in busy:
+        if slot_of(j["spec"]) in busy and j["state"].get("phase") != "built":
             continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
         if is_heavy:
             batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}
             slots = light_slots(True)  # light work beside it keeps to a heavy job's share from now on
             share = max(1, slots // sharing)
-        start.append({**j, "state": {**j["state"], "batch": batch}} if is_heavy else j)
+        of = j.get("job", j)  # a phase starts the job it is of: its build, or its command's hold
+        state = {**of["state"], **({"batch": batch} if is_heavy else {})}
+        start.append({**of, "state": {**state, "phase": "run" if is_heavy else "build"} if of is not j else state})
         busy |= {slot_of(j["spec"])} - {""}
         heavy = heavy or is_heavy
         light += 0 if is_heavy or is_bare else 1
@@ -6987,7 +7065,9 @@ def cmd_worker(a: argparse.Namespace) -> int:
                 if claim(j):
                     finish(load_job(j["dir"]), -1, "skipped", "a job it runs after did not succeed")
             for j in start:
-                if claim(j):
+                if j["state"].get("state") == "running":
+                    admit(j)  # built: its runner takes its hold
+                elif claim(j):
                     spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")
             if "stop" in asked:
                 return 0
