@@ -45,6 +45,7 @@ environment (every hold):
   QUIET_DISK_MIN_GB    no new hold below this free disk (default 5)
   QUIET_WHO            holder name in `list` (default: user, directory, parent pid)
   QUIET_NOTIFY_AFTER   notify when a run took this many seconds or more (default 300)
+  QUIET_EXPECT         "fail": a command meant to fail (a test without its fix) reports done when it does
 
 quiet coordinates this machine only; a remote host runs its own quiet."""
 
@@ -855,7 +856,8 @@ def finished(name: str, what: str, code: int, started: float) -> None:
     secs = int(time.time() - started)
     unpill(name)
     if secs >= int(env("QUIET_NOTIFY_AFTER", "300")):
-        result = "done" if code == 0 else f"failed (exit {code})"
+        meant = env("QUIET_EXPECT", "") == "fail" and code not in (0, 124, 126, 127)  # a test run without the fix
+        result = "done" if code == 0 or meant else f"failed (exit {code})"
         report.notify(f"quiet {name}: {result}", f"{what} after {secs // 60}m{secs % 60}s")
 
 

@@ -855,6 +855,25 @@ class Evidence(CampaignCase):
         self.ok(self.home, "land", "fix")  # the rerun carries the tag: same command, the head's code
         self.assertTrue(self.quest("fix")["landed"][0]["criteria"]["A1"].startswith(rerun))  # kept by prune
 
+    def test_a_job_meant_to_fail_never_sends_a_failure_notice(self) -> None:
+        calls = self.root / "cmux-calls"
+        fake = self.root / "bin" / "cmux"
+        fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
+        fake.chmod(0o755)
+        self.env.update(CMUX_WORKSPACE_ID="ws-test", QUIET_NOTIFY_AFTER="0")
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        mutant = self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--", "exit 1")
+        self.run_cli(wt, "wait", mutant, "--timeout", "60")  # one at a time: the fake cmux's writes interleave
+        plain = self.submit(wt, "--quest", "fix", "--", "exit 2")
+        self.run_cli(wt, "wait", plain, "--timeout", "60")
+        notices = [x for x in calls.read_text().splitlines() if x.startswith("notify|")]
+        self.assertTrue(any(f"job-{mutant}: done|" in x for x in notices), notices)
+        self.assertTrue(any(f"job-{plain}: failed (exit 2)|" in x for x in notices), notices)
+        self.assertFalse(any(f"job-{mutant}: failed" in x for x in notices), "a mutant failing as meant warned")
+
     def test_a_fails_without_job_must_fail_where_the_fix_is_missing(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"
@@ -1782,8 +1801,14 @@ class Campaigns(CampaignCase):
         )
         self.assertNotIn("is changing in demo:api", self.run_cli(self.other, "check").out)
         self.ok(self.home, "start", "api")
-        self.assertIn("api: changes contract lib-api, which other:use consumes", self.run_cli(self.home, "check").out)
-        self.assertIn("use: contract lib-api is changing in demo:api", self.run_cli(self.other, "check").out)
+        self.assertIn(
+            "api and other:use: other:use consumes contract lib-api, which api changes: tell its lead",
+            self.run_cli(self.home, "check").out,
+        )
+        self.assertIn(
+            "use and demo:api: contract lib-api changing in demo:api: build against its brief",
+            self.run_cli(self.other, "check").out,
+        )
 
     def test_one_start_sends_one_message_listing_every_overlap_with_a_started_quest(self) -> None:
         for pid, files, consumes in (("cons", "app.py", "o-api,o-fmt"), ("plan", "README.md", "o-api")):
@@ -1876,9 +1901,17 @@ class Campaigns(CampaignCase):
         self.assertIn("; builds against contract lib-api, which your api is changing", told)  # one message, not two
         self.assertNotIn("msg-2", told)
         mine, theirs = self.run_cli(self.home, "check").out, self.run_cli(self.other, "check").out
-        self.assertIn("api: changes contract lib-api, which other:use consumes", mine)
-        self.assertIn("api: files may overlap other:use", mine)
-        self.assertIn("use: contract lib-api is changing in demo:api", theirs)
+        grouped = (
+            "api and other:use: files may overlap: order them (--after other:use) or narrow files; "
+            "other:use consumes contract lib-api, which api changes: tell its lead\n"
+        )
+        self.assertIn(grouped, mine)
+        self.assertEqual(mine.count("other:use"), grouped.count("other:use"), "one warning per peer quest")
+        self.assertIn(
+            "use and demo:api: files may overlap: order them (--after demo:api) or narrow files; "
+            "contract lib-api changing in demo:api: build against its brief\n",
+            theirs,
+        )
         machine = self.ok(self.other, "status", "--all").out
         self.assertIn("demo", machine)
         self.assertIn("in flight: use", machine)

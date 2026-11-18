@@ -3398,30 +3398,36 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         for dep in [*p["needs"], *p["after"]]:
             if ":" in dep and live and foreign(dep) is None:
                 out.append(("warning", f"{pid}: depends on {dep}, which no campaign on this machine has"))
-        if p["status"] in ("active", "review"):
-            for other in cross_overlaps(c, pid):
-                out.append(
-                    ("warning", f"{pid}: files may overlap {other}: order them (--after {other}) or narrow files")
-                )
         if not live:
             continue
+        # one warning per peer quest, naming every overlap: files, and contracts either side changes
+        peer: dict[str, Json] = {}
+        if p["status"] in ("active", "review"):
+            for other in cross_overlaps(c, pid):
+                peer.setdefault(other, {"files": False, "theirs": [], "mine": []})["files"] = True
         for name, o in campaigns().items():
             if name == c.name:
                 continue
-            # only a started quest changes a contract; starting one tells the other lead already
+            # only a started quest changes a contract
             for qid, q in o["state"].get("quests", {}).items():
                 if q.get("status") not in ("planned", "active", "review"):
                     continue
-                if q.get("status") != "planned":
-                    for x in consumed(p["consumes"], changes(Path(o["home"]), q)):
-                        out.append(
-                            ("warning", f"{pid}: contract {x} is changing in {name}:{qid}; build against its brief")
-                        )
-                if p["status"] != "planned":
-                    for x in consumed(q.get("consumes", []), changes(c.home, p)):
-                        out.append(
-                            ("warning", f"{pid}: changes contract {x}, which {name}:{qid} consumes; tell its lead")
-                        )
+                theirs = consumed(p["consumes"], changes(Path(o["home"]), q)) if q.get("status") != "planned" else []
+                mine = consumed(q.get("consumes", []), changes(c.home, p)) if p["status"] != "planned" else []
+                if theirs or mine:
+                    entry = peer.setdefault(f"{name}:{qid}", {"files": False, "theirs": [], "mine": []})
+                    entry.update(theirs=theirs, mine=mine)
+        for other, e in peer.items():
+            parts = [f"files may overlap: order them (--after {other}) or narrow files"] if e["files"] else []
+            if e["theirs"]:
+                parts.append(
+                    f"contract{'s' if len(e['theirs']) > 1 else ''} {', '.join(e['theirs'])} changing in {other}: build against its brief"
+                )
+            if e["mine"]:
+                parts.append(
+                    f"{other} consumes contract{'s' if len(e['mine']) > 1 else ''} {', '.join(e['mine'])}, which {pid} changes: tell its lead"
+                )
+            out.append(("warning", f"{pid} and {other}: " + "; ".join(parts)))
     providers: dict[str, list[str]] = {}
     for pid, p in c.quests.items():
         if p["status"] != "dropped":
@@ -6171,6 +6177,8 @@ def cmd_run(a: argparse.Namespace) -> int:
         QUIET_WHO=f"campaign job {d.name}",
         QUIET_BESIDE=str(ad / "beside"),
     )
+    if spec.get("fails_without", 0) >= FAILS_WITHOUT:
+        env["QUIET_EXPECT"] = "fail"  # its failing is its passing: no failure notice
     for name in spec["refs"]:
         env[f"JOB_REF_{name.upper()}"] = str(ref_path(spec, d, name))
     if spec.get("build"):  # built under light in this checkout, then run at the job's level
