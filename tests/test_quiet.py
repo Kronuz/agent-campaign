@@ -242,6 +242,7 @@ class Quiet(unittest.TestCase):
 
     def test_where_cores_cannot_split_strict_runs_beside_light_work_and_names_it(self) -> None:
         whole = {"QUIET_STRICT_CPUS": f"0-{NCPU - 1}"}  # no partition, as on a Mac
+        whole["QUIET_LIGHT_SLOTS"] = "2"  # L and M run together, even on a 3-core runner (one slot)
         light = self.quiet("light", "L", "10", "a build", "--", "bash", "-c", self.mark("L", 6), **whole)
         self.until(lambda: "L [" in self.listed())
         beside = self.dir / "beside"
