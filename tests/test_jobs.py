@@ -932,6 +932,77 @@ class WorkerCache(CampaignCase):
         self.assertLessEqual(sum(r.startswith(str(done)) for r in reads), 2, "a waiter re-read a finished job")
 
 
+class JobIndex(CampaignCase):
+    """Terminal jobs and key links are remembered across processes, never past a change."""
+
+    def make(self, jid: str, state: str) -> Path:
+        d = self.root / "jobs" / jid
+        d.mkdir(parents=True)
+        (d / "spec.json").write_text(json.dumps({"cmd": "true"}))
+        (d / "state.json").write_text(json.dumps({"state": state}))
+        return d
+
+    def listed(self) -> dict[str, dict[str, object]]:
+        """The jobs a fresh process lists: its own cache empty, the host's index as it is."""
+        with mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}):
+            return {j["id"]: j for j in campaign_module().all_jobs()}
+
+    def test_a_finished_job_changed_since_it_was_indexed_is_read_again(self) -> None:
+        d = self.make("261117-000000-aaaaaa", "done")
+        self.assertEqual(self.listed()[d.name]["state"], {"state": "done"})
+        self.assertTrue((self.root / "jobs" / ".index" / "261117.json").exists(), "nothing was indexed")
+        (d / "state.json").write_text(json.dumps({"state": "done", "slimmed": "now"}))  # in place
+        self.assertEqual(self.listed()[d.name]["state"], {"state": "done", "slimmed": "now"})
+        (d / "for.json").write_text(json.dumps({"tags": [{"quest": "q"}]}))  # tagged: a new file
+        self.assertEqual(self.listed()[d.name]["tags"], [{"quest": "q"}])
+        shutil.rmtree(d)
+        self.make(d.name, "queued")  # pruned, then submitted again under the same id
+        self.assertEqual(self.listed()[d.name]["state"], {"state": "queued"})
+
+    def test_a_replaced_key_link_names_its_new_job(self) -> None:
+        keys = self.root / "jobs" / "keys"
+        keys.mkdir(parents=True)
+        for jid in ("261117-000000-aaaaaa", "261117-000001-bbbbbb"):
+            self.make(jid, "done")
+        (keys / "k").symlink_to("261117-000000-aaaaaa")
+        with mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}):
+            self.assertEqual(campaign_module().key_links("k"), ["261117-000000-aaaaaa"])
+            time.sleep(0.01)
+            (keys / ".k.tmp").symlink_to("261117-000001-bbbbbb")
+            os.replace(keys / ".k.tmp", keys / "k")  # as submit files a newer job under the key
+            self.assertEqual(campaign_module().key_links("k"), ["261117-000001-bbbbbb"])
+
+
+class CiCache(CampaignCase):
+    def test_only_a_passed_ci_answer_outlives_its_command(self) -> None:
+        """A pending or failed CI answer is asked again by the next command (a failure can be re-run);
+        a passed one is kept for the host."""
+        answer = self.root / "ci-answer"
+        calls = self.root / "gh-calls"
+        fake = self.root / "bin" / "gh"
+        fake.write_text(f'#!/bin/sh\necho "$2" >> {calls}\ncat {answer}\n')
+        fake.chmod(0o755)
+        self.ok(self.home, "config", "ci=github")
+        wt = self.started("fix", files="app.py", check="unit=true")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        for status, conclusion, gap in (
+            ("in_progress", "", "running: build"),
+            ("completed", "failure", "failed: build (failure)"),
+            ("completed", "success", ""),
+        ):
+            run = {"name": "build", "databaseId": 7, "status": status, "conclusion": conclusion}
+            answer.write_text(json.dumps([run]))
+            out = self.ok(wt, "brief").out
+            if gap:
+                self.assertIn(gap, out)
+            else:
+                self.assertNotIn("CI at", out)
+        calls.write_text("")
+        self.assertNotIn("CI at", self.ok(wt, "brief").out)
+        self.assertEqual(calls.read_text(), "", "a passed CI answer was asked again")
+
+
 class Slots(CampaignCase):
     def test_jobs_sharing_a_slot_take_turns_without_holding_up_others(self) -> None:
         go = self.root / "go"

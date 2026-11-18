@@ -15,6 +15,7 @@ import codecs
 import contextlib
 import fcntl
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -26,9 +27,11 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Collection, Generator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
@@ -131,6 +134,23 @@ def read_json(path: Path) -> Json | None:
     return data
 
 
+_parsed: dict[Path, tuple[tuple[int, int, int], Json | None]] = {}
+
+
+def read_json_shared(path: Path) -> Json | None:
+    """read_json, parsed once per process while the file keeps its inode, mtime and size; every
+    caller gets the same object, so none may change it."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    ident = (st.st_ino, st.st_mtime_ns, st.st_size)
+    hit = _parsed.get(path)
+    if hit is None or hit[0] != ident:
+        hit = _parsed[path] = (ident, read_json(path))
+    return hit[1]
+
+
 def csv(value: str | None) -> list[str]:
     return [x.strip() for x in (value or "").split(",") if x.strip()]
 
@@ -183,15 +203,24 @@ FINGERPRINT_CMD = (
     "uname -srm; for t in cc c++ python3 cmake rustc; do command -v $t >/dev/null && $t --version 2>&1 | head -1; done; "
     "command -v go >/dev/null && go version; "
 )
-_fingerprint: list[str] = []
+_fingerprint: list[Future[str]] = []
 
 
 def fingerprint() -> str:
     """The host's toolchain, so a cached result is reused only on the toolchain that produced it."""
+    warm_fingerprint()
+    return _fingerprint[0].result()
+
+
+def warm_fingerprint() -> None:
+    """Starts reading the host's toolchain (a quarter second of compilers' --version) once per process."""
     if not _fingerprint:
-        out = sh(["bash", "-c", FINGERPRINT_CMD + os.environ.get("CAMPAIGN_FINGERPRINT", "")], check=False)
-        _fingerprint.append(hashlib.sha256(out.encode()).hexdigest()[:16])
-    return _fingerprint[0]
+        _fingerprint.append(pool().submit(toolchain))
+
+
+def toolchain() -> str:
+    out = sh(["bash", "-c", FINGERPRINT_CMD + os.environ.get("CAMPAIGN_FINGERPRINT", "")], check=False)
+    return hashlib.sha256(out.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- repositories
@@ -221,17 +250,22 @@ def has_branch(repo: Path, name: str) -> bool:
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _fixed: dict[tuple[str, ...], Any] = {}  # answers about commits, which never change
 _heads: list[dict[str, dict[str, str]]] = []  # branch heads, while a command only reads
+_listed: list[list[Json]] = []  # the job store's jobs, while a command only reads
 
 
 @contextlib.contextmanager
-def frozen_heads() -> Generator[None, None, None]:
-    """Reads each repository's branch heads once, for a command that only reads (status asks about
-    each branch many times); commands that move branches always ask git."""
+def frozen() -> Generator[None, None, None]:
+    """Reads each repository's branch heads and the job store once, for a command that only reads
+    (status asks about each branch and job many times); commands that move branches or change jobs
+    always read them again."""
     _heads.append({})
     try:
         yield
     finally:
         _heads.pop()
+        if not _heads:
+            _listed.clear()
+            _status.clear()
 
 
 def branch_head(repo: Path, ref: str) -> str | None:
@@ -272,19 +306,67 @@ def has_ref(repo: Path, ref: str) -> bool:
 
 
 def ancestor(repo: Path, a: str, b: str) -> bool:
+    a, b = branch_head(repo, a) or a, branch_head(repo, b) or b  # while frozen, a branch is its commit
     return bool(on_commits(("ancestor", str(repo), a, b), lambda: git_ok(repo, "merge-base", "--is-ancestor", a, b)))
 
 
 _reachable: dict[tuple[str, str], set[str]] = {}
 
 
-def on_branch(repo: Path, commit: str, ref: str) -> bool:
-    """Whether COMMIT is in REF's history: one listing of that history per command, not a git
-    call per commit (Xapiand's 15k commits list in about 0.3 s)."""
+def off_branch(repo: Path, commits: list[str], ref: str) -> set[str]:
+    """Which of COMMITS are not in REF's history: one listing of that history (Xapiand's 15k
+    commits list in about 0.3 s), and none while REF stays at the commit it was asked at."""
+    head = rev(repo, ref)
+    shas = sorted({x for x in commits if SHA.fullmatch(x)})
+    off: list[str] = on_commits(("off-branch", str(repo), head, *shas), lambda: sorted(set(shas) - history(repo, head)))
+    return {*off, *(x for x in commits if not SHA.fullmatch(x) and not ancestor(repo, x, ref))}
+
+
+def history(repo: Path, ref: str) -> set[str]:
     key = (str(repo), ref)
     if key not in _reachable:
         _reachable[key] = set(git(repo, "rev-list", ref, check=False).split())
-    return commit in _reachable[key] if SHA.fullmatch(commit) else ancestor(repo, commit, ref)
+    return _reachable[key]
+
+
+_pool: list[ThreadPoolExecutor] = []
+
+
+def pool() -> ThreadPoolExecutor:
+    """This process's threads for waiting on other processes (git, gh) side by side: enough for a
+    campaign's repositories and GitHub questions at once, since they mostly wait."""
+    if not _pool:
+        _pool.append(ThreadPoolExecutor(max_workers=32))
+    return _pool[0]
+
+
+_status: dict[Path, Future[list[str]]] = {}
+
+
+def changed_files(place: Path) -> list[str]:
+    """A checkout's uncommitted changes (`git status --porcelain`), read once while frozen."""
+    if not _heads:
+        return git(place, "status", "--porcelain").splitlines()
+    return warm_status(place).result()
+
+
+def warm_status(place: Path) -> Future[list[str]]:
+    if place not in _status:
+        _status[place] = pool().submit(lambda: git(place, "status", "--porcelain").splitlines())
+    return _status[place]
+
+
+def warm_repos(repos: Collection[Path]) -> None:
+    """Reads, side by side, what a command asks of each repository one at a time: the repository
+    it belongs to and, while frozen, its branch heads; and the host's toolchain meanwhile."""
+    warm_fingerprint()
+
+    def read(repo: Path) -> None:
+        with contextlib.suppress(CampaignError):  # asked again in order, and reported there
+            if common_dir(repo) and _heads:
+                main_branch(repo)
+
+    list(pool().map(read, dict.fromkeys(repos)))
 
 
 def ever_on(repo: Path, commit: str, names: list[str]) -> bool:
@@ -594,7 +676,7 @@ def campaigns() -> dict[str, Json]:
         home = Path(f.read_text().strip())
         meta = campaigns_in(home).get(f.name)
         try:
-            state = read_json(home / meta / "state.json") if meta else None
+            state = read_json_shared(home / meta / "state.json") if meta else None
         except CampaignError:
             continue
         if state and state.get("campaign") == f.name:
@@ -687,7 +769,7 @@ class Campaign:
             die("state.json is invalid:\n  " + "\n  ".join(errors))
         self.state: Json = data
 
-    @property
+    @functools.cached_property
     def ident(self) -> str:
         """How jobs and wait records name this campaign: its directory."""
         return str(self.home / self.meta)
@@ -706,7 +788,7 @@ class Campaign:
         return path.read_text() if path.exists() else ""
 
     def repo(self, p: Json) -> Path:
-        return (self.home / p["repo"]).resolve()
+        return resolved(self.home / p["repo"])
 
     def landed(self, pid: str) -> bool:
         if ":" in pid:
@@ -728,6 +810,12 @@ class Campaign:
         if git_ok(self.home, "diff", "--cached", "--quiet", "--", *paths):
             return
         git(self.home, "commit", "-q", "-m", message, "--", *paths)
+
+
+@functools.lru_cache(maxsize=1 << 10)
+def resolved(path: Path) -> Path:
+    """PATH resolved once per command: a quest's repository, asked for many times."""
+    return path.resolve()
 
 
 def register(name: str, home: Path) -> None:
@@ -945,7 +1033,7 @@ def sidebar(c: Campaign) -> None:
     project = f"status:campaign-{c.name}"
     want[project] = f"{name}: {counts['landed']} landed · {in_flight(counts)} · {counts['planned']} planned"
     jobs = all_jobs() if any(p["status"] in FLIGHT and p.get("branch") for p in c.quests.values()) else []
-    with frozen_heads():  # one branch listing per repository, not two git calls per branch
+    with frozen():  # one branch listing per repository, not two git calls per branch
         failing_by = {pid: unexplained_failures(c, pid, jobs) for pid, p in c.quests.items() if p["status"] in FLIGHT}
     for pid, p in c.quests.items():
         if p["status"] in ("active", "review"):  # blocked quests count in the campaign's pill only
@@ -1819,32 +1907,49 @@ def drift(
     return out + [x for x in rest if at_main[x] != accepted[x]]
 
 
-GH_FRESH = float(os.environ.get("CAMPAIGN_GH_FRESH", "60"))  # seconds a changeable answer is reused
-_gh: dict[str, tuple[int, Any]] = {}
+_gh: dict[str, Future[tuple[int, Any]]] = {}
+_gh_lock = threading.Lock()
 
 
-def gh_json(repo: Path, args: list[str], final: Callable[[Any], bool]) -> tuple[int, Any]:
-    """`gh ARGS` (JSON out) in REPO, cached on disk for the host: forever once FINAL says the answer
-    cannot change (a run that passed), else for GH_FRESH seconds; (returncode, data or stderr)."""
+def gh_start(repo: Path, args: list[str], final: Callable[[Any], bool]) -> Future[tuple[int, Any]]:
+    """`gh ARGS` (JSON out) in REPO, started in the background, or found started or answered:
+    (returncode, data or stderr). An answer FINAL says cannot change (a run that passed) is kept on
+    disk for the host; any other is asked once per command."""
     key = hashlib.sha256(json.dumps([str(repo), args]).encode()).hexdigest()[:32]
-    if key in _gh:
+    with _gh_lock:
+        if key not in _gh:
+            path = jobs_dir() / ".gh" / f"{key}.json"
+            hit: Json = {}
+            with contextlib.suppress(OSError, ValueError):
+                hit = json.loads(path.read_text())
+            if hit.get("final"):
+                _gh[key] = Future()
+                _gh[key].set_result((0, hit["data"]))
+            else:
+                _gh[key] = pool().submit(gh_ask, repo, args, final, path)
         return _gh[key]
-    path = jobs_dir() / ".gh" / f"{key}.json"
-    with contextlib.suppress(OSError, ValueError):
-        hit = json.loads(path.read_text())
-        if hit["final"] or time.time() - hit["t"] < GH_FRESH:
-            _gh[key] = (0, hit["data"])
-            return _gh[key]
+
+
+def gh_ask(repo: Path, args: list[str], final: Callable[[Any], bool], path: Path) -> tuple[int, Any]:
     p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True)
     if p.returncode != 0:
         return p.returncode, p.stderr.strip()
     data = json.loads(p.stdout or "null")
-    path.parent.mkdir(exist_ok=True)
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"t": time.time(), "final": final(data), "data": data}))
-    tmp.replace(path)
-    _gh[key] = (0, data)
-    return _gh[key]
+    if final(data):
+        path.parent.mkdir(exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"final": True, "data": data}))
+        tmp.replace(path)
+    return 0, data
+
+
+def gh_json(repo: Path, args: list[str], final: Callable[[Any], bool]) -> tuple[int, Any]:
+    return gh_start(repo, args, final).result()
+
+
+def ci_runs(commit: str) -> list[str]:
+    """The `gh` arguments listing the CI runs at COMMIT: one query serves every question about them."""
+    return ["run", "list", "--commit", commit, "--json", "databaseId,status,conclusion,name", "--limit", "50"]
 
 
 def all_passed(items: Any) -> bool:
@@ -1856,28 +1961,78 @@ def all_passed(items: Any) -> bool:
 def ci_commit(repo: Path, commit: str) -> str:
     """The commit whose CI speaks for COMMIT: itself, or, when it has no runs, its nearest
     first-parent ancestor that differs only in campaign files or documentation, which CI workflows
-    skip (`paths-ignore`)."""
-    log = subprocess.run(
-        ["git", "-C", str(repo), "rev-list", "--first-parent", "--max-count=20", commit],
-        capture_output=True,
-        text=True,
-    ).stdout.split()
+    skip (`paths-ignore`). Their runs are asked for all at once."""
+    asked = [(k, gh_start(repo, ci_runs(k), all_passed)) for k in ci_candidates(repo, commit)]
+    for k, runs in asked:
+        code, listed = runs.result()
+        if code == 0 and listed:
+            return k
+    return commit
+
+
+def ci_candidates(repo: Path, commit: str) -> list[str]:
+    """COMMIT and its nearest first-parent ancestors whose code is COMMIT's: whose CI may speak for it."""
+    log = on_commits(
+        ("ci-line", str(repo), commit),
+        lambda: git(repo, "rev-list", "--first-parent", "--max-count=20", commit, check=False).split(),
+    )
+    out: list[str] = []
     for k in log:
         if not all(is_meta(x) or doc_path(x, "") for x in changed(repo, k, commit)):
             break
-        code, runs = gh_json(repo, ["run", "list", "--commit", k, "--json", "databaseId", "--limit", "1"], bool)
-        if code == 0 and runs:  # a commit's runs, once there, stay
-            return k
-    return commit
+        out.append(k)
+    return out
+
+
+def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
+    """Starts asking GitHub what ci_state (and with JOBS, ci_jobs) will ask about COMMIT, so the
+    answers for many quests arrive together."""
+    if not shutil.which("gh"):
+        return
+
+    def views(asked: Future[tuple[int, Any]]) -> None:
+        with contextlib.suppress(Exception):  # ci_jobs asks again, and reports what fails
+            code, runs = asked.result()
+            for run in runs if code == 0 and isinstance(runs, list) else []:
+                if isinstance(run, dict) and "databaseId" in run:
+                    gh_start(repo, run_view(run), jobs_passed)
+
+    for k in ci_candidates(repo, commit):
+        asked = gh_start(repo, ci_runs(k), all_passed)
+        if jobs:
+            asked.add_done_callback(views)
+
+
+def warm_views(c: Campaign, pids: list[str], brief: bool) -> None:
+    """Starts what quest_view will ask other processes about these quests: GitHub about their
+    heads and, unless BRIEF, git about their worktrees."""
+    for pid in pids:
+        p = c.quests[pid]
+        repo = c.repo(p)
+        if p["status"] not in ("active", "review") or not p.get("branch") or not has_ref(repo, p["branch"]):
+            continue
+        for name, _, rel, _ in [] if brief else branches(c, pid):
+            for place in checkouts(c, name, rel):
+                if place is not None and place.exists() and _heads:
+                    warm_status(place)
+        jobs = any(x["cmd"].startswith(CI_CHECK) for x in gates(p))
+        if jobs or c.state.get("ci") == "github":
+            ci_warm(repo, rev(repo, p["branch"]), jobs)
+
+
+def run_view(run: Json) -> list[str]:
+    return ["run", "view", str(run["databaseId"]), "--json", "jobs"]
+
+
+def jobs_passed(view: Any) -> bool:
+    return all_passed((view or {}).get("jobs"))
 
 
 def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    code, listed = gh_json(
-        repo, ["run", "list", "--commit", commit, "--json", "status,conclusion,name", "--limit", "50"], all_passed
-    )
+    code, listed = gh_json(repo, ci_runs(commit), all_passed)
     if code != 0:
         return f"gh failed: {listed}"
     runs = [r for r in listed or [] if r.get("name") not in later]
@@ -1903,16 +2058,11 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    code, runs = gh_json(
-        repo, ["run", "list", "--commit", commit, "--json", "databaseId", "--limit", "50"], lambda _: False
-    )
+    code, runs = gh_json(repo, ci_runs(commit), all_passed)
     if code != 0:
         return f"gh failed: {runs}"
     found: list[Json] = []
-    for run in runs or []:
-        code, view = gh_json(
-            repo, ["run", "view", str(run["databaseId"]), "--json", "jobs"], lambda v: all_passed(v.get("jobs"))
-        )
+    for code, view in [x.result() for x in [gh_start(repo, run_view(run), jobs_passed) for run in runs or []]]:
         if code != 0:
             return f"gh failed: {view}"
         found += (view or {}).get("jobs", [])
@@ -2966,14 +3116,21 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
             )
         )
     touched: dict[str, list[tuple[str, str]]] = {}
+    warm_repos([c.repo(p) for p in c.quests.values()])
+    landed: dict[Path, list[str]] = {}
+    for p in c.quests.values():
+        landed.setdefault(c.repo(p), []).extend(x["commit"] for x in p.get("landed", []))
+    stray: dict[Path, set[str]] = {}
     for pid, p in c.quests.items():
         repo = c.repo(p)
         if not common_dir(repo):
             out.append(("error", f"{pid}: repository {repo} is missing"))
             continue
         main = main_branch(repo)
+        if repo not in stray:
+            stray[repo] = off_branch(repo, landed[repo], main)
         for entry in p.get("landed", []):
-            if not on_branch(repo, entry["commit"], main):
+            if entry["commit"] in stray[repo]:
                 out.append(("error", f"{pid}: landed commit {entry['commit'][:12]} is not on {main}"))
         if p["status"] not in ("active", "review"):
             continue
@@ -3117,7 +3274,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
     elif p["status"] == "blocked":
         view["missing"] = [f"blocked: {p.get('reason', '')}"]
     repo = c.repo(p)
-    mine = [j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident]
+    mine = quest_jobs(jobs, c.ident, pid)
     view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
     view["landed"] = [
         x["commit"][:12]
@@ -3135,7 +3292,10 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
     if p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
         main = main_branch(repo)
         head = rev(repo, p["branch"])
-        ahead = git(repo, "rev-list", "--count", f"{main}..{head}")
+        base = rev(repo, main)
+        ahead = on_commits(
+            ("ahead", str(repo), base, head), lambda: git(repo, "rev-list", "--count", f"{base}..{head}")
+        )
         view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
         view["missing"] = landing_gaps(c, pid, head, final=True, ci=True, jobs=jobs)
         view["docs_only"] = [
@@ -3170,11 +3330,11 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
         view["journal"] = work
         for name, branch, rel, _ in branches(c, pid):
             dirty = 0  # the code's and the journal's worktrees; -1 when one is missing
-            for place in dict.fromkeys([(c.home / rel).resolve() if rel else None, journal_place(c, name)]):
+            for place in checkouts(c, name, rel):
                 if place is None or not place.exists():
                     dirty = -1
                     break
-                dirty += len(git(place, "status", "--porcelain").splitlines())
+                dirty += len(changed_files(place))
             texts[name] = journal_text(c, name, branch)
             task = p.get("tasks", {}).get(name.partition("--")[2], {})
             state = f"dropped: {task.get('reason', '')}" if task.get("status") == "dropped" else state_of(texts[name])
@@ -3207,6 +3367,28 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
     return view
 
 
+_grouped: dict[int, tuple[list[Json], dict[tuple[Any, Any], list[Json]]]] = {}
+
+
+def quest_jobs(jobs: list[Json], campaign: str, pid: str) -> list[Json]:
+    """A quest's jobs among JOBS, in order: a list of jobs is grouped by quest once, for a command
+    that asks about every quest."""
+    held = _grouped.get(id(jobs))
+    if held is None or held[0] is not jobs:
+        groups: dict[tuple[Any, Any], list[Json]] = {}
+        for j in jobs:
+            groups.setdefault((j["spec"].get("campaign"), j["spec"].get("quest")), []).append(j)
+        if len(_grouped) >= 8:
+            del _grouped[next(iter(_grouped))]
+        held = _grouped[id(jobs)] = (jobs, groups)
+    return held[1].get((campaign, pid), [])
+
+
+def checkouts(c: Campaign, name: str, rel: str) -> list[Path | None]:
+    """A quest's or task's code and journal worktrees, None for one it has not."""
+    return list(dict.fromkeys([(c.home / rel).resolve() if rel else None, journal_place(c, name)]))
+
+
 def unexplained_failures(
     c: Campaign, pid: str, jobs: list[Json], journals: Collection[str] | None = None
 ) -> list[Json]:
@@ -3235,7 +3417,7 @@ def ended_at_head(c: Campaign, pid: str, jobs: list[Json]) -> list[Json]:
             return code_tree(repo, j["spec"]["commit"]) in heads
         return False
 
-    mine = (j for j in jobs if j["spec"].get("quest") == pid and j["spec"].get("campaign") == c.ident)
+    mine = quest_jobs(jobs, c.ident, pid)
     return [j for j in mine if j["state"].get("state") in TERMINAL and at_head(j)]
 
 
@@ -3379,7 +3561,7 @@ def map_data(c: Campaign, only: str = "") -> Json:
     if only:
         c.quest(only)
     jobs = all_jobs()
-    with frozen_heads():
+    with frozen():
         quests = {pid: quest_map(c, pid, jobs) for pid in c.quests if not only or pid == only}
     plan = c.home / c.meta / "PLAN.md"
     goals: list[str] = []
@@ -3817,7 +3999,7 @@ def print_brief(b: Json) -> None:
 def cmd_status(a: argparse.Namespace) -> int:
     if a.all:
         return machine_status()
-    with frozen_heads():
+    with frozen():
         return show_status(a)
 
 
@@ -3826,12 +4008,14 @@ def show_status(a: argparse.Namespace) -> int:
     reap()
     if not a.id and (a.brief or not a.json):  # in a quest's worktree, that quest
         a.id = here_quest(c, Path.cwd())
-    if not a.brief:
-        sidebar(c)
-    jobs = all_jobs()
     pids = [a.id] if a.id else list(c.quests)
     for pid in pids:
         c.quest(pid)
+    warm_repos([c.home, *(c.repo(c.quests[x]) for x in (pids if a.brief else c.quests))])
+    warm_views(c, pids, a.brief)
+    if not a.brief:
+        sidebar(c)
+    jobs = all_jobs()
     views = [quest_view(c, pid, jobs, brief=a.brief, table=a.brief and bool(a.id)) for pid in pids]
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
     if a.brief:
@@ -4228,7 +4412,7 @@ def claude_runs(since: float) -> tuple[list[Json], list[Json]]:
     response's content blocks are logged as separate lines with one message id: each id counts once."""
     root = Path(os.environ.get("CAMPAIGN_CLAUDE_LOGS") or Path.home() / ".claude" / "projects")
 
-    def stamp_of(value: str) -> float:
+    def identof(value: str) -> float:
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
         except (ValueError, AttributeError):
@@ -4262,7 +4446,7 @@ def claude_runs(since: float) -> tuple[list[Json], list[Json]]:
                 t["model"] = m.get("model") or t["model"]
                 content: list[Json] = m["content"] if isinstance(m.get("content"), list) else []
                 t["calls"] += sum(1 for b in content if isinstance(b, dict) and b.get("type") == "tool_use")
-                if m.get("usage") and stamp_of(stamp) >= since:
+                if m.get("usage") and identof(stamp) >= since:
                     seen[m.get("id") or f"line{len(seen)}"] = m["usage"]
         totals = dict.fromkeys(("tokens", *BREAKDOWN), 0)
         for u in seen.values():
@@ -4277,8 +4461,8 @@ def claude_runs(since: float) -> tuple[list[Json], list[Json]]:
         return {**t, **totals}
 
     def seconds(t: Json) -> float:
-        began = max(stamp_of(t["began"]), since)
-        return max(0.0, stamp_of(t["ended"]) - began) if t["ended"] else 0.0
+        began = max(identof(t["began"]), since)
+        return max(0.0, identof(t["ended"]) - began) if t["ended"] else 0.0
 
     runs: list[Json] = []
     sessions: list[Json] = []
@@ -4688,8 +4872,13 @@ def cmd_verify(a: argparse.Namespace) -> int:
 
 def jobs_dir() -> Path:
     d = Path(os.environ.get("CAMPAIGN_JOBS") or Path.home() / ".scratch" / "campaign" / "jobs")
-    d.mkdir(parents=True, exist_ok=True)
+    if d not in _made:
+        d.mkdir(parents=True, exist_ok=True)
+        _made.add(d)
     return d
+
+
+_made: set[Path] = set()  # job stores this process made sure exist
 
 
 BUILD_FILES = ("CMakeLists*", "*.cmake", "CMakePresets*.json", "*toolchain*", "Makefile", "GNUmakefile", "*.mk")
@@ -4781,7 +4970,25 @@ def job_key(spec: Json, reads: bool = False) -> str:
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
 
 
+_jobs: dict[str, tuple[int, Json]] = {}  # this process's terminal jobs: id -> (its directory's inode, job)
+
+
 def load_job(d: Path) -> Json:
+    """A job's spec, state and tags; a terminal one read once per process."""
+    try:
+        inode = os.stat(d).st_ino
+    except OSError:
+        return read_job(d)
+    hit = _jobs.get(d.name)
+    if hit is not None and hit[0] == inode and hit[1]["dir"] == d:
+        return hit[1]
+    job = read_job(d)
+    if job["state"].get("state") in TERMINAL:
+        _jobs[d.name] = (inode, job)
+    return job
+
+
+def read_job(d: Path) -> Json:
     def tolerant(path: Path) -> Json:
         try:
             return read_json(path) or {}
@@ -4811,35 +5018,79 @@ def tag(jid: str, campaign: str, quest: str, ids: list[str], fails_without: bool
     else:
         old["for"] = list(dict.fromkeys([*old["for"], *ids]))
     write_json(path, {"tags": tags})
+    _jobs.pop(jid, None)
 
 
 def attempt_dir(job: Json) -> Path:
     return job["dir"] / f"a{int(job['state'].get('attempt', 1))}"
 
 
+JOB_DAY = re.compile(r"\d{6}-")  # a job id starts with the day it was submitted
+
+
+def job_shard(jid: str) -> str:
+    """The job index file that holds a terminal job's record: one per day of ids."""
+    return f"{jid[:6] if JOB_DAY.match(jid) else '_'}.json"
+
+
 def all_jobs(cache: dict[str, tuple[int, Json]] | None = None) -> list[Json]:
-    """Every job, by id. A long-lived caller passes CACHE, a dict it keeps: a terminal job is read once
-    (its state never changes again) and served from it while its directory is the same, so a tick reads
-    only the jobs still in flight. Cached jobs carry no tags: that caller ignores them."""
+    """Every job, by id. A terminal job is read once (its record never changes again) and served from
+    CACHE (this process's, unless a caller keeps its own) while its directory is the same. Across
+    processes, the job index serves it while its directory and state.json have the stat they had.
+    While a command only reads (frozen), the store is listed once."""
+    if cache is None and _listed:
+        return list(_listed[0])
+    if cache is None and _heads:
+        _listed.append(all_jobs(_jobs))
+        return list(_listed[0])
+    cache = _jobs if cache is None else cache
     jobs: list[Json] = []
-    with os.scandir(jobs_dir()) as it:
-        entries = sorted((e for e in it if e.is_dir()), key=lambda e: e.name)
+    root = jobs_dir()
+    with os.scandir(root) as it:
+        entries = sorted((e for e in it if e.is_dir() and not e.name.startswith(".")), key=lambda e: e.name)
+    shards: dict[str, dict[str, list[Any]]] = {}
+    dirty: set[str] = set()
     for e in entries:
-        hit = cache.pop(e.name, None) if cache is not None else None
+        hit = cache.pop(e.name, None)
         if hit is not None and hit[0] == e.inode():
             cache[e.name] = hit
             jobs.append(hit[1])
             continue
+        shard = job_shard(e.name)
+        if shard not in shards:
+            shards[shard] = {}
+            with contextlib.suppress(OSError, ValueError):
+                shards[shard] = json.loads((root / ".index" / shard).read_text())
+        try:
+            st = os.stat(f"{e.path}/state.json")
+        except OSError:
+            st = None
+        ident = [e.inode(), e.stat().st_mtime_ns, st.st_mtime_ns, st.st_size] if st else []
+        record = shards[shard].get(e.name)
         d = Path(e.path)
-        if not (d / "spec.json").exists():
+        if ident and record is not None and record[0] == ident:
+            job = {"id": e.name, "dir": d, "spec": record[1], "state": record[2]}
+            if record[3] is not None:
+                job["tags"] = record[3]
+        elif os.path.exists(f"{e.path}/spec.json"):
+            job = read_job(d)
+            if ident and job["state"].get("state") in TERMINAL:
+                shards[shard][e.name] = [ident, job["spec"], job["state"], job.get("tags")]
+                dirty.add(shard)
+        else:
             continue
-        job = load_job(d)
-        if cache is not None and job["state"].get("state") in TERMINAL:
-            cache[e.name] = (e.inode(), {k: v for k, v in job.items() if k != "tags"})
+        if job["state"].get("state") in TERMINAL:
+            cache[e.name] = (e.inode(), job)
         jobs.append(job)
-    if cache is not None:
-        for k in cache.keys() - {e.name for e in entries}:
-            del cache[k]  # pruned
+    names = {e.name for e in entries}
+    for k in cache.keys() - names:
+        del cache[k]  # pruned
+    for shard, records in shards.items():
+        gone = records.keys() - names
+        for k in gone:
+            del records[k]
+        if shard in dirty or gone:
+            atomic_write(root / ".index" / shard, json.dumps(records, separators=(",", ":")))
     return jobs
 
 
@@ -4875,12 +5126,15 @@ DOCS_DEPTH = 20  # how many commits back evidence is looked for across documenta
 def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
     """Whether PATH is documentation that the command CMD does not name, itself or by a folder, and
     that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
+    return docs_unnamed(path, cmd, tuple(tested))
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...]) -> bool:
     folders = {path[: i + 1] for i, ch in enumerate(path) if ch == "/"}
-    try:
-        words = shlex.split(cmd)
-    except ValueError:
-        words = cmd.split()
-    named = path in cmd or any(w.rstrip("/") + "/" in folders for w in words if w.startswith(("docs", "website")))
+    named = path in cmd or any(
+        w.rstrip("/") + "/" in folders for w in cmd_words(cmd) if w.startswith(("docs", "website"))
+    )
     parts = path.split("/")
     if named or any(fnmatch.fnmatchcase(path, g) for g in tested) or set(parts[:-1]) & set(CODE_DIRS):
         return False
@@ -4889,11 +5143,20 @@ def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
     )
 
 
+@functools.lru_cache(maxsize=1 << 12)
+def cmd_words(cmd: str) -> tuple[str, ...]:
+    """A command's words, as the shell splits them (by whitespace when it cannot)."""
+    try:
+        return tuple(shlex.split(cmd))
+    except ValueError:
+        return tuple(cmd.split())
+
+
 def tested_docs(spec: Json) -> list[str]:
     """The `tested_docs` globs of the campaign that submitted SPEC (its "campaign" folder): the
     documentation its tests execute."""
     folder = spec.get("campaign")
-    state = read_json(Path(folder) / "state.json") if folder and (Path(folder) / "state.json").is_file() else None
+    state = read_json_shared(Path(folder) / "state.json") if folder else None
     return list(state.get("tested_docs", [])) if isinstance(state, dict) else []
 
 
@@ -4975,15 +5238,61 @@ def docs_note(job: Json) -> str:
     return ""
 
 
+_keys: list[Any] = []  # [the keys folder's mtime, {key: the job ids its links name}]
+
+
+def key_links(key: str) -> list[str]:
+    """The jobs filed under KEY in the keys folder (KEY, then KEY-ORDER in folder order), from one
+    listing per process, listed again whenever the folder changes, unless the command only reads.
+    A link's target never changes, so the listing reads only links it has not seen (by inode and
+    mtime) since the last listing on the host."""
+    keys = jobs_dir() / "keys"
+    if not (_keys and _heads):
+        try:
+            changed_at = keys.stat().st_mtime_ns
+        except FileNotFoundError:
+            return []
+        if not _keys or _keys[0] != changed_at:
+            _keys[:] = [changed_at, list_keys(keys)]
+    found: list[str] = _keys[1].get(key, [])
+    return found
+
+
+def list_keys(keys: Path) -> dict[str, list[str]]:
+    seen_path = jobs_dir() / ".index" / "keys.json"
+    seen: dict[str, list[Any]] = {}
+    with contextlib.suppress(OSError, ValueError):
+        seen = json.loads(seen_path.read_text())
+    links: dict[str, list[Any]] = {}
+    with os.scandir(keys) as it:
+        for e in it:
+            if e.name.startswith(".") or not e.is_symlink():
+                continue
+            ident = [e.inode(), e.stat(follow_symlinks=False).st_mtime_ns]
+            old = seen.get(e.name)
+            links[e.name] = old if old is not None and old[:2] == ident else [*ident, os.readlink(e.path)]
+    if links != seen:
+        atomic_write(seen_path, json.dumps(links, separators=(",", ":")))
+    index: dict[str, list[str]] = {}
+    exact: dict[str, str] = {}
+    for name, (_, _, jid) in links.items():
+        key, dash, _ = name.partition("-")
+        if dash:
+            index.setdefault(key, []).append(jid)
+        else:
+            exact[key] = jid
+    for key, jid in exact.items():
+        index[key] = [jid, *index.get(key, [])]
+    return index
+
+
 def job_with_key(spec: Json) -> Json | None:
     """The job with this spec's identity (code, command, toolchain), if one was submitted: alone,
     or queued after others (filed as KEY-ORDER), the one that passed first."""
-    keys = jobs_dir() / "keys"
-    key = job_key(spec)
     found = []
-    for link in [keys / key, *keys.glob(f"{key}-*")]:
-        d = jobs_dir() / os.readlink(link) if link.is_symlink() else None
-        if d is not None and (d / "spec.json").exists():
+    for jid in key_links(job_key(spec)):
+        d = jobs_dir() / jid
+        if (d / "spec.json").exists():
             found.append(load_job(d))
     return next((j for j in found if j["state"].get("state") == "done"), found[0] if found else None)
 
@@ -5681,9 +5990,9 @@ def cmd_run(a: argparse.Namespace) -> int:
     return 0
 
 
-def reap(cache: dict[str, tuple[int, Json]] | None = None) -> None:
+def reap() -> None:
     """Finds jobs whose runner died (crash, kill, reboot): records, requeues or interrupts them."""
-    for job in all_jobs(cache):
+    for job in all_jobs():
         d, st, spec = job["dir"], job["state"], job["spec"]
         if st.get("state") != "running":
             continue
@@ -5698,6 +6007,7 @@ def reap(cache: dict[str, tuple[int, Json]] | None = None) -> None:
             held = mtime(lock)
             if held is None or time.time() - held < 60:
                 continue  # another reaper holds it, or just finished
+        _listed.clear()  # the job may change
         try:
             if load_job(d)["state"] != st:
                 continue
@@ -5988,7 +6298,6 @@ def cmd_worker(a: argparse.Namespace) -> int:
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
     age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
-    seen: dict[str, tuple[int, Json]] = {}  # terminal jobs, read once
     try:
         while True:
             try:
@@ -5997,8 +6306,8 @@ def cmd_worker(a: argparse.Namespace) -> int:
             except FileNotFoundError:
                 return 0
             (home / "heartbeat").touch()
-            reap(seen)
-            jobs = all_jobs(seen)
+            reap()
+            jobs = all_jobs()
             states = {j["id"]: j["state"].get("state") for j in jobs}
             queued = sorted(
                 (j for j in jobs if states[j["id"]] == "queued"),
@@ -6814,6 +7123,7 @@ def prune(
                         f.unlink()
             state = read_json(j["dir"] / "state.json") or {}
             write_json(j["dir"] / "state.json", {**state, "slimmed": stamp()})
+            _jobs.pop(j["id"], None)
             log.write(f"{stamp()} slimmed {j['id']} {j['spec'].get('what', '')}\n")
             beat()
         for x in plan["slots"]:
@@ -7232,9 +7542,8 @@ def wait_events(c: Campaign, timeout: float) -> int:
 def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
     start = time.time()
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
-    seen: dict[str, tuple[int, Json]] = {}  # terminal jobs, read once: a waiter polls for hours
     while True:
-        reap(seen)
+        reap()
         ensure_worker()
         watch_leads()
         jobs = {x: load_job(jobs_dir() / x) for x in ids}
