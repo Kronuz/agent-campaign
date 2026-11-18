@@ -7477,7 +7477,7 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     n, shown = max((copies(x) for x in light_work), default=(1, ""))
     if a.cpus:
         spec["cpus"] = a.cpus
-    elif n > slot_cores():
+    elif n > max(1.0, slot_cores()):  # one copy fits any slot: a host with under a core a slot warns of none
         print(
             f"warning: this light job runs {shown}, more than a light slot's {slot_cores():g} cores: --cpus N "
             "declares them, else the worker charges it the slots it is measured using",

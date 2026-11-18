@@ -882,6 +882,8 @@ class Scheduling(CampaignCase):
         self.assertNotIn("more than a light slot", r.err)
         self.assertIn("cpus: 8", r.err)
         self.assertEqual(json.loads((self.root / "jobs" / r.out.split()[0] / "spec.json").read_text())["cpus"], 8)
+        self.env["CAMPAIGN_LIGHT_JOBS"] = str(4 * (os.cpu_count() or 4))  # a quarter core a slot
+        self.assertNotIn("more than a light slot", self.ok(self.home, "job", "submit", "--", "python3 app.py").err)
 
     @alone
     def test_a_light_job_over_its_share_is_charged_and_shown(self) -> None:
