@@ -1203,6 +1203,66 @@ class Slots(CampaignCase):
             self.assertGreaterEqual(start, end, f"two runners held the slot at once: {held}")
 
 
+class GitMirrors(CampaignCase):
+    """Jobs reach GitHub through one bare mirror per repository in the job store; "GitHub" here is a
+    directory every https:// URL is rewritten to, outside the jobs' own rewrites."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.up = self.root / "up"
+        (self.root / "gitconfig").write_text(f'[url "{self.up}/"]\n\tinsteadOf = https://\n')
+        self.env["GIT_CONFIG_GLOBAL"] = str(self.root / "gitconfig")
+
+    def upstream(self, name: str) -> Path:
+        work = self.repo(f"{name}-work", {"f": "1\n"})
+        bare = self.up / "github.com" / "demo" / f"{name}.git"
+        bare.parent.mkdir(parents=True, exist_ok=True)
+        self.git(self.root, "clone", "-q", "--bare", str(work), str(bare))
+        return work
+
+    def push(self, work: Path, text: str) -> str:
+        head = self.commit(work, {"f": text})
+        self.git(work, "push", "-q", str(self.up / "github.com" / "demo" / f"{work.name[:-5]}.git"), "HEAD:main")
+        return head
+
+    def clone(self, name: str, commit: str, git: str = "git", tag: str = "") -> str:
+        """A job that clones like FetchContent (no checkout, then the pinned commit) and records how
+        many of the clone's object files are hard links."""
+        url = f"https://github.com/demo/{name}.git"
+        linked = 'find d/.git/objects -type f -links +1 | wc -l > "$JOB_OUT/linked"'
+        cmd = f"{git} clone -q --no-checkout {url} d && {git} -C d checkout -q {commit} -- && {linked} # {tag}"
+        return self.submit(self.home, "--level", "light", "--force", "--", cmd)
+
+    def test_jobs_clone_through_one_mirror_that_fetches_only_what_it_misses(self) -> None:
+        work = self.upstream("dep")
+        first = self.git(work, "rev-parse", "HEAD")
+        jid = self.clone("dep", first)
+        self.ok(self.home, "wait", jid, "--timeout", "60")
+        mirror = self.root / "jobs" / "git-mirrors" / "github.com" / "demo" / "dep.git"
+        self.assertTrue(mirror.is_dir(), "the clone made no mirror")
+        second = self.push(work, "2\n")  # a new pin the mirror lacks: fetched once, then the clone retried
+        self.ok(self.home, "wait", self.clone("dep", second), "--timeout", "60")
+        linked = (self.root / "jobs" / jid / "a1" / "out" / "linked").read_text()
+        self.assertGreater(int(linked), 0, "the clone copied the mirror's objects")
+        self.upstream("many")  # concurrent jobs make one mirror, and none breaks it
+        many = self.git(self.root / "many-work", "rev-parse", "HEAD")
+        jobs = [self.clone("many", many, tag=str(n)) for n in range(4)]
+        self.ok(self.home, "wait", *jobs, "--timeout", "90", timeout=120)
+        self.git(mirror.with_name("many.git"), "fsck", "--no-progress")
+        pin = "FetchContent_Declare(pinned GIT_REPOSITORY https://github.com/demo/pinned.git\n  GIT_TAG {})\n"
+        pinned = self.git(self.upstream("pinned"), "rev-parse", "HEAD")
+        self.commit(self.home, {"CMakeLists.txt": pin.format(pinned)})
+        self.ok(self.home, "wait", self.submit(self.home, "--level", "light", "--", "true pins"), "--timeout", "60")
+        self.git(mirror.with_name("pinned.git"), "cat-file", "-e", f"{pinned}^{{commit}}")
+        shutil.rmtree(self.up)  # GitHub unreachable: what the mirror holds still clones, by any git
+        cached = self.clone("dep", first, git='"$CAMPAIGN_GIT"', tag="cached")
+        self.ok(self.home, "wait", cached, self.clone("dep", second, tag="shim"), "--timeout", "60")
+        shim = self.root / "jobs" / "git-mirrors" / "bin"  # outside a job, a cached shim is plain git
+        env = {k: v for k, v in self.env.items() if not k.startswith("CAMPAIGN_")}
+        version = subprocess.run([shim / "git", "--version"], env={**env, "PATH": f"{shim}:{env['PATH']}"})
+        self.assertEqual(version.returncode, 0)
+
+
 class Disk(CampaignCase):
     def aged(self, path: Path, days: float = 10) -> None:
         then = time.time() - days * 86400

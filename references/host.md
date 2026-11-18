@@ -110,6 +110,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   `CTEST_OUTPUT_ON_FAILURE=1`. ctest has no variable for `--stop-on-failure`, so `job submit` and
   `check` warn of a ctest run without it; `check` also flags a light check asking for more, and a
   `--minutes` over six times its passed runs' median.
+- **Git mirrors.** Jobs reach `https://github.com/O/R.git` through a bare mirror in the job store
+  (`git-mirrors/github.com/O/R.git`), fetched under its lock only for a missing commit (the CMake
+  pins, before the command), so clones hardlink it and work while GitHub is down. A `git` shim on
+  `PATH` fills mirrors; `GIT_CONFIG_COUNT` rewrites their URLs for a cached git.
 - **Supervision.** Each attempt has a runner: the leader of its own process session, writing a
   heartbeat every 15 s. The command runs under `quiet` at the job's level, which stops it at its
   deadline; when the command ends, the runner kills every process left in its session, so helpers
@@ -163,10 +167,8 @@ main checkouts are never touched.
   reusable ones first. Removals are logged in `prune.log`; detached worktrees are left alone.
 - **Free disk.** `campaign check` warns when the home's disk has less than `disk_warn` GiB free
   (`campaign config disk_warn=N`, default 100; `CAMPAIGN_DISK_WARN_GB` overrides it), naming the
-  five largest consumers the campaigns know with their sizes and what reclaims each: the job
-  store's jobs and its build slots (`campaign job prune`), the build directories of each
-  repository's worktrees (`campaign job prune --build-days 0`), and `~/.ccache` or `$CCACHE_DIR`
-  (`ccache --evict-older-than 7d`). The worker's daily prune gives the same warning, at the
+  five largest consumers (jobs, build slots, worktrees' build directories, the ccache) and what
+  reclaims each. The worker's daily prune gives the same warning, at the
   largest `disk_warn` of the machine's campaigns, in its log, `prune.log` and the cmux feed. Below
   5 GiB free, `quiet` admits no hold at all.
 
@@ -239,7 +241,7 @@ for a peer goes into this campaign's outbox, a ref only it writes (`refs/campaig
 pushed to `outbox=REMOTE` (default `origin`). Each campaign's `campaign wait` fetches its peers'
 outboxes every minute and imports each message once; one for a quest the peer has landed or does
 not know goes to its lead. No receipt comes back: the sender learns the answer from the
-landed journal, or from the owner.
+landed journal.
 
 ## Other tools
 
@@ -247,13 +249,11 @@ landed journal, or from the owner.
   to share entries; jobs inherit the submitter's PATH, so a launcher found there is used.
 - **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
   it runs out before its reset, read from each harness's own records (`references/harness.md`).
-  It is information for decisions (will this batch exhaust the week before the milestone?), never
-  a reason to launch work. It does not see credits bought for Claude Code, so it can report a
+  It is information for decisions, never a reason to launch work. It does not see credits bought for Claude Code, so it can report a
   window as spent while those credits still cover it: ask the owner before stopping work for it.
 - **`report`** draws the owner's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). `campaign` and `quiet` keep it current by themselves: every state change and
-  `campaign status` update the bar (the current milestone's quests: in the map's order, the first
-  milestone with a quest in review or active, else with one ready to start), a `campaign-<name>`
+  `campaign status` update the bar (the current milestone's quests), a `campaign-<name>`
   pill (the whole campaign) and a pill per quest in flight, with 🔥 and a count when jobs failed at
   its current code and no journal names them, sending only what changed; landings, blocked quests
   and new messages notify. `quiet` adds a pill per hold, in the workspace that submitted
