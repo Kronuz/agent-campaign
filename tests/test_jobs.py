@@ -29,6 +29,93 @@ class Races(unittest.TestCase):
                 self.assertFalse(module.worker_alive())
 
 
+class Batches(unittest.TestCase):
+    """One drain of light work serves the ready heavy jobs back to back, up to BATCH_JOBS jobs or
+    BATCH_MINUTES; the worker's tick (plan) is driven here with job records and a clock."""
+
+    def setUp(self) -> None:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CAMPAIGN_")}
+        for patch in (mock.patch.dict(os.environ, env, clear=True), mock.patch.object(os, "cpu_count", lambda: 16)):
+            patch.start()
+            self.addCleanup(patch.stop)  # 8 light slots, 4 beside a heavy job
+        self.module = campaign_module()
+
+    def job(self, n: int, level: str, state: str, submitted: float, **st: Any) -> dict[str, Any]:
+        after: list[str] = []
+        spec = {"level": level, "minutes": 10, "submitted": submitted, "after": after, "cmd": f"job {n}", "cwd": ""}
+        return {"id": f"{n:06d}", "spec": {**spec, "campaign": "c", "repo": ""}, "state": {"state": state, **st}}
+
+    def test_a_ready_strict_job_runs_before_light_work_is_readmitted_until_the_batch_is_full(self) -> None:
+        now = 1_800_000_000.0
+        ended = self.job(1, "strict", "done", now - 300, claimed=now - 200, started=now - 200, ended=now - 1)
+        lights = [self.job(10 + n, "light", "queued", now - 900) for n in range(8)]
+        ready = self.job(2, "strict", "queued", now - 100)
+        for jobs, (since, n), first in (
+            ([ended, ready, *lights], (now - 200, 1), "strict"),  # the drain holds: the batch goes on
+            ([ended, ready, *lights], (now - 200, self.module.BATCH_JOBS), "light"),  # full: light first
+            ([ended, ready, *lights], (now - 60 * self.module.BATCH_MINUTES, 1), "light"),  # its minutes are up
+            ([ended, self.job(3, "light", "running", now - 50, claimed=now), ready, *lights], (now - 200, 1), "light"),
+        ):
+            jobs[0]["state"]["batch"] = {"since": since, "jobs": n}
+            start, _, _ = self.module.plan(jobs, now, {})
+            levels = [j["spec"]["level"] for j in start]
+            self.assertEqual(levels[0], first)
+            joined = levels[0] == "strict"
+            got = next(j for j in start if j["id"] == ready["id"])["state"]["batch"]
+            self.assertEqual(got, {"since": since, "jobs": n + 1} if joined else {"since": now, "jobs": 1})
+            running = sum(j["state"]["state"] == "running" for j in jobs)  # beside a strict job, its share
+            self.assertEqual(levels.count("light"), (4 if joined else 8) - running)
+
+    def test_batches_cut_the_drains_of_a_replayed_queue(self) -> None:
+        """The host's queue of 2026-11-18 (12 h, 661 jobs, 81 strict or exclusive), replayed with each
+        job's recorded length: 4.75 drains an hour with no batches, 3.17 with them (BATCH_JOBS 6,
+        BATCH_MINUTES 30); a drain is a heavy job started after light work was readmitted."""
+        queue = json.loads((Path(__file__).parent / "fixtures" / "queue-12h.json").read_text())
+        with mock.patch.object(self.module, "BATCH_JOBS", 1):
+            before = self.replay(queue)
+        after = self.replay(queue)
+        self.assertLess(after, 0.7 * before, f"{before:.2f} drains an hour before, {after:.2f} after")
+
+    def replay(self, queue: dict[str, Any], tick: float = 30.0) -> float:
+        """Drains per hour of QUEUE run through plan, tick by tick."""
+        base = 1_800_000_000.0
+        pending = sorted(queue["jobs"], key=lambda j: float(j["submitted"]))
+        jobs: dict[str, dict[str, Any]] = {}
+        took: dict[str, float] = {}
+        turn: dict[str, Any] = {}
+        t = 0.0
+        while pending or any(j["state"]["state"] in ("queued", "running") for j in jobs.values()):
+            now = base + t
+            while pending and pending[0]["submitted"] <= t:
+                q = pending.pop(0)
+                job = self.job(q["id"], q["level"], "queued", base + q["submitted"])
+                job["spec"].update(minutes=q["minutes"], priority=q["priority"], campaign=str(q["campaign"]))
+                job["spec"]["after"] = [f"{x:06d}" for x in q["after"]]
+                jobs[job["id"]], took[job["id"]] = job, q["took"]
+            for jid, j in jobs.items():
+                st = j["state"]
+                if st["state"] == "running" and st["started"] + took[jid] <= now:
+                    j["state"] = {**st, "state": "done", "ended": st["started"] + took[jid]}
+            start, skip, turn = self.module.plan(list(jobs.values()), now, turn)
+            for j in skip:
+                jobs[j["id"]]["state"] = {"state": "skipped", "ended": now}
+            for n, j in enumerate(start):  # claims within a tick keep their order
+                jobs[j["id"]] = {**j, "state": {**j["state"], "state": "running", "claimed": now + n / 1000}}
+                jobs[j["id"]]["state"]["started"] = now
+            t += tick
+        heavy = sorted(
+            (j["state"] for j in jobs.values() if j["spec"]["level"] in self.module.HEAVY), key=lambda s: s["claimed"]
+        )
+        light = [j["state"]["claimed"] for j in jobs.values() if j["spec"]["level"] == "light"]
+        drains = sum(
+            i == 0 or any(heavy[i - 1]["ended"] < c < st["claimed"] for c in light) for i, st in enumerate(heavy)
+        )
+        for st in heavy:  # every batch keeps to its bound
+            self.assertLessEqual(st["batch"]["jobs"], self.module.BATCH_JOBS)
+            self.assertLess(st["claimed"] - st["batch"]["since"], 60 * self.module.BATCH_MINUTES)
+        return drains / float(queue["hours"])
+
+
 HAS_CMAKE = all(map(shutil.which, ("cmake", "ninja", "cc")))
 CM = "cmake_minimum_required(VERSION 3.16)\nproject(p C)\nenable_testing()\n"
 BUILD = "cmake -S . -B build -G Ninja >/dev/null && cmake --build build >/dev/null"

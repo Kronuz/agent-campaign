@@ -6561,11 +6561,11 @@ def window_info() -> Json:
     return {}
 
 
-def window_until() -> float:
-    """When the open drain window closes (0 when none is open)."""
+def window_until(info: Json | None = None, now: float = 0.0) -> float:
+    """When the open drain window (INFO, else the recorded one) closes: 0 when none is open at NOW."""
     with contextlib.suppress(ValueError, KeyError, TypeError):
-        until = float(window_info()["until"])
-        return until if until > time.time() else 0.0
+        until = float((window_info() if info is None else info)["until"])
+        return until if until > (now or time.time()) else 0.0
     return 0.0
 
 
@@ -6761,6 +6761,157 @@ def stalls(jobs: list[Json], now: float) -> list[tuple[str, str]]:
     return [("warning", text + f"{stuck[worst]} min){down}: `campaign job show {worst}`")]
 
 
+# a batch of heavy jobs run back to back behind one drain of light work, bounded so light work still
+# gets the machine: the queue history's batches (12 h, 2026-11-18) ran a median of 2.7 minutes per job
+BATCH_JOBS = int(os.environ.get("CAMPAIGN_BATCH_JOBS") or 6)
+BATCH_MINUTES = float(os.environ.get("CAMPAIGN_BATCH_MINUTES") or 30)
+
+
+def batch_of(jobs: list[Json]) -> Json:
+    """The newest heavy job's batch ({"since", "jobs"}) while one drain still serves it: the job runs,
+    or no light job started after it ended. {} once light work was readmitted, or with no heavy job."""
+    heavy = [j for j in jobs if j["spec"].get("level") in HEAVY and j["state"].get("batch")]
+    if not heavy:
+        return {}
+    last = max(heavy, key=lambda j: float(j["state"].get("claimed") or 0))
+    ended = float(last["state"].get("ended") or 0)
+    if last["state"].get("state") == "running" or not ended:
+        return dict(last["state"]["batch"])
+    readmitted = any(j["spec"].get("level") == "light" and float(j["state"].get("claimed") or 0) > ended for j in jobs)
+    return {} if readmitted else dict(last["state"]["batch"])
+
+
+def plan(jobs: list[Json], now: float, turn: Json) -> tuple[list[Json], list[Json], Json]:
+    """One worker tick, decided from the job records alone: the queued jobs to start, in order (a heavy
+    one's state carries its batch), the jobs to skip (one they run after did not succeed), and the drain
+    turn's record ({} for none)."""
+    # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
+    drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
+    drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
+    drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
+    age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
+    states = {j["id"]: j["state"].get("state") for j in jobs}
+    queued = [j for j in jobs if states[j["id"]] == "queued"]
+    running = [j for j in jobs if states[j["id"]] == "running"]
+    busy = {slot_of(j["spec"]) for j in running} - {""}  # a slot is one build directory: one job at a time
+    heavy = any(j["spec"].get("level") in HEAVY for j in running)
+    # a "none" job takes no hold: it never waits for a light slot, and has its own as many
+    light = sum(1 for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+    bare = sum(1 for j in running if j["spec"].get("level") == "none")
+    late = sum(1 for j in running if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0)
+    # fair share: campaigns with light work split the slots; within one, the shortest job first
+    holds = Counter(camp(j) for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
+    wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
+    sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
+    slots = light_slots(heavy)
+    share = max(1, slots // sharing)
+    # shortest first, except that a job queued past `age` goes ahead in submit order, so a
+    # stream of short jobs never starves a long one
+    aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
+    queued = queue_order(queued, aged, holds)
+    # how long each command took, oldest run first
+    took: dict[tuple[str, str, str], list[float]] = {}
+    for j in sorted(jobs, key=lambda j: j["id"]):
+        st = j["state"]
+        if st.get("state") == "done" and st.get("started") and st.get("ended"):
+            took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
+
+    # a draining hold blocks new light holds until the running ones end: start one only when
+    # they all end soon; past its wait, only light work that ends before them fills the lull
+    lights_end = max(
+        (
+            float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
+            for r in running
+            if r["spec"].get("level") not in (*HEAVY, "none")
+        ),
+        default=now,
+    )
+    drain_ok = lights_end - now <= drain_slack
+    # a drain's wait counts from the last drain that ran: one cancelled or skipped while queued
+    # never held the machine, so it must not restart the wait
+    last_drain = max(
+        (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
+        default=0.0,
+    )
+    starved = [
+        j
+        for j in queued
+        if j["spec"].get("level") not in (*HEAVY, "none")
+        and int(j["spec"].get("priority", 0)) >= 1
+        and now - float(j["spec"].get("submitted") or now) > drain_turn
+        and all(states.get(x) == "done" for x in j["spec"].get("after", []))
+    ]
+    if (
+        starved
+        and turn.get("for") == "drain turn"
+        and not any(drains(j) for j in running)
+        and last_drain >= float(turn.get("opened") or now)
+    ):
+        # direct-path work that waited a whole turn ends it once its running drain ends: light
+        # work has DRAIN_WAIT from that drain's end, so a long drain queue cannot hold it for hours
+        turn = {}
+    window = window_until(turn, now) > 0  # an open window: every ready drain is due, back to back
+    overdue = [
+        j
+        for j in queued
+        if drains(j)
+        and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
+        and all(states.get(x) == "done" for x in j["spec"].get("after", []))
+    ]
+    if overdue and not window:
+        # an overdue drain opens a turn: the queued drains run back to back for DRAIN_TURN, then
+        # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
+        turn = {"until": now + drain_turn, "for": "drain turn", "opened": now}
+        window = True
+    # while the last heavy job's drain holds and its batch has room, the next heavy job goes first, so
+    # light work is not readmitted between them; a full batch lets light work go first once
+    batch = batch_of(jobs)
+    room = bool(batch) and batch["jobs"] < BATCH_JOBS and now - batch["since"] < 60 * BATCH_MINUTES
+    if batch:
+        queued.sort(key=lambda j: (j["spec"].get("level") in HEAVY) != room)
+    start: list[Json] = []
+    skip: list[Json] = []
+    for j in queued:
+        deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
+        if any(s not in ("queued", "running", "done") for s in deps):
+            skip.append(j)
+            continue
+        is_heavy = j["spec"].get("level") in HEAVY
+        is_bare = j["spec"].get("level") == "none"
+        is_late = int(j["spec"].get("priority", 0)) < 0
+        if (
+            any(s != "done" for s in deps)
+            or (is_heavy and heavy)
+            or (is_bare and bare >= slots)
+            or (not is_heavy and not is_bare and light >= slots)
+        ):
+            continue
+        if drains(j) and j not in overdue and (not drain_ok or wanting):
+            continue  # for a lull in light work, or its turn after an hour of it
+        if drains(j) and not drain_ok:
+            continue  # an overdue drain claims as the running light work ends: quiet would block the lull
+        if overdue and not is_heavy and not is_bare and now + expected_seconds(j["spec"], took) > lights_end:
+            continue  # an overdue drain waits: only light work that ends before the running work starts
+        if is_late and not is_heavy and late >= max(1, slots // 2):
+            continue  # deferred work never takes every slot from the direct path
+        if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
+            continue  # its campaign has its share while another campaign waits
+        if slot_of(j["spec"]) in busy:
+            continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
+        if is_heavy:
+            batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}
+            slots = light_slots(True)  # light work beside it keeps to a heavy job's share from now on
+            share = max(1, slots // sharing)
+        start.append({**j, "state": {**j["state"], "batch": batch}} if is_heavy else j)
+        busy |= {slot_of(j["spec"])} - {""}
+        heavy = heavy or is_heavy
+        light += 0 if is_heavy or is_bare else 1
+        bare += 1 if is_bare else 0
+        holds[camp(j)] += 0 if is_heavy or is_bare else 1
+        late += 1 if is_late and not is_heavy else 0
+    return start, skip, turn
+
+
 def cmd_worker(a: argparse.Namespace) -> int:
     jd = jobs_dir()
     home = jd / ".worker"
@@ -6811,11 +6962,6 @@ def cmd_worker(a: argparse.Namespace) -> int:
             return 0
     (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
-    # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
-    drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
-    drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
-    drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
-    age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
     try:
         while True:
             try:
@@ -6826,126 +6972,23 @@ def cmd_worker(a: argparse.Namespace) -> int:
             (home / "heartbeat").touch()
             reap()
             jobs = all_jobs()
-            states = {j["id"]: j["state"].get("state") for j in jobs}
-            queued = queue_order([j for j in jobs if states[j["id"]] == "queued"], set())
-            running = [j for j in jobs if states[j["id"]] == "running"]
-            busy = {slot_of(j["spec"]) for j in running} - {""}  # a slot is one build directory: one job at a time
-            if not queued and not running:
+            if not any(j["state"].get("state") in ("queued", "running") for j in jobs):
                 if daily_prune((home / "heartbeat").touch):
                     continue  # whatever arrived while it pruned
                 return 0
-            heavy = any(j["spec"].get("level") in HEAVY for j in running)
-            # a "none" job takes no hold: it never waits for a light slot, and has its own as many
-            light = sum(1 for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
-            bare = sum(1 for j in running if j["spec"].get("level") == "none")
-            late = sum(
-                1 for j in running if j["spec"].get("level") not in HEAVY and int(j["spec"].get("priority", 0)) < 0
-            )
-            slots = light_slots(heavy)
-            # fair share: campaigns with light work split the slots; within one, the shortest job first
-            holds = Counter(camp(j) for j in running if j["spec"].get("level") not in (*HEAVY, "none"))
-            wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
-            share = max(1, slots // max(1, len(wanting | {c for c, n in holds.items() if n})))
-            now = time.time()
-            # shortest first, except that a job queued past `age` goes ahead in submit order, so a
-            # stream of short jobs never starves a long one
-            aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
-            queued = queue_order(queued, aged, holds)
-            # how long each command took, oldest run first
-            took: dict[tuple[str, str, str], list[float]] = {}
-            for j in sorted(jobs, key=lambda j: j["id"]):
-                st = j["state"]
-                if st.get("state") == "done" and st.get("started") and st.get("ended"):
-                    took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
-
-            # a draining hold blocks new light holds until the running ones end: start one only when
-            # they all end soon; past its wait, only light work that ends before them fills the lull
-            lights_end = max(
-                (
-                    float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
-                    for r in running
-                    if r["spec"].get("level") not in (*HEAVY, "none")
-                ),
-                default=now,
-            )
-            drain_ok = lights_end - now <= drain_slack
-            # a drain's wait counts from the last drain that ran: one cancelled or skipped while queued
-            # never held the machine, so it must not restart the wait
-            last_drain = max(
-                (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
-                default=0.0,
-            )
             turn = window_info()
-            starved = [
-                j
-                for j in queued
-                if j["spec"].get("level") not in (*HEAVY, "none")
-                and int(j["spec"].get("priority", 0)) >= 1
-                and now - float(j["spec"].get("submitted") or now) > drain_turn
-                and all(states.get(x) == "done" for x in j["spec"].get("after", []))
-            ]
-            if (
-                starved
-                and turn.get("for") == "drain turn"
-                and not any(drains(j) for j in running)
-                and last_drain >= float(turn.get("opened") or now)
-            ):
-                # direct-path work that waited a whole turn ends it once its running drain ends: light
-                # work has DRAIN_WAIT from that drain's end, so a long drain queue cannot hold it for hours
-                (jobs_dir() / ".window").unlink(missing_ok=True)
-            window = window_until() > now  # an open window: every ready drain is due, back to back
-            overdue = [
-                j
-                for j in queued
-                if drains(j)
-                and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
-                and all(states.get(x) == "done" for x in j["spec"].get("after", []))
-            ]
-            if overdue and not window:
-                # an overdue drain opens a turn: the queued drains run back to back for DRAIN_TURN, then
-                # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
-                until = now + drain_turn
-                atomic_write(
-                    jobs_dir() / ".window",
-                    json.dumps({"until": until, "for": "drain turn", "opened": now}) + "\n",
-                )
-                window = True
-            for j in queued:
-                deps = [states.get(x, "missing") for x in j["spec"].get("after", [])]
-                if any(s not in ("queued", "running", "done") for s in deps):
-                    if claim(j):
-                        finish(load_job(j["dir"]), -1, "skipped", "a job it runs after did not succeed")
-                    continue
-                is_heavy = j["spec"].get("level") in HEAVY
-                is_bare = j["spec"].get("level") == "none"
-                is_late = int(j["spec"].get("priority", 0)) < 0
-                if (
-                    any(s != "done" for s in deps)
-                    or (is_heavy and heavy)
-                    or (is_bare and bare >= slots)
-                    or (not is_heavy and not is_bare and light >= slots)
-                ):
-                    continue
-                if drains(j) and j not in overdue and (not drain_ok or wanting):
-                    continue  # for a lull in light work, or its turn after an hour of it
-                if drains(j) and not drain_ok:
-                    continue  # an overdue drain claims as the running light work ends: quiet would block the lull
-                if overdue and not is_heavy and not is_bare and now + expected_seconds(j["spec"], took) > lights_end:
-                    continue  # an overdue drain waits: only light work that ends before the running work starts
-                if is_late and not is_heavy and late >= max(1, slots // 2):
-                    continue  # deferred work never takes every slot from the direct path
-                if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
-                    continue  # its campaign has its share while another campaign waits
-                if slot_of(j["spec"]) in busy:
-                    continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
+            start, skip, window = plan(jobs, time.time(), turn)
+            if window != turn:
+                if window:
+                    atomic_write(jobs_dir() / ".window", json.dumps(window) + "\n")
+                else:
+                    (jobs_dir() / ".window").unlink(missing_ok=True)
+            for j in skip:
+                if claim(j):
+                    finish(load_job(j["dir"]), -1, "skipped", "a job it runs after did not succeed")
+            for j in start:
                 if claim(j):
                     spawn(["_run", str(j["dir"])], j["dir"] / "runner.log")
-                    busy |= {slot_of(j["spec"])} - {""}
-                    heavy = heavy or is_heavy
-                    light += 0 if is_heavy or is_bare else 1
-                    bare += 1 if is_bare else 0
-                    holds[camp(j)] += 0 if is_heavy or is_bare else 1
-                    late += 1 if is_late and not is_heavy else 0
             if "stop" in asked:
                 return 0
             if asked:  # a restart keeps the pid and the home: no starter sees the worker gone

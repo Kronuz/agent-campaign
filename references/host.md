@@ -85,24 +85,25 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Builds for measurements.** `--after` only orders jobs, each in its own checkout. `--build CMD`
   runs CMD under light (30 minutes at most) in the job's checkout, then the command at its level (a
   `--quest` job: in the quest's slot).
-- **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
-  or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
+- **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
-  campaigns sharing the light slots; `quiet` arbitrates across sessions. An
+  campaigns sharing the light slots; `quiet` arbitrates across sessions. Ready heavy jobs run back
+  to back behind one drain before light work returns, up to 6 jobs or 30 minutes
+  (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`). An
   exclusive job drains the machine, blocking new light holds while it waits; it starts in a lull (no runnable light work, and the
   running light jobs end within 10 minutes by their last runs), or once it has waited 20 minutes since
   the last drain ran (`CAMPAIGN_DRAIN_WAIT`). An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`,
   an hour) in which queued drains run back to back, admitting only light jobs that end before the running ones; a priority-1 light job
   that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
   TEXT` opens such a turn by hand; `--close` ends it.
-  `campaign worker --restart` (after updating the tool) has the worker finish its tick and
-  re-execute in place on the new code; running jobs keep running. Priorities: gate checks and
+  `campaign worker --restart` re-executes the worker on the current code after its tick; jobs keep
+  running. Priorities: gate checks and
   light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and
   measurements at 0, deferred checks and `--long` jobs at -1, using at most half the light slots;
   `--priority` overrides.
 - **Queue health.** `campaign status` prints the last hour's light slot-minutes used against the
   slots, minutes drains held the host, minutes runnable work waited beside an idle slot, and the
-  jobs that ended without a result (cancelled, skipped, interrupted, timeout). `check` warns when a
+  jobs that ended without a result. `check` warns when a
   queued job waited over 30 minutes beside idle slots.
 - **Build and test defaults.** Several light jobs run at once, so each keeps to 4 jobs
   (`CAMPAIGN_LIGHT_BUILD_JOBS`): it gets `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL`
@@ -206,8 +207,7 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
 - **Local VMs** share the host's CPUs: wrap the command that drives one in a hold. On Linux,
   `QUIET_VM=<pid or pattern> quiet strict ...` pins the VM's threads to the strict cores; on macOS
   use `exclusive`.
-- **Remote hosts** run their own `quiet` and their own job queue (install this repository there, or
-  copy the two scripts); a remote job takes no local hold.
+- **Remote hosts** run their own `quiet` and their own job queue; a remote job takes no local hold.
 
 ## Several campaigns
 
