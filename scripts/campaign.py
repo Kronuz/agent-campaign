@@ -7225,8 +7225,9 @@ def wait_events(c: Campaign, timeout: float) -> int:
 def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
     start = time.time()
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
+    seen: dict[str, tuple[int, Json]] = {}  # terminal jobs, read once: a waiter polls for hours
     while True:
-        reap()
+        reap(seen)
         ensure_worker()
         watch_leads()
         jobs = {x: load_job(jobs_dir() / x) for x in ids}

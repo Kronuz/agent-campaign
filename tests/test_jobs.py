@@ -302,8 +302,8 @@ class Identity(CampaignCase):
         self.assertIn("big: light check unit asks for -j8", self.ok(self.home, "check").out)
 
     def test_a_rerun_chain_keeps_its_order(self) -> None:
-        first = self.submit(self.home, "--", "true")
-        second = self.submit(self.home, "--after", first, "--", "true")
+        first = self.submit(self.home, "--", "true first")
+        second = self.submit(self.home, "--after", first, "--", "true second")  # not the first's twin
         self.ok(self.home, "wait", second)
         (self.home / "more.py").write_text("print(2)\n")
         self.git(self.home, "add", "more.py")
@@ -906,6 +906,30 @@ class WorkerCache(CampaignCase):
             shutil.rmtree(self.root / "jobs" / "b-queued")
             self.assertEqual([j["id"] for j in module.all_jobs(seen)], ["a-done"])
             self.assertEqual(set(seen), set(), "a pruned or reopened job stayed cached")
+
+    def test_a_waiter_reads_finished_jobs_once(self) -> None:
+        module = campaign_module()
+        done = self.make("a-done", "done")
+        busy = self.make("b-queued", "queued")
+        ticks: list[int] = []
+        reads: list[str] = []
+        real = module.read_json
+
+        def sleep(_: float) -> None:
+            ticks.append(1)
+            if len(ticks) == 4:
+                (busy / "state.json").write_text(json.dumps({"state": "done"}))
+
+        with (
+            mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
+            mock.patch.object(module, "read_json", lambda p: reads.append(str(p)) or real(p)),
+            mock.patch.object(module, "ensure_worker", lambda: None),
+            mock.patch.object(module, "watch_leads", lambda: None),
+            mock.patch.object(module.time, "sleep", sleep),
+        ):
+            module.wait_for(["b-queued"], False, 0)
+        self.assertEqual(len(ticks), 4)
+        self.assertLessEqual(sum(r.startswith(str(done)) for r in reads), 2, "a waiter re-read a finished job")
 
 
 class Slots(CampaignCase):
