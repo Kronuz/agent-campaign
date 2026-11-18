@@ -223,7 +223,7 @@ leaves one for that campaign's lead. A quest's message blocks its landing until 
 id or the lead closes it (`campaign message ID --close msg-N --reason R`); a lead's message never
 blocks a landing and stays in `campaign brief` until closed (`campaign message : --close msg-N
 --reason R`). The tool sends one itself when another campaign starts a quest on your files or
-contracts: settle the order (`--after NAME:ID`) or confirm the two are independent, then close it.
+contracts; it closes once that quest lands or drops, or yours order `--after NAME:ID`.
 
 Messages wait in the home's `.git` (`campaign-mail/<campaign>/`), so any agent can leave one
 without being the campaign's one writer. A new one notifies the owner and wakes the lead's

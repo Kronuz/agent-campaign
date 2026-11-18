@@ -1148,10 +1148,18 @@ def unlocks(c: Campaign, before: dict[str, Json], event: str) -> str:
 
 
 def settled(c: Campaign, m: Json) -> str:
-    """Why a message the tool left has closed itself, or "": the quests it announced started."""
-    start = (m.get("settles") or {}).get("start")
-    if start and all(c.quests.get(k, {}).get("status") not in ("planned", "blocked") for k in start):
+    """Why a message the tool left has closed itself, or "": the quests it announced started; or the
+    other campaign's quest whose start it reported landed or dropped, or ours named all order after it."""
+    s = m.get("settles") or {}
+    if s.get("start") and all(c.quests.get(k, {}).get("status") not in ("planned", "blocked") for k in s["start"]):
         return "its quests started"
+    if s.get("quest"):
+        q = foreign(s["quest"])
+        if q is not None and q.get("status") in ("landed", "dropped"):
+            return f"{s['quest']} {q['status']}"
+        mine = [c.quests[k] for k in s.get("ours", []) if k in c.quests]
+        if mine and all(s["quest"] in x["after"] or x["status"] in ("landed", "dropped") for x in mine):
+            return f"ordered --after {s['quest']}"
     return ""
 
 
@@ -1456,11 +1464,14 @@ def tell_peers(c: Campaign, pid: str) -> list[str]:
     """One message per other campaign on this machine whose work a quest just started overlaps, listing
     every overlap: the same files in the same repository, a contract the quest changes and a started
     quest consumes, or a contract it consumes and another is changing. A planned quest consuming a
-    contract is not told: it has not started. A message already left is not repeated."""
+    contract is not told: it has not started. A message already left is not repeated, and each closes
+    itself once the quest lands or drops, or every quest it names orders --after it (`settled`)."""
     p = c.quests[pid]
     found: dict[str, list[str]] = {}
+    ours: dict[str, list[str]] = {}
     for other in cross_overlaps(c, pid):
         name, _, qid = other.partition(":")
+        ours.setdefault(name, []).append(qid)
         found.setdefault(name, []).append(
             f"may change files your {qid} changes (order them with --after {c.name}:{pid}, or narrow the files)"
         )
@@ -1471,14 +1482,16 @@ def tell_peers(c: Campaign, pid: str) -> list[str]:
             if q.get("status") not in ("active", "review"):
                 continue
             items = found.setdefault(name, [])
-            items += [
+            told = [
                 f"changes contract {x}, which your {qid} consumes"
                 for x in consumed(q.get("consumes", []), changes(c.home, p))
             ]
-            items += [
+            told += [
                 f"builds against contract {x}, which your {qid} is changing"
                 for x in consumed(p["consumes"], changes(Path(o["home"]), q))
             ]
+            items += told
+            ours.setdefault(name, []).extend([qid] if told else [])
     told: list[str] = []
     for name, items in found.items():
         other = campaigns().get(name)
@@ -1488,7 +1501,8 @@ def tell_peers(c: Campaign, pid: str) -> list[str]:
         peer = Campaign(Path(other["home"]), name)
         if any(m["text"] == text for m in inbox(peer, "")):
             continue
-        leave_message(peer, "", text, f"campaign {c.name}")
+        settles = {"quest": f"{c.name}:{pid}", "ours": sorted(set(ours.get(name, [])))}
+        leave_message(peer, "", text, f"campaign {c.name}", settles=settles)
         told.append(name)
     return told
 

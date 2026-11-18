@@ -1817,6 +1817,35 @@ class Campaigns(CampaignCase):
         self.assertEqual(again.count("for the lead, from campaign demo"), 1, again)
         self.assertIn("demo:plan started and builds against contract o-api, which your prov is changing", again)
 
+    def test_a_start_notice_closes_itself_once_the_order_is_settled(self) -> None:
+        self.lib_quest(self.home, "api", "--files", "lib.py")
+        for pid in ("use", "more"):
+            self.ok(
+                self.other,
+                "new",
+                pid,
+                "--title",
+                pid,
+                "--risk",
+                "low",
+                "--repo",
+                "../lib",
+                "--files",
+                "lib.py",
+                "--check",
+                "unit=true",
+            )
+        self.ok(self.other, "start", "use")
+        self.assertIn("msg-1 for the lead, from campaign other: other:use started", self.ok(self.home, "status").out)
+        self.ok(self.home, "set", "api", "after=other:use")
+        self.assertNotIn("other:use started", self.ok(self.home, "status").out, "ordered after it")
+        self.assertEqual(self.state()["messages"][-1]["closed"], "ordered --after other:use")
+        self.ok(self.other, "set", "use", "status=dropped", "reason=not now")
+        self.ok(self.other, "start", "more")
+        self.assertIn("other:more started", self.ok(self.home, "brief").out)
+        self.ok(self.other, "set", "more", "status=dropped", "reason=not now either")
+        self.assertNotIn("other:more started", self.ok(self.home, "brief").out, "it dropped")
+
     def test_campaigns_see_each_other_and_land_a_shared_library_in_order(self) -> None:
         self.fails(self.repo("third", {"t.py": "1\n"}), "init", "--name", "demo", match="already runs from")
         api = self.lib_quest(self.home, "api", "--files", "lib.py", "--provides", "lib-api")
