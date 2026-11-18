@@ -1981,11 +1981,11 @@ class Campaigns(CampaignCase):
 
 
 class QueueHealth(CampaignCase):
-    def fake(self, jid: str, level: str, state: str, submitted: float, **times: float) -> str:
+    def fake(self, jid: str, level: str, state: str, submitted: float, spec: Any = None, **times: float) -> str:
         d = self.root / "jobs" / jid
         d.mkdir(parents=True)
-        spec = {"cmd": "true", "level": level, "minutes": 10, "submitted": submitted, "repo": "", "commit": ""}
-        (d / "spec.json").write_text(json.dumps({**spec, "after": [], "campaign": "", "quest": ""}))
+        base = {"cmd": "true", "level": level, "minutes": 10, "submitted": submitted, "repo": "", "commit": ""}
+        (d / "spec.json").write_text(json.dumps({**base, "after": [], "campaign": "", "quest": "", **(spec or {})}))
         (d / "state.json").write_text(json.dumps({"state": state, **times}))
         return jid
 
@@ -2015,6 +2015,29 @@ class QueueHealth(CampaignCase):
             warned, rf"1 queued job waited over 30 minutes beside idle slots \(longest {stuck}, 1[01]\d min\)"
         )
         self.assertIn("the worker is down", warned)
+
+    def test_check_notes_a_time_cap_far_above_what_the_runs_took(self) -> None:
+        """A kind of run whose --minutes is over twice three times its passed runs' median gets a note."""
+        now, m = time.time(), 60
+        ident = str(self.home / ".campaign" / "demo")
+        for i, took in enumerate((4, 5, 6)):
+            what = {"what": f"demo check suite at {i:012x}", "campaign": ident, "minutes": 60}
+            self.fake(
+                f"261110-00000{i}-aaaaaa",
+                "light",
+                "done",
+                now - 90 * m,
+                what,
+                started=now - 80 * m,
+                ended=now - (80 - took) * m,
+            )
+        out = self.ok(self.home, "check").out
+        self.assertIn(
+            "demo check suite: --minutes 60, but its last 3 passed runs took 5.0 min at the median: --minutes 15", out
+        )
+        tight = {"what": "demo check suite at 0000000000ff", "campaign": ident, "minutes": 30}
+        self.fake("261110-000009-aaaaaa", "light", "queued", now - m, tight)
+        self.assertNotIn("demo check suite: --minutes", self.ok(self.home, "check").out)
 
 
 class Usage(CampaignCase):

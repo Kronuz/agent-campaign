@@ -104,10 +104,12 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   slots, minutes drains held the host, minutes runnable work waited beside an idle slot, and the
   jobs that ended without a result (cancelled, skipped, interrupted, timeout). `check` warns when a
   queued job waited over 30 minutes beside idle slots.
-- **Build parallelism.** Several light jobs run at once, so each keeps to 4 build jobs
-  (`CAMPAIGN_LIGHT_BUILD_JOBS`): a light job gets `CMAKE_BUILD_PARALLEL_LEVEL` unless its `--env`
-  names one, so `cmake --build` needs no `-j`. `campaign check` warns about a light check asking for
-  more. Strict and exclusive jobs have their cores to themselves and get no default.
+- **Build and test defaults.** Several light jobs run at once, so each keeps to 4 jobs
+  (`CAMPAIGN_LIGHT_BUILD_JOBS`): it gets `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL`
+  unless its `--env` names them; strict and exclusive jobs get none. Every job gets
+  `CTEST_OUTPUT_ON_FAILURE=1`. ctest has no variable for `--stop-on-failure`, so `job submit` and
+  `check` warn of a ctest run without it; `check` also flags a light check asking for more, and a
+  `--minutes` over six times its passed runs' median.
 - **Supervision.** Each attempt has a runner: the leader of its own process session, writing a
   heartbeat every 15 s. The command runs under `quiet` at the job's level, which stops it at its
   deadline; when the command ends, the runner kills every process left in its session, so helpers
@@ -190,12 +192,11 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   holds, and a light request waiting 10 minutes (`QUIET_STARVE_MIN`) goes before it.
 - Light holds run half the CPUs at once at nice 19 and let the scheduler share the machine: a busy
   host makes builds slower, not wrong. None starts below 4 GiB of free memory (`QUIET_MIN_MEM_GB`),
-  above a load of twice the CPUs (a runaway's ceiling) or below 5 GiB free disk. The job worker
+  above a load of twice the CPUs or below 5 GiB free disk. The job worker
   launches as many, split fairly across the campaigns that have light work queued, shortest first;
   a `none` job takes no slot.
 - **A hold counts jobs, not processes.** Cap fan-out inside the command (`-j4`, one interpreter at a
-  time): one light hold running a five-interpreter extension matrix once took a workstation to a
-  load of 211.
+  time).
 - **Heavy disk work is load:** bulk deletes and large copies take a hold or wait.
 - **macOS has no CPU partitioning:** strict runs beside light holds at nice 19, which cost CPU-bound
   timing 5-10% (`QUIET_PAUSE=1` pauses them with SIGSTOP instead); numbers that decide take

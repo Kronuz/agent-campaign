@@ -302,6 +302,22 @@ class Identity(CampaignCase):
         )
         self.assertIn("big: light check unit asks for -j8", self.ok(self.home, "check").out)
 
+    def test_a_ctest_run_stops_at_its_first_failure_where_the_job_can_say_so(self) -> None:
+        """Jobs get ctest's output on failure and a light hold's test parallelism; ctest has no variable
+        for stopping at the first failure, so submit and check warn of a ctest run without the flag."""
+        show = 'echo "${CTEST_PARALLEL_LEVEL:-unset} ${CTEST_OUTPUT_ON_FAILURE:-unset}" > "$JOB_OUT/env"'
+        light = self.submit(self.home, "--level", "light", "--", show)
+        strict = self.submit(self.home, "--level", "strict", "--", show)
+        self.ok(self.home, "wait", light, strict, "--timeout", "60")
+        seen = {j: (self.root / "jobs" / j / "a1" / "out" / "env").read_text().split() for j in (light, strict)}
+        self.assertEqual(seen, {light: ["4", "1"], strict: ["unset", "1"]})
+        warned = self.ok(self.home, "job", "submit", "--level", "none", "--", "ctest --test-dir b -j4").err
+        self.assertIn("warning: this job runs ctest without --stop-on-failure", warned)
+        quiet = self.ok(self.home, "job", "submit", "--level", "none", "--", "ctest --test-dir b --stop-on-failure").err
+        self.assertNotIn("--stop-on-failure", quiet.replace("ctest --test-dir b --stop-on-failure", ""))
+        self.ok(self.home, "new", "t", "--title", "t", "--risk", "low", "--check", "unit=make && ctest --test-dir b")
+        self.assertIn("t: check unit runs ctest without --stop-on-failure", self.ok(self.home, "check").out)
+
     def test_a_rerun_chain_keeps_its_order(self) -> None:
         first = self.submit(self.home, "--", "true first")
         second = self.submit(self.home, "--after", first, "--", "true second")  # not the first's twin

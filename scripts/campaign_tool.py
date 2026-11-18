@@ -18,6 +18,7 @@ import fnmatch
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -26,6 +27,7 @@ import shlex
 import shutil
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import threading
@@ -4997,8 +4999,8 @@ def cmd_check(a: argparse.Namespace) -> int:
         reap()
         c = Campaign(home)
         found = problems(c)
-        notes = [*oversized_checks(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
-        notes += stalls(all_jobs(), time.time())
+        notes = [*check_commands(c), *housekeeping(c), *(("warning", text) for text, _ in stuck_warnings())]
+        notes += stalls(all_jobs(), time.time()) + long_timeouts(all_jobs(), c.ident, time.time())
     for severity, message in [*found, *notes]:
         print_problem(severity, message)
     if not any(s != "note" for s, _ in [*found, *notes]):
@@ -5010,15 +5012,29 @@ LIGHT_BUILD_JOBS = int(os.environ.get("CAMPAIGN_LIGHT_BUILD_JOBS") or 4)  # per 
 PARALLEL = re.compile(r"(?:\s-j\s*|--parallel[=\s]+)(\d+)")
 
 
-def oversized_checks(c: Campaign) -> list[tuple[str, str]]:
-    """Light checks of live quests that ask for more build jobs than a light hold allows: several light
-    jobs run at once, so each keeps to LIGHT_BUILD_JOBS."""
+CTEST = re.compile(r"(?:^|[\s;&|(/])ctest(?=[\s;&|)]|$)")
+
+
+def ctest_warning(cmd: str) -> str:
+    """Why a command running ctest should say --stop-on-failure: ctest has no environment variable
+    for it, and a suite that runs on past its first failure can run to its time cap."""
+    if CTEST.search(cmd) and "--stop-on-failure" not in cmd:
+        return "runs ctest without --stop-on-failure: it runs on past the first failure, up to its time cap"
+    return ""
+
+
+def check_commands(c: Campaign) -> list[tuple[str, str]]:
+    """Checks of live quests whose commands waste a light slot: asking for more build jobs than a light
+    hold allows (several light jobs run at once, so each keeps to LIGHT_BUILD_JOBS), or running ctest
+    on past its first failure."""
     out: list[tuple[str, str]] = []
     for pid, p in c.quests.items():
         if p["status"] in ("landed", "dropped"):
             continue
         for kind in ("checks", "later"):
             for check in p.get(kind, []):
+                if warning := ctest_warning(check.get("cmd", "")):
+                    out.append(("warning", f"{pid}: check {check['name']} {warning}"))
                 asked = [int(n) for n in PARALLEL.findall(check.get("cmd", ""))]
                 if check.get("level") not in HEAVY and asked and max(asked) > LIGHT_BUILD_JOBS:
                     out.append(
@@ -5677,6 +5693,11 @@ def descends(old: Json, new: Json) -> bool:
     return all(repo and a and b and ancestor(Path(repo), a, b) for repo, a, b in pairs)
 
 
+def what_stem(j: Json) -> str:
+    """A job's label without the commit it ran at: the same stem is the same kind of run."""
+    return re.sub(r" at [0-9a-f]{7,40}$", "", str(j["spec"].get("what", "")))
+
+
 def same_role(old: Json, new: Json) -> bool:
     """Whether two jobs are one piece of evidence at other code though their commands differ: the
     same label, repository and level, tagged for a shared criterion of the same quest."""
@@ -5688,13 +5709,10 @@ def same_role(old: Json, new: Json) -> bool:
             for cid in t.get("for", [])
         }
 
-    def label(j: Json) -> str:
-        return re.sub(r" at [0-9a-f]{7,40}$", "", str(j["spec"].get("what", "")))
-
     keys = ("repo", "level")
     return (
         bool(role(old) & role(new))
-        and label(old) == label(new) != ""
+        and what_stem(old) == what_stem(new) != ""
         and all(old["spec"].get(k) == new["spec"].get(k) for k in keys)
     )
 
@@ -6209,8 +6227,10 @@ def cmd_run(a: argparse.Namespace) -> int:
     env = dict(os.environ)
     env.pop("CMUX_WORKSPACE_ID", None)  # the worker may have started in another workspace
     env.pop("CMUX_SURFACE_ID", None)  # nor is a job the lead whose surface `note_lead` records
-    if spec.get("level") not in HEAVY:  # a light hold's build parallelism, where a command names none
+    if spec.get("level") not in HEAVY:  # a light hold's build and test parallelism, where a command names none
         env.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", str(LIGHT_BUILD_JOBS))
+        env.setdefault("CTEST_PARALLEL_LEVEL", str(LIGHT_BUILD_JOBS))
+    env.setdefault("CTEST_OUTPUT_ON_FAILURE", "1")
     if spec.get("cmux"):
         env["CMUX_WORKSPACE_ID"] = spec["cmux"]  # quiet's pill and notice go to the submitter's
     if spec.get("path"):
@@ -6532,6 +6552,34 @@ def health_lines(h: Json) -> list[str]:
         if share < 75 and not h.get("filler")
         else []
     )
+
+
+def long_timeouts(jobs: list[Json], ident: str, now: float) -> list[tuple[str, str]]:
+    """A note per kind of run (its `what` stem) of this campaign in the last day whose --minutes is over
+    twice three times the median of its passed runs (three at least): a hang runs that long for nothing."""
+    runs: dict[tuple[str, str], list[float]] = {}
+    last: dict[tuple[str, str], Json] = {}
+    for j in sorted(jobs, key=lambda j: float(j["spec"].get("submitted") or 0)):
+        if j["spec"].get("campaign") != ident or not what_stem(j):
+            continue
+        kind, st = (str(j["spec"].get("repo", "")), what_stem(j)), j["state"]
+        if st.get("state") == "done" and st.get("started") and st.get("ended"):
+            runs.setdefault(kind, []).append(float(st["ended"]) - float(st["started"]))
+        if now - float(j["spec"].get("submitted") or 0) < 86400:
+            last[kind] = j
+    out: list[tuple[str, str]] = []
+    for kind, j in last.items():
+        took = runs.get(kind, [])
+        enough = math.ceil(3 * statistics.median(took) / 60) if len(took) >= 3 else 0
+        if enough and 2 * enough < int(j["spec"].get("minutes") or 0):
+            out.append(
+                (
+                    "note",
+                    f"{kind[1]}: --minutes {j['spec']['minutes']}, but its last {len(took)} passed runs took "
+                    f"{statistics.median(took) / 60:.1f} min at the median: --minutes {enough} stops a hang sooner",
+                )
+            )
+    return out
 
 
 def stalls(jobs: list[Json], now: float) -> list[tuple[str, str]]:
@@ -6897,6 +6945,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             "another repository with --ref NAME=PATH@REF",
             file=sys.stderr,
         )
+    if warning := ctest_warning(command):
+        print(f"warning: this job {warning}", file=sys.stderr)
     if a.quest and spec.get("commit"):
         spec["scripts"] = script_digests(command, spec["repo"])
         if spec["scripts"]:
