@@ -315,6 +315,16 @@ class Identity(CampaignCase):
         spec = json.loads((self.root / "jobs" / new_second / "spec.json").read_text())
         self.assertEqual(spec["after"], [new_first])
 
+    def test_a_timed_out_job_reruns_with_more_minutes(self) -> None:
+        timed = self.submit(self.home, "--minutes", "1", "--", "exit 124")  # 124: the job's timeout
+        self.run_cli(self.home, "wait", timed)
+        self.assertEqual(self.job(timed)["state"], "timeout")
+        new = self.ok(self.home, "job", "rerun", timed, "--minutes", "3").out.split()[0].rstrip(":")
+        self.assertNotEqual(new, timed)
+        self.assertEqual(json.loads((self.root / "jobs" / new / "spec.json").read_text())["minutes"], 3)
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "exit 124")
+        self.fails(self.home, "job", "rerun", ab, "--minutes", "11", match="lasts at most 10 minutes")
+
     def test_a_rerun_keeps_the_criteria_its_job_proved(self) -> None:
         wt = self.started("fix", files="app.py")
         brief = self.home / ".campaign/demo/quests/fix.md"

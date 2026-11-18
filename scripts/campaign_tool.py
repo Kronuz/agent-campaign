@@ -7093,6 +7093,14 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     by default the head of their quest's branch, in whichever of the job's repositories holds it
     (its own or a `--ref`'s), else of their repository."""
     specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, a.jobs)}
+    if a.minutes is not None and a.minutes <= 0:
+        die("--minutes is a positive number")
+    for jid, spec in specs.items() if a.minutes else ():  # a job that timed out, given the time it needs
+        heavy = spec["level"] in HEAVY
+        cap = SHORT_RUN if heavy else LIGHT_RUN if LONG_RUN.search(spec["cmd"]) else 0
+        if cap and a.minutes > cap and not spec.get("long"):
+            die(f"{jid}: a {spec['level']} job lasts at most {cap} minutes: one job per row, or submit it --long")
+        spec["minutes"] = a.minutes
     order: list[str] = []
 
     def visit(jid: str) -> None:  # a job after its prerequisites, so a rerun chain keeps its order
@@ -8352,6 +8360,7 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("jobs", nargs="+", metavar="JOB", help="the jobs to run again")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: the quest's branch, else HEAD)")
+    p.add_argument("--minutes", type=int, metavar="N", help="the minutes each needs, for a job that timed out")
     p.set_defaults(fn=cmd_job_rerun)
     p = job_command(
         "prune",
