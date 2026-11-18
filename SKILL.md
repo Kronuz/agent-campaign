@@ -149,7 +149,7 @@ job passing at the exact commit; it queues no local job.
 2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs
    tagged with the criteria they prove: `campaign verify ID --for A1` and `campaign job submit
    --quest ID --for A2 -- CMD`. When only jobs remain, it records their ids and ends its turn.
-3. The lead waits with one background `campaign wait --commits` (no tokens until a job ends, a
+3. The lead waits with one background `campaign wait --commits` (free until a job ends, a
    branch moves or a message arrives), then resumes the contributor by message while its context
    is small (about 150k tokens). A larger context, or a harness that cannot resume it, gets a fresh
    contributor with the "Resume" prompt, which rebuilds from the journal and job records. At
@@ -164,10 +164,10 @@ job passing at the exact commit; it queues no local job.
 
 ## Exploration batches
 
-For a list worth hunting (a fresh benchmark's losing rows, a profile's hotspots, thinly proven
-code, a backlog of small bugs), send several economical contributors at once, one target each,
-each confirmed on current `main` first: `references/assignments/exploration.md`. Size the batch
-by its targets and by what the lead can review and land, never by idle quota.
+For a list worth hunting (a benchmark's losing rows, a profile's hotspots, thinly proven code,
+small bugs), send several economical contributors at once, one target each, confirmed on `main`
+first: `references/assignments/exploration.md`. Size the batch
+by its targets and by what the lead can review and land.
 
 The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead's, committed;
 `campaign init` writes it): one row per target with its evidence and the files to start in;
@@ -176,8 +176,7 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 - When fewer quests are launchable than the lead can review, launch a batch from the hunt list.
 - After a milestone closes or performance-relevant code lands, run a short benchmark on `main`
   and add its losing rows.
-- Non-blocking review findings, follow-ups and small bugs go to the hunt list, not the lead's
-  notes.
+- Non-blocking findings, follow-ups and small bugs go to the hunt list.
 
 ## Risk and review
 
@@ -237,10 +236,11 @@ claim has one short before/after run (`references/measurement.md`).
 Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH;
 `--build CMD` builds there under light before a measurement. A result is reused for identical code
 (without `.campaign/`), command, directory, level, `--env`, host and toolchain, and across merges
-from `main`, documentation-only commits, read sets and `--inputs`. Name a mutable input with
+from `main`, docs-only commits, read sets and `--inputs`. Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
-minutes, a light fuzz or soak 30, and each is stopped at its deadline; `--long REASON` lifts the
-cap and defers it. Every process a job starts dies with it. The worker starts by itself and prunes
+minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).
+Declare the `--minutes` a job needs: drains plan by it until it has run once. Resubmit with
+`campaign job rerun`: it keeps the build, `--env` and order. Every process a job starts dies with it. The worker starts by itself and prunes
 daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged or finished work;
 `campaign check` warns when disk runs low. Mechanics: `references/host.md`.
 
@@ -270,23 +270,22 @@ write it under "Blocked on" and ask.
 
 ## Cost
 
-- No minimum number of agents, no utilization target; `pace` is advice, launch by the work.
-- The lead coordinates; it does not re-derive what the state holds. It reads this file and
-  `references/prompts.md`, and other references only when the table below says; it orients with
-  `campaign brief` and learns what changed from `campaign wait --commits`, not by rereading
-  journals, diffs or code.
+- Quota is a hint, never a constraint: launch all ready work by impact. Idle light slots take
+  token-free `--priority -1` work: fuzz soaks, flake hunts, `main` benchmarks for hunt targets.
+- The lead coordinates, never re-deriving the state: it reads this file, `references/prompts.md`
+  and what the table below names, orients with `campaign brief`, and learns of changes from
+  `campaign wait --commits`, not journals, diffs or code.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
 - Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
-  `campaign map`, never by waking agents. The periodic report quotes `status`'s host and waste
-  lines; the lead owns the queue.
+  `campaign map`, never by waking agents, quoting `status`'s host and waste lines.
 
 ## Writing
 
 Operational records (journals, reviews, decision rows, messages) are terse and factual: the state,
 the next step, the evidence, the decision and why. Engineering documents (designs, results,
-runbooks) are plain technical prose that points at code and job ids. A personal writing-style skill
-is for public-facing writing the owner asks to have in that voice, never for records. Results and
+runbooks) are plain technical prose pointing at code and job ids; a personal writing-style skill
+is only for public writing the owner asks for in that voice. Results and
 how-it-works notes (`templates/mechanism.md`, when a mechanism is not obvious from its code) go in
 the docs of the repository the quest changed, a library's own included; the journal's Result names
 them, and `campaign map` shows it.

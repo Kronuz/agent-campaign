@@ -88,12 +88,11 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Scheduling.** The worker starts with the first submit or wait and exits when nothing is queued
   or running. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside a strict or exclusive one; `CAMPAIGN_LIGHT_JOBS`), in priority order,
-  campaigns sharing the light slots; `quiet` arbitrates the machine across every session. An
-  exclusive job drains the machine: it blocks new light holds while it waits, so
-  drains and light work take turns: a drain starts in a lull (no runnable light work, and the
+  campaigns sharing the light slots; `quiet` arbitrates across sessions. An
+  exclusive job drains the machine, blocking new light holds while it waits; it starts in a lull (no runnable light work, and the
   running light jobs end within 10 minutes by their last runs), or once it has waited 20 minutes since
   the last drain ran (`CAMPAIGN_DRAIN_WAIT`). An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`,
-  an hour) in which queued drains run back to back and no light job starts; a priority-1 light job
+  an hour) in which queued drains run back to back, admitting only light jobs that end before the running ones; a priority-1 light job
   that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
   TEXT` opens such a turn by hand; `--close` ends it.
   `campaign worker --restart` (after updating the tool) has the worker finish its tick and

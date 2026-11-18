@@ -5900,6 +5900,7 @@ def queue_health(jobs: list[Json], now: float) -> Json:
         "ended": len(ended),
         "failed": sum(j["state"].get("state") == "failed" for j in ended),
         "wasted": dict(Counter(j["state"]["state"] for j in ended if j["state"].get("state") in WASTED)),
+        "filler": sum(j["state"].get("state") == "queued" and int(j["spec"].get("priority", 0)) < 0 for j in jobs),
     }
 
 
@@ -5912,7 +5913,11 @@ def health_lines(h: Json) -> list[str]:
         f"drains {h['drained']} min, runnable work beside idle slots {h['idle']} min",
         f"jobs ended, last hour: {h['ended']}, {h['failed']} failed, {sum(h['wasted'].values())} produced nothing"
         + (f" ({kinds})" if kinds else ""),
-    ]
+    ] + (
+        [f"light slots {100 - share}% idle and no --priority -1 work queued: queue fuzz, soaks or benchmarks"]
+        if share < 75 and not h.get("filler")
+        else []
+    )
 
 
 def stalls(jobs: list[Json], now: float) -> list[tuple[str, str]]:
@@ -6038,7 +6043,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
 
             # a draining hold blocks new light holds until the running ones end: start one only when
-            # they all end soon, and past its wait start no new light job, so the drain stays short
+            # they all end soon; past its wait, only light work that ends before them fills the lull
             lights_end = max(
                 (
                     float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
@@ -6107,8 +6112,10 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     continue
                 if drains(j) and j not in overdue and (not drain_ok or wanting):
                     continue  # for a lull in light work, or its turn after an hour of it
-                if overdue and not is_heavy and not is_bare:
-                    continue  # an overdue drain waits: no new light job lengthens it
+                if drains(j) and not drain_ok:
+                    continue  # an overdue drain claims as the running light work ends: quiet would block the lull
+                if overdue and not is_heavy and not is_bare and now + expected_seconds(j["spec"], took) > lights_end:
+                    continue  # an overdue drain waits: only light work that ends before the running work starts
                 if is_late and not is_heavy and late >= max(1, slots // 2):
                     continue  # deferred work never takes every slot from the direct path
                 if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:

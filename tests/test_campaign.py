@@ -1535,6 +1535,18 @@ class Campaigns(CampaignCase):
         self.ok(self.other, "wait", theirs, "--timeout", "60", timeout=90)
         self.assertLessEqual(self.job(ab)["started"], self.job(theirs)["started"], "light work lengthened the drain")
 
+    def test_short_light_work_fills_an_overdue_drains_lull(self) -> None:
+        """Past its wait, a drain still lets a light job start that ends before the running ones."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="2", CAMPAIGN_DRAIN_WAIT="0", CAMPAIGN_DRAIN_SLACK="0")
+        ours = self.submit(self.home, "--level", "light", "--force", "--minutes", "5", "--", "sleep 8")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        short = self.submit(self.other, "--level", "light", "--minutes", "1", "--", "true")
+        self.ok(self.home, "wait", ours, ab, "--timeout", "60", timeout=90)
+        self.ok(self.other, "wait", short, "--timeout", "60", timeout=90)
+        self.assertLess(self.job(short)["started"], self.job(ab)["started"], "the lull went unused")
+        self.assertLess(float(self.job(short)["started"]), float(self.job(ours)["ended"]), "it waited out the lull")
+
     def test_drains_and_light_work_take_turns(self) -> None:
         """With no drain turn, queued light work runs after a drain before the next drain's wait is up."""
         self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5", CAMPAIGN_DRAIN_TURN="0")
@@ -1550,9 +1562,11 @@ class Campaigns(CampaignCase):
 
     def test_a_drain_cancelled_while_queued_does_not_restart_the_wait(self) -> None:
         """Only a drain that ran restarts the wait: cancelling queued drains never starves the others."""
-        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="6", CAMPAIGN_DRAIN_SLACK="0")
+        # queued light work keeps the drain from a lull, so only its wait lets it claim
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="6", CAMPAIGN_DRAIN_SLACK="600")
         ours = self.submit(self.home, "--level", "light", "--force", "--minutes", "5", "--", "sleep 30")
         self.wait_until(lambda: self.job(ours)["state"] == "running")
+        self.submit(self.home, "--level", "light", "--force", "--", "true behind")
         ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
         for n in range(6):
             time.sleep(3)
@@ -1848,6 +1862,11 @@ class QueueHealth(CampaignCase):
             out,
         )
         self.assertIn("jobs ended, last hour: 5, 1 failed, 2 produced nothing (1 cancelled, 1 skipped)\n", out)
+        self.assertIn("light slots 90% idle and no --priority -1 work queued", out)
+        filler = self.root / "jobs" / self.fake("261110-000007-gggggg", "light", "queued", now - m)
+        spec = json.loads((filler / "spec.json").read_text())
+        (filler / "spec.json").write_text(json.dumps({**spec, "priority": -1}))
+        self.assertNotIn("no --priority -1 work queued", self.ok(self.home, "status").out)
         warned = self.ok(self.home, "check").out
         self.assertRegex(
             warned, rf"1 queued job waited over 30 minutes beside idle slots \(longest {stuck}, 1[01]\d min\)"
