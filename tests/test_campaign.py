@@ -2825,6 +2825,22 @@ class Recovery(CampaignCase):
         self.assertNotIn("quest/demo/fix", self.git(self.home, "branch", "--list"))
         self.assertNotIn("slots", self.git(self.home, "worktree", "list"))
 
+    def test_the_last_job_in_a_landed_quests_slot_removes_it(self) -> None:
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.verified("fix")
+        go = self.root / "go"
+        probe = self.submit(wt, "--quest", "fix", "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        self.wait_until(lambda: self.job(probe)["state"] == "running")
+        slot = self.root / "jobs" / "slots" / "demo-fix"
+        self.assertEqual(json.loads((self.root / "jobs" / probe / "spec.json").read_text())["slot"], "demo-fix")
+        out = self.ok(self.home, "land", "fix").out
+        self.assertIn(f"kept its build slot demo-fix: job {probe} uses it", out)
+        self.assertTrue(slot.exists())
+        go.touch()
+        self.ok(self.home, "wait", probe)
+        self.wait_until(lambda: not slot.exists() and "slots" not in self.git(self.home, "worktree", "list"))
+
     def test_landing_cleans_what_is_safe_and_keeps_the_rest(self) -> None:
         wt = self.started("fix", files="app.py")
         self.commit(wt, {"app.py": "print(2)\n"})

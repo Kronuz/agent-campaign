@@ -2816,15 +2816,40 @@ def clean_quest(c: Campaign, pid: str, *, force: bool = False, keep: bool = Fals
                     git(owner, "branch", "-q", "-D" if force else "-d", branch)
                 else:
                     kept.append(f"{branch}{' (its journal, in the home)' if owner != repo else ''}: not merged")
-    if busy:
-        kept.append(f"its build slots: jobs {', '.join(busy)} use them")
-    else:
-        worktree_remove(str(repo), jobs_dir() / "slots" / quest_slot(c, pid, repo))
-        for slot in (jobs_dir() / "slots").glob(f"{quest_slot(c, pid, repo)}@*"):  # its other repositories'
-            if slot.is_dir():
-                common = git(slot, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-                worktree_remove(str(Path(common).parent) if common else str(slot), slot)
+    own = quest_slot(c, pid, repo)
+    pending = {slot_of(j["spec"]): j["id"] for j in all_jobs() if j["state"].get("state") not in TERMINAL}
+    for slot in [jobs_dir() / "slots" / own, *(jobs_dir() / "slots").glob(f"{own}@*")]:  # @: other repositories'
+        if slot.name in pending or not drop_slot(slot):
+            user = f"job {pending[slot.name]}" if slot.name in pending else "a runner"
+            kept.append(f"its build slot {slot.name}: {user} uses it; the last job there removes it")
     return kept
+
+
+def drop_slot(slot: Path) -> bool:
+    """Removes a build slot, a worktree of the repository it checks out, unless a runner holds it."""
+    if not slot.is_dir():
+        return True
+    fh = slot_lock_try(slot)
+    if fh is None:
+        return False
+    with fh:
+        common = git(slot, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+        worktree_remove(str(Path(common).parent) if common else str(slot), slot)
+        slot.with_name(slot.name + ".lock").unlink(missing_ok=True)  # a waiter that opened it retries
+    return True
+
+
+def drop_quest_slot(spec: Json) -> None:
+    """After a job in its quest's build slot ends: removes the slot once that quest has landed or was
+    dropped and no pending job names it (landing kept it for them)."""
+    name, campaign, quest = slot_of(spec), str(spec.get("campaign") or ""), str(spec.get("quest") or "")
+    state = read_json_shared(Path(campaign) / "state.json") if campaign and quest and name else None
+    q = (state or {}).get("quests", {}).get(quest, {})
+    if q.get("status") not in ("landed", "dropped") or name.partition("@")[0] != f"{state['campaign']}-{quest}":
+        return
+    if any(slot_of(j["spec"]) == name and j["state"].get("state") not in TERMINAL for j in all_jobs()):
+        return
+    drop_slot(jobs_dir() / "slots" / name)
 
 
 def cmd_clean(a: argparse.Namespace) -> int:
@@ -6249,6 +6274,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     release(spec, d)
     if finish(job, code, state, note, fence=me) and reads is not None:
         save_reads(job, reads)
+    with contextlib.suppress(CampaignError, OSError):
+        drop_quest_slot(spec)
     return 0
 
 
@@ -7397,15 +7424,8 @@ def prune(
             log.write(f"{stamp()} slimmed {j['id']} {j['spec'].get('what', '')}\n")
             beat()
         for x in plan["slots"]:
-            fh = slot_lock_try(x)
-            if fh is None:
+            if not drop_slot(x):
                 continue  # a job took it since the plan
-            with fh:
-                common = git(x, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-                shutil.rmtree(x, ignore_errors=True)
-                if common:
-                    git(Path(common).parent, "worktree", "prune", check=False)
-                x.with_name(x.name + ".lock").unlink(missing_ok=True)  # a waiter that opened it retries
             log.write(f"{stamp()} removed slot {x.name}\n")
             beat()
         for d, n in builds:
