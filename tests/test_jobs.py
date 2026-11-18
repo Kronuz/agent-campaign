@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import CAMPAIGN, CampaignCase, alive, campaign_module, session_members
+from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, campaign_module, session_members
 
 
 class Races(unittest.TestCase):
@@ -1144,7 +1144,7 @@ class Slots(CampaignCase):
             "import importlib.util, os, sys, time\n"
             "from pathlib import Path\n"
             f"sys.path.insert(0, {str(CAMPAIGN.parent)!r})\n"
-            f"spec = importlib.util.spec_from_file_location('campaign', {str(CAMPAIGN)!r})\n"
+            f"spec = importlib.util.spec_from_file_location('campaign', {str(CAMPAIGN_CODE)!r})\n"
             "m = importlib.util.module_from_spec(spec)\n"
             "spec.loader.exec_module(m)\n"
             f"while not os.path.exists({str(go)!r}):\n"

@@ -20,6 +20,7 @@ from typing import Any
 
 SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
+CAMPAIGN_CODE = SKILL / "scripts" / "campaign_tool.py"  # the module the command imports
 QUIET = SKILL / "scripts" / "quiet.py"
 sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
 
@@ -43,7 +44,7 @@ def script_module(path: Path) -> ModuleType:
 
 def campaign_module() -> ModuleType:
     """campaign.py loaded as a module, for tests of its functions."""
-    return script_module(CAMPAIGN)
+    return script_module(CAMPAIGN_CODE)
 
 
 def alone(test: Callable[..., None]) -> Callable[..., None]:
