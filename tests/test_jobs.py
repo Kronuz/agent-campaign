@@ -114,6 +114,21 @@ class Batches(unittest.TestCase):
         self.assertEqual([j["id"] for j in self.module.plan([failed, measure], now, {})[1]], [measure["id"]])
         self.assertTrue(all(lv in heavy for lv in ("strict", "exclusive")))
 
+    def test_a_drain_waiting_for_its_build_slot_holds_no_one_up(self) -> None:
+        """An overdue exclusive job whose slot a light job holds neither opens a drain turn nor keeps light
+        work out; once the slot is free it is due, and light work waits for it."""
+        now = 1_800_000_000.0
+        holder = self.job(1, "light", "running", now - 7200, claimed=now - 60, started=now - 60)
+        drain = self.job(2, "exclusive", "queued", now - 7200)
+        light = self.job(3, "light", "queued", now - 600)
+        for j in (holder, drain):
+            j["spec"].update(commit="c0ffee", slot="s")
+        start, _, turn = self.module.plan([holder, drain, light], now, {})
+        self.assertEqual(([j["id"] for j in start], turn), ([light["id"]], {}))
+        freed = {**holder, "state": {"state": "done", "started": now - 60, "ended": now - 1}}
+        start, _, turn = self.module.plan([freed, drain, light], now, {})
+        self.assertEqual(([j["id"] for j in start], turn.get("for")), ([drain["id"]], "drain turn"))
+
     def test_batches_cut_the_drains_of_a_replayed_queue(self) -> None:
         """The host's queue (12 h to 2026-11-18 07:38, 719 jobs, 81 strict or exclusive), replayed with
         each job's recorded length: 5.33 drains an hour with no batches, 2.83 with them (BATCH_JOBS 6,
@@ -1440,35 +1455,42 @@ class Slots(CampaignCase):
         self.assertIn("command: true --ref", misplaced)
         self.assertIn("--ref after -- belongs to the command", misplaced)
 
-    def test_a_quests_light_jobs_build_in_its_slot_while_it_is_free(self) -> None:
-        """A light job of a quest reuses the quest's build slot (verify's, or NAME@REPO in another
-        repository) while no job of its own is pending there, else checks out afresh beside it."""
+    def test_a_quests_jobs_wait_for_its_slot_and_run_there(self) -> None:
+        """A job of a quest runs in the quest's build slot (verify's, or NAME@REPO in another repository)
+        whatever its level: one submitted while another holds the slot waits, then runs there, on the
+        first one's build. --fresh checks out afresh; critical quests and jobs of no quest have no slot."""
         wt = self.started("fix")
         self.ok(self.home, "new", "risky", "--title", "risky", "--risk", "critical", "--check", "unit=true")
         lib = self.repo("lib", {"lib.py": "X = 1\n"})
-        go = self.root / "go"
+        go, slot = self.root / "go", self.root / "jobs" / "slots" / "demo-fix"
 
-        def slot(*args: str, cmd: str = "true") -> str:
-            jid = self.submit(wt, *args, "--force", "--", cmd)
-            return str(json.loads((self.root / "jobs" / jid / "spec.json").read_text())["slot"])
+        def spec(jid: str) -> dict[str, Any]:
+            return dict(json.loads((self.root / "jobs" / jid / "spec.json").read_text()))
 
-        self.assertEqual(slot("--quest", "fix", cmd=f"while [ ! -e {go} ]; do sleep 0.1; done"), "demo-fix")
-        self.assertEqual(slot("--quest", "fix"), "", "a second job waited for a busy slot")
+        def seen(jid: str) -> list[str]:
+            log = (self.root / "jobs" / jid / "a1" / "log").read_text().split("\n")
+            return [x for x in log if x and not x.startswith("quiet")]
+
+        build = f"mkdir -p build && echo built > build/out; while [ ! -e {go} ]; do sleep 0.1; done"
+        first = self.submit(wt, "--quest", "fix", "--", build)
+        self.wait_until(lambda: self.job(first)["state"] == "running")
+        second = self.submit(wt, "--quest", "fix", "--level", "strict", "--", "cat build/out && pwd")
+        time.sleep(1)  # several worker ticks
+        self.assertEqual(self.job(second)["state"], "queued", "a second job entered a busy slot")
         go.touch()
-        self.wait_until(
-            lambda: (
-                not any(
-                    json.loads((d / "state.json").read_text())["state"] in ("queued", "running")
-                    for d in (self.root / "jobs").glob("2*")
-                )
-            )
-        )
-        self.assertEqual(slot("--quest", "fix"), "demo-fix")
-        self.assertEqual(slot("--quest", "fix", "--repo", str(lib), "--commit", "HEAD"), "demo-fix@lib")
-        self.assertEqual(slot("--quest", "fix", "--fresh"), "")
-        self.assertEqual(slot("--quest", "fix", "--level", "strict"), "")
-        self.assertEqual(slot("--quest", "risky"), "")
-        self.assertEqual(slot(), "")
+        self.ok(self.home, "wait", first, second, "--timeout", "60")
+        self.assertEqual([spec(x)["slot"] for x in (first, second)], ["demo-fix", "demo-fix"])
+        self.assertGreaterEqual(self.job(second)["started"], self.job(first)["ended"])
+        out = seen(second)
+        self.assertEqual((out[0], Path(out[1]).resolve()), ("built", slot.resolve()))
+        fresh = self.submit(wt, "--quest", "fix", "--fresh", "--", "test ! -e build/out && pwd")
+        self.ok(self.home, "wait", fresh, "--timeout", "60")
+        self.assertEqual(spec(fresh)["slot"], "")
+        self.assertEqual(Path(seen(fresh)[0]).resolve(), (self.root / "jobs" / fresh / "src").resolve())
+        other = self.submit(wt, "--quest", "fix", "--repo", str(lib), "--commit", "HEAD", "--", "true")
+        self.assertEqual(spec(other)["slot"], "demo-fix@lib")
+        self.assertEqual(spec(self.submit(wt, "--quest", "risky", "--", "true"))["slot"], "")
+        self.assertEqual(spec(self.submit(wt, "--", "true"))["slot"], "")
 
     def test_a_measurement_runs_in_the_checkout_its_build_made(self) -> None:
         """--build builds under light, then runs the command at the job's level in the same checkout:

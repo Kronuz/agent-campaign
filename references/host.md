@@ -73,18 +73,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Slots.** `--slot NAME` reuses one checkout per name for incremental builds; its tracked files
   are verified clean at the job's commit before every run (build outputs stay), and one job uses it
   at a time: the worker skips a job whose slot is held, in any campaign; the runner holds the slot's
-  lock (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify` uses a
-  slot per quest (`<campaign>-<quest>`), except for critical quests and `--fresh`. A light
-  `job submit --quest` job uses the same slot by default (`<campaign>-<quest>@<repo>` in another
-  repository) while no pending job of its own is there, else a fresh checkout beside it, so a batch
-  of probes runs in parallel; `--slot`, `--fresh` and `--keep` choose otherwise. Landing removes the
-  quest's slots. A slot's `--ref NAME` checkouts live at `slot/ref-NAME`, one path for every job
+  lock (`NAME.lock`, an `flock` the kernel drops when the runner dies). `campaign verify` and every
+  `job submit --quest` job use the quest's slot (`<campaign>-<quest>`, `@<repo>` in another
+  repository) but for critical quests, `--slot`, `--fresh` and `--keep`: a job waits for it, so it
+  finds the quest's build, and a drain waiting for it blocks no one. Landing removes the quest's slots. A slot's `--ref NAME` checkouts live at `slot/ref-NAME`, one path for every job
   there and reset to the ref per job (a build dir configured from `$JOB_REF_NAME` stays valid);
   without a slot they live under the job's own directory. `job submit` prints the parsed command
   and options to stderr, and warns when a submit flag such as `--ref` follows `--`. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
-- **Builds for measurements.** `--after` only orders jobs, each in its own checkout. `--build CMD`
-  runs CMD as a light job (30 minutes, outside `--minutes`) in the job's checkout (a `--quest` job's
-  slot); a passed build's command then queues for its heavy hold.
+- **Builds for measurements.** `--after` only orders jobs. `--build CMD` runs CMD as a light job (30
+  minutes, outside `--minutes`) in the job's checkout; a passed build's command then queues for its
+  heavy hold, keeping the slot.
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns sharing the light slots; `quiet` arbitrates across sessions. Ready heavy jobs run back

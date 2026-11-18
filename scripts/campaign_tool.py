@@ -6902,9 +6902,9 @@ def waits(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
 
 def idle_for(job: Json, live: list[Json], slots: int) -> bool:
     """Whether a slot JOB could take was free beside the LIVE jobs: a light slot with no drain, a
-    heavy job's own cores, or, for a drain, the whole machine."""
-    level = job["spec"].get("level")
-    if level == "none":
+    heavy job's own cores, or, for a drain, the whole machine; never while its build slot is in use."""
+    level, slot = job["spec"].get("level"), slot_of(job["spec"])
+    if level == "none" or (slot and any(slot_of(x["spec"]) == slot for x in live)):
         return False
     if drains(job):
         return not live
@@ -7150,6 +7150,7 @@ def plan(
         j
         for j in queued
         if drains(j)
+        and slot_of(j["spec"]) not in busy  # a drain waiting for its build slot holds no one up
         and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
         and all(states.get(x) == "done" for x in j["spec"].get("after", []))
     ]
@@ -7454,11 +7455,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec["refs"] = dict(parse_ref(top, x) for x in a.ref)
         rel = a.cwd if a.cwd is not None else (os.path.relpath(cwd, invoking) if cwd.is_relative_to(invoking) else "")
         spec["cwd"] = "" if rel == "." else rel
-        if c and (a.level == "light" or a.build) and not (a.slot or a.fresh or a.keep) and p["risk"] != "critical":
-            name = quest_slot(c, a.quest, top)
-            # a free slot builds incrementally; with a job of its own pending, a fresh checkout runs beside it
-            if not any(slot_of(j["spec"]) == name and j["state"].get("state") not in TERMINAL for j in all_jobs()):
-                spec["slot"] = name
+        if c and not (a.slot or a.fresh or a.keep) and p["risk"] != "critical":
+            spec["slot"] = quest_slot(c, a.quest, top)  # the quest's build: a busy slot is waited for
         if not a.commit and not a.quest and git(top, "status", "--porcelain", "--untracked-files=no"):
             print(
                 f"note: uncommitted changes in {top} are not in the job; it runs {spec['commit'][:12]}", file=sys.stderr
@@ -8959,7 +8957,7 @@ def parser() -> argparse.ArgumentParser:
         help="the cores a light job keeps busy at once: it takes their light slots from its start",
     )
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
-    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest light or --build job)")
+    p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest job: its quest's)")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
     p.add_argument("--retries", type=int, default=0, metavar="N", help="requeues after a lost runner")

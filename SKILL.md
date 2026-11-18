@@ -233,8 +233,8 @@ claim has one short before/after run (`references/measurement.md`).
 | `strict` | other timings, load and race repros | own cores on Linux; beside light work on macOS |
 | `exclusive` | one short job per number that decides or gets published | the machine to itself |
 
-Jobs run at the commit they were submitted for, in their own checkout, with the submitter's PATH;
-`--build CMD` builds there under light before a measurement. A result is reused for identical code
+Jobs run at their submitted commit, a quest's in its build slot, with the submitter's PATH;
+`--build CMD` builds there under light first. A result is reused for identical code
 (without `.campaign/`), command, directory, level, `--env`, host and toolchain, and across merges
 from `main`, docs-only commits, read sets and `--inputs`. Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
