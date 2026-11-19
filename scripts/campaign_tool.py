@@ -7096,7 +7096,13 @@ def plan(
     holds: Counter[str] = Counter()
     for j in lights:
         holds[camp(j)] += light_weight(j, charges)
-    wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none")}
+
+    def held(j: Json) -> bool:
+        """Whether J's build slot is another job's: a built job keeps its own while it waits for its hold."""
+        return slot_of(j["spec"]) in busy and j["state"].get("phase") != "built"
+
+    # light work its slot holds back (a built drain's, say) is not waiting for the machine
+    wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none") and not held(j)}
     sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
     slots = light_slots(heavy)
     share = max(1, slots // sharing)
@@ -7150,7 +7156,7 @@ def plan(
         j
         for j in queued
         if drains(j)
-        and slot_of(j["spec"]) not in busy  # a drain waiting for its build slot holds no one up
+        and not held(j)  # a drain waiting for its build slot holds no one up
         and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
         and all(states.get(x) == "done" for x in j["spec"].get("after", []))
     ]
@@ -7193,7 +7199,7 @@ def plan(
             continue  # deferred work never takes every slot from the direct path
         if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
             continue  # its campaign has its share while another campaign waits
-        if slot_of(j["spec"]) in busy and j["state"].get("phase") != "built":
+        if held(j):
             continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
         if is_heavy:
             batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}

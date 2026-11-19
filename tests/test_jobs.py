@@ -129,6 +129,21 @@ class Batches(unittest.TestCase):
         start, _, turn = self.module.plan([freed, drain, light], now, {})
         self.assertEqual(([j["id"] for j in start], turn.get("for")), ([drain["id"]], "drain turn"))
 
+    def test_a_built_drain_is_not_held_up_by_its_own_slot(self) -> None:
+        """A built exclusive job keeps its slot while it waits for its hold: the light job queued behind
+        it in that slot is not light work it waits out, and its own slot never keeps it from coming due."""
+        now = 1_800_000_000.0
+        built = {"started": now - 300, "ended": now - 200, "exit": 0}
+        drain = self.job(1, "exclusive", "running", now - 7200, phase="built", claimed=now - 300, build=built)
+        drain["spec"].update(build="make", commit="c0ffee", slot="s")
+        behind = self.job(2, "light", "queued", now - 600)
+        behind["spec"].update(commit="c0ffee", slot="s")
+        start, _, _ = self.module.plan([drain, behind], now, {})
+        self.assertEqual([(j["id"], j["state"]["phase"]) for j in start], [(drain["id"], "run")])
+        other = self.job(3, "light", "queued", now - 600)  # waiting for the machine: the drain is overdue
+        start, _, turn = self.module.plan([drain, behind, other], now, {})
+        self.assertEqual(([j["id"] for j in start], turn.get("for")), ([drain["id"]], "drain turn"))
+
     def test_batches_cut_the_drains_of_a_replayed_queue(self) -> None:
         """The host's queue (12 h to 2026-11-18 07:38, 719 jobs, 81 strict or exclusive), replayed with
         each job's recorded length: 5.33 drains an hour with no batches, 2.83 with them (BATCH_JOBS 6,
