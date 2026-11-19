@@ -2412,6 +2412,50 @@ class Integration(CampaignCase):
             self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
         )
 
+    def test_push_records_only_a_landing_origin_took(self) -> None:
+        """Two clones of one origin: a push origin rejects records nothing, origin's campaign-only
+        commits are merged first, and its code commits refuse the landing."""
+        remote = self.root / "remote.git"
+        self.git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))
+        self.git(self.home, "remote", "add", "origin", str(remote))
+        self.git(self.home, "push", "-q", "origin", "main")
+        other = self.root / "other"
+        self.git(self.root, "clone", "-q", str(remote), str(other))
+        for pid, path in (("fix", "app.py"), ("fix2", "lib/util.py")):
+            self.commit(self.started(pid, files=path, check="unit=true"), {path: "X = 2\n"})
+            self.verified(pid)
+        # the other clone pushes between this landing's fetch and its push, so origin rejects it
+        hooks = self.root / "hooks"
+        hooks.mkdir()
+        (hooks / "pre-push").write_text(
+            '#!/bin/sh\nrm -f "$0"\nunset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE\n'
+            f"mkdir -p {other}/.campaign/peer && echo note > {other}/.campaign/peer/note.md\n"
+            f"git -C {other} add .campaign && git -C {other} commit -q -m race && git -C {other} push -q origin main\n"
+        )
+        (hooks / "pre-push").chmod(0o755)
+        self.git(self.home, "config", "core.hooksPath", str(hooks))
+        main = self.git(self.home, "rev-parse", "main")
+        self.fails(self.home, "land", "fix", "--push", match="did not land")
+        self.assertEqual(self.git(self.home, "rev-parse", "main"), main)
+        self.assertEqual((self.quest("fix")["status"], self.quest("fix")["landed"]), ("active", []))
+        self.assertNotIn("landing", self.state())
+        self.assertTrue(self.wt("fix").exists())
+        # landing again merges origin's campaign-only commit, and origin takes the result
+        self.ok(self.home, "land", "fix", "--push")
+        self.assertEqual(
+            self.git(self.root, "--git-dir", str(remote), "rev-parse", "main"), self.git(self.home, "rev-parse", "main")
+        )
+        self.assertEqual(self.git(self.home, "show", "main:.campaign/peer/note.md"), "note")
+        self.assertEqual(self.quest("fix")["status"], "landed")
+        # origin's code the home lacks refuses the landing before anything moves
+        self.git(other, "pull", "-q", "--no-rebase", "origin", "main")
+        self.commit(other, {"README.md": "changed elsewhere\n"})
+        self.git(other, "push", "-q", "origin", "main")
+        main = self.git(self.home, "rev-parse", "main")
+        self.fails(self.home, "land", "fix2", "--push", match="outside the campaign's files or its state")
+        self.assertEqual(self.git(self.home, "rev-parse", "main"), main)
+        self.assertEqual(self.quest("fix2")["status"], "active")
+
     def test_the_lead_lands_a_pin_bump_on_main_after_its_pin_check(self) -> None:
         remote = self.root / "remote.git"
         self.git(self.root, "init", "-q", "--bare", "-b", "main", str(remote))

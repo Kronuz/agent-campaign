@@ -2579,17 +2579,64 @@ def cmd_pin(a: argparse.Namespace) -> int:
         c.save(f"campaign: pin bump {commit[:12]}" + (f" in {repo.name}" if rel != "." else ""))
     if a.push:
         for where in dict.fromkeys([main_checkout(repo), c.home]):
-            pushed = subprocess.run(
-                ["git", "-C", str(where), "push", "-q", "origin", main_branch(where)], capture_output=True, text=True
-            )
-            if pushed.returncode != 0:
-                die(f"recorded, but the push from {where} failed: {pushed.stderr.strip()}")
+            if refused := push_main(where):
+                die(f"recorded, but the push from {where} failed: {refused}")
     print(
         f"pin bump {commit[:12]}: recorded"
         + (f", pin check {jid} passed" if jid else "")
         + ("; pushed" if a.push else "")
     )
     return 0
+
+
+def sync_main(c: Campaign, where: Path) -> None:
+    """Brings origin's main into WHERE's main before a landing pushes it, when the commits it lacks
+    change only campaign files (never this campaign's state, which only this checkout writes);
+    refuses otherwise, before anything lands."""
+    main = main_branch(where)
+    tracking = f"refs/remotes/origin/{main}"
+    fetched = subprocess.run(
+        ["git", "-C", str(where), "fetch", "-q", "origin", f"+refs/heads/{main}:{tracking}"],
+        capture_output=True,
+        text=True,
+    )
+    if fetched.returncode != 0:
+        listed = subprocess.run(
+            ["git", "-C", str(where), "ls-remote", "--exit-code", "origin", f"refs/heads/{main}"], capture_output=True
+        )
+        if listed.returncode == 2:  # origin has no main yet: the push creates it
+            return
+        die(f"cannot fetch origin's {main} into {where}: {fetched.stderr.strip()}; nothing landed")
+    remote, local = rev(where, tracking), rev(where, main)
+    if ancestor(where, remote, local):
+        return
+    theirs = changed(where, merge_base(where, local, remote), remote)
+    state = f"{c.meta}/state.json" if same_repo(where, c.home) else None
+    code = [x for x in theirs if not is_meta(x) or x == state]
+    if code:
+        die(
+            f"origin's {main} has commits {where} lacks that change {plural(len(code), 'file')} outside the "
+            f"campaign's files or its state (e.g. {code[0]}); nothing landed: merge origin's {main} into {main} "
+            "and land again"
+        )
+    merged = subprocess.run(
+        ["git", "-C", str(where), "merge", "-q", "--no-edit", "-m", f"campaign: merge origin's {main}", tracking],
+        capture_output=True,
+        text=True,
+    )
+    if merged.returncode != 0:
+        git(where, "merge", "--abort", check=False)
+        die(f"merging origin's {main} into {where} failed: {merged.stderr.strip()}; nothing landed")
+
+
+def push_main(where: Path) -> str:
+    """Pushes WHERE's main to origin: git's error when the push fails, else ""."""
+    pushed = subprocess.run(
+        ["git", "-C", str(where), "push", "-q", "origin", main_branch(where)], capture_output=True, text=True
+    )
+    if pushed.returncode == 0:
+        return ""
+    return (pushed.stderr or pushed.stdout).strip() or f"git push exited {pushed.returncode}"
 
 
 def cmd_land(a: argparse.Namespace) -> int:
@@ -2668,6 +2715,8 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{checkout} is not on {main}")
         if git(checkout, "status", "--porcelain", "--untracked-files=no"):
             die(f"{checkout} has uncommitted changes")
+        for where in dict.fromkeys([checkout, c.home]) if a.push else ():
+            sync_main(c, where)
         with frozen():  # the gaps only read
             gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
@@ -2709,6 +2758,13 @@ def cmd_land(a: argparse.Namespace) -> int:
                 if not git_ok(checkout, "diff", "--quiet", target, "HEAD", "--", ".", *EXCLUDE_META):
                     git(checkout, "reset", "-q", "--keep", before)
                     die("the merge changed code outside the campaign's files; nothing landed")
+            if a.push and (refused := push_main(checkout)):  # the code first: a refused push records nothing
+                git(checkout, "reset", "-q", "--keep", before)
+                die(
+                    f"the push of {main} to origin failed, so {a.id} did not land and {main} is back at "
+                    f"{before[:12]}: {refused}\n  `campaign land {a.id} --push` again merges origin's {main} "
+                    "first when it changed only campaign files"
+                )
         except CampaignError:
             c.state.pop("landing", None)
             write_json(c.path, c.state)
@@ -2736,15 +2792,11 @@ def cmd_land(a: argparse.Namespace) -> int:
         for m in filed:
             (mailbox(c, a.id) / f"{m['id']}.json").unlink(missing_ok=True)
         notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
-        if a.push:
-            for where in dict.fromkeys([checkout, c.home]):
-                pushed = subprocess.run(
-                    ["git", "-C", str(where), "push", "-q", "origin", main_branch(where)],
-                    capture_output=True,
-                    text=True,
-                )
-                if pushed.returncode != 0:
-                    die(f"landed locally, but the push from {where} failed: {pushed.stderr.strip()}")
+        if a.push and (refused := push_main(c.home)):
+            die(
+                f"{a.id} landed and origin has it, but the push of its record from {c.home} failed: {refused}"
+                f"\n  push {main_branch(c.home)} from {c.home} once origin's changes are merged"
+            )
     via = "" if landed == target else f" (merge {landed[:12]})"
     print(f"{a.id}: landed {target[:12]} on {main}{via}" + ("" if final else " (increment)"))
     for item in kept:
@@ -6855,6 +6907,12 @@ def cpu_lines(jobs: list[Json]) -> list[str]:
     return [f"light jobs over their share: {'; '.join(over)}"] if over else []
 
 
+def children() -> set[int]:
+    """This process's children, exited ones included."""
+    me = os.getpid()
+    return {pid for pid, (ppid, _) in proc_table().items() if ppid == me}
+
+
 def reap_runners(pids: set[int]) -> None:
     """Waits for the runners in PIDS that exited, so none stays a zombie: the worker spawns them and
     never waits otherwise, and a worker re-executed in place is still their parent."""
@@ -7267,10 +7325,9 @@ def cmd_worker(a: argparse.Namespace) -> int:
             return 0
     (home / "started").write_text(f"{time.time()}\n")  # when this code began scheduling
     tick = float(os.environ.get("CAMPAIGN_WORKER_TICK", "2"))
-    # the runners it spawned, kept across a restart; each job's CPU samples and its charge
-    runners: set[int] = set()
-    with contextlib.suppress(OSError):
-        runners = {int(x) for x in (home / "runners").read_text().split()}
+    # its runners: a restart's execv keeps the old image's children, recorded or not; each job's CPU
+    # samples and its charge
+    runners: set[int] = children() if ours else set()
     seen: dict[str, list[tuple[float, float]]] = {}
     use: dict[str, Json] = {}
     with contextlib.suppress(OSError, ValueError, AttributeError):
@@ -7314,7 +7371,6 @@ def cmd_worker(a: argparse.Namespace) -> int:
             if "stop" in asked:
                 return 0
             if asked:  # a restart keeps the pid and the home: no starter sees the worker gone
-                atomic_write(home / "runners", "".join(f"{x}\n" for x in runners))
                 sys.stdout.flush()
                 os.execv(sys.executable, [sys.executable, str(ENTRY), "worker"])
             time.sleep(tick)
@@ -8786,7 +8842,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--upto", metavar="REF", help="land the branch up to this commit, as an increment")
     p.add_argument("--reason", metavar="TEXT", help="why the increment is safe to land alone")
-    p.add_argument("--push", action="store_true", help="push main after landing")
+    p.add_argument(
+        "--push",
+        action="store_true",
+        help="merge origin's main first when it changed only campaign files, push, and record only what origin took",
+    )
     p.add_argument("--no-ci", metavar="REASON", help="land without green CI, saying why (recorded with the landing)")
     p.add_argument(
         "--record", metavar="REF", help="record a landing that already happened (with --reason; unchecked gates kept)"

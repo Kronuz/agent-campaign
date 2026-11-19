@@ -904,6 +904,40 @@ class Scheduling(CampaignCase):
         go.touch()
         self.ok(self.home, "wait", blocker, "--timeout", "30")
 
+    def test_a_restarted_worker_reaps_children_its_old_code_never_recorded(self) -> None:
+        """An older worker's image leaves exited children nobody recorded; the code it re-executes
+        into finds them and reaps them."""
+        go = self.root / "go"
+        blocker = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        self.wait_until(lambda: self.job(blocker)["state"] == "running")
+        home = self.root / "jobs" / ".worker"
+        old = (
+            "import os, subprocess, sys, time\n"
+            "subprocess.Popen(['true'])\n"  # exits and is never waited for
+            "time.sleep(0.5)\n"
+            f"open({str(home / 'pid.new')!r}, 'w').write(str(os.getpid()))\n"
+            f"os.replace({str(home / 'pid.new')!r}, {str(home / 'pid')!r})\n"  # holds the home, as a restart does
+            f"os.execv(sys.executable, [sys.executable, {str(CAMPAIGN)!r}, 'worker'])\n"
+        )
+        worker = subprocess.Popen(
+            [sys.executable, "-c", old],
+            env=self.env,
+            cwd=self.root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.wait_until(lambda: (home / "pid").read_text() == str(worker.pid))
+        beat = (home / "heartbeat").stat().st_mtime
+        self.wait_until(lambda: (home / "heartbeat").stat().st_mtime > beat + 0.5)  # a few of its ticks
+        listed = subprocess.run(["ps", "-A", "-o", "ppid=,stat="], capture_output=True, text=True).stdout
+        zombies = [x for x in listed.splitlines() if x.split()[0] == str(worker.pid) and x.split()[1].startswith("Z")]
+        self.assertEqual(zombies, [], "a child the old image never recorded stayed a zombie")
+        go.touch()
+        self.ok(self.home, "wait", blocker, "--timeout", "30")
+        worker.wait(timeout=30)
+
     def test_submit_records_cpus_and_warns_of_undeclared_copies(self) -> None:
         self.env["CAMPAIGN_LIGHT_JOBS"] = str(os.cpu_count() or 4)  # a core a slot
         r = self.ok(self.home, "job", "submit", "--", "make -j 8")
