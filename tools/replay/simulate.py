@@ -384,6 +384,7 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         "landings_per_day": round(len(lands) / 14, 2),
         "machine_h": round(sum(j.run_s + j.build_s for j in w.jobs if src.SINCE <= j.submitted < src.UNTIL) / H, 1),
         "median_wait_min": round(statistics.median(rec_wait) / 60, 1),
+        "wait_job_h": round(sum(rec_wait) / H, 1),
         "mean_queue": round(statistics.mean(rec_hourly), 1) if rec_hourly else None,
         "agent_tokens_M": round(agent_tokens / 1e6),
         "lead_tokens_M": round(lead_tokens / 1e6),
