@@ -26,6 +26,9 @@ Together the inferred figures cover:
 | Why it waited, at each moment | a wait record per change of cause: `slot busy`, `light cap`, `drain`, `strict beside`, `load gate`, `fair share`, `order`, `dependency`, `owner hold` | sampled the machine every minute and blamed what held it; 288 slot-hours of idle light capacity with light work ready have no recorded reason | the light-capacity split |
 | Its weight | the light slots it was charged, over time, and its CPU time (rusage) | none: the worker's measured-use charges are not stored | the same 288 slot-hours |
 | Host load | load average and free memory each minute | none (quiet's load gate refuses holds above 2x CPUs, unrecorded) | the same |
+| The question a job answers | quest, criterion and row it is evidence for, and the verdict per criterion over time | `for.json` names criteria, not rows; no verdict history | whether a run's criterion was already evidenced when it began (`need.py`) |
+| Per-trial values and the deciding threshold | each trial's value per row, and the threshold the gate applies | 17 jobs in the window logged `trial N: VALUE`; no threshold anywhere | runs sized past what decided them (`policy-simulation.md`) |
+| Declared inputs | the globs, toolchain and dataset a check reads, recorded with its result | none; `inputs` is empty on every job | landing-time reruns with unchanged inputs: between 0.3 h and 48.0 h (`where-time-went.md`) |
 | Commands that embed their commit | identity computed from the command with its commit and `$$` masked, or the command declares its output directory apart | masked hex ids and `$$` in the replay's shape | which document-gate jobs are reruns |
 | Results beyond 14 days | a compact record per job, kept forever (the logs may go) | jobs before 2026-11-05 15:05 are pruned (`prune.log` names them only) | any window longer than 14 days |
 
