@@ -57,11 +57,15 @@ def read_json(path: Path) -> Any:
         return None
 
 
+REPLAYED = ("detent", "xapiand")  # the campaigns v2 ran in the window; campaign-v3 began after it
+
+
 def campaign_homes() -> dict[str, Path]:
-    """Each campaign's home, from the tool's registry (~/.scratch/campaign/campaigns/NAME)."""
+    """Each replayed campaign's home, from the tool's registry (~/.scratch/campaign/campaigns/NAME)."""
     homes: dict[str, Path] = {}
     for f in sorted(CAMPAIGNS.iterdir()) if CAMPAIGNS.is_dir() else []:
-        homes[f.name] = Path(f.read_text().strip())
+        if f.name in REPLAYED:
+            homes[f.name] = Path(f.read_text().strip())
     return homes
 
 
