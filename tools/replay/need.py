@@ -171,6 +171,10 @@ def classify(w: World, out: Path) -> tuple[Json, list[Json]]:
         "wait_job_h": round(sum(x["wait_s"] for x in rows) / H, 1),
         "of_machine_h": round(sum(j.run_s + j.build_s for j in w.jobs if account.in_window(j)) / H, 1),
     }
+    summary["landing_time_necessary_reruns_by_input_hit"] = {
+        (k or "none: declared inputs unchanged"): {"jobs": n, "run_h": round(landing_h[k] / H, 1)}
+        for k, n in landing_reruns.most_common()
+    }
     return summary, rows
 
 
