@@ -1195,11 +1195,12 @@ def hunt_open(c: Campaign) -> int | None:
 
 
 def sidebar(c: Campaign) -> None:
-    """A bar for the current milestone, a pill for the project and one per quest in flight.
-    Only changes are sent; the last view per workspace is cached in the git directory."""
+    """A bar for the current milestone, a pill for the project and one per quest in flight, drawn
+    by commands run in the home. Only changes are sent; the last view per workspace is cached in the
+    git directory."""
     workspace = os.environ.get("CMUX_WORKSPACE_ID", "")
-    if not workspace:
-        return
+    if not workspace or not Path.cwd().resolve().is_relative_to(c.home.resolve()):
+        return  # drawn only from its home: a message to another campaign leaves that sidebar alone
     o = overview(c)
     counts, m = o["counts"], o["milestone"]
     name = c.state["campaign"]
