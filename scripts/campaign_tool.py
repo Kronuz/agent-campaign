@@ -100,7 +100,7 @@ def die(message: str) -> NoReturn:
 
 
 def sh(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
-    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, errors="replace")
     if check and p.returncode != 0:
         die(f"{shlex.join(args)}: {(p.stderr or p.stdout).strip()}")
     return p.stdout.strip()

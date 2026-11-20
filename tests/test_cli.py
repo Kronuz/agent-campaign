@@ -67,6 +67,13 @@ class CommandLine(unittest.TestCase):
             )
 
 
+class Shell(unittest.TestCase):
+    def test_output_that_is_not_utf8_is_read(self) -> None:
+        tool = harness.campaign_module()
+        out = tool.sh([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'a\\xd5b')"])
+        self.assertEqual(out, "a\ufffdb")
+
+
 class Pills(unittest.TestCase):
     def test_a_hand_set_pill_expires_at_the_next_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
