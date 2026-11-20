@@ -232,10 +232,10 @@ Jobs run at their submitted commit, a quest's in its build slot, with the submit
 from `main`, docs-only commits, read sets and `--inputs`. Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
 minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).
-Declare the `--minutes` a job needs: drains plan by it until it has run once. `campaign job
-rerun [--minutes N]` resubmits, keeping the build, `--env` and order. Every process a job starts dies with it. The worker starts by itself and prunes
-daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged or finished work;
-`campaign check` warns when disk runs low. Mechanics: `references/host.md`.
+Declare a job's `--minutes`. `campaign job
+rerun` resubmits it unchanged. Every process a job starts dies with it; long local work is a job, never a
+loose background process, stopped with `campaign job cancel ID`. The worker starts by itself and prunes
+daily (`campaign job prune`); `campaign sweep` removes merged worktrees. Mechanics: `references/host.md`.
 
 ## Integration
 
