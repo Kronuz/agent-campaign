@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -168,8 +169,55 @@ def classify(w: World, out: Path) -> tuple[Json, list[Json]]:
     return summary, rows
 
 
+TRIAL_LINE = re.compile(r"^(?P<row>.*?)\btrial (?P<i>\d+)(?:/\d+)?: (?P<v>\d+(?:\.\d+)?)", re.M)
+T975 = (12.71, 4.30, 3.18, 2.78, 2.57, 2.45, 2.36, 2.31, 2.26, 2.23)  # Student t, 1 to 10 degrees of freedom
+MARGIN = 0.02  # an interval within 2% of the mean decides any row a 5%-margin gate judges
+
+
+def decided_at(xs: list[float]) -> int:
+    """The first trial count, from 3, at which the 95% interval of the mean is within MARGIN of it."""
+    for n in range(3, len(xs) + 1):
+        m = statistics.mean(xs[:n])
+        t = T975[n - 2] if n - 2 < len(T975) else 1.96
+        if m and t * statistics.stdev(xs[:n]) / n**0.5 <= MARGIN * m:
+            return n
+    return len(xs)
+
+
+def sizing(w: World) -> Json:
+    """query sizing: jobs in the window whose log records per-trial values (`... trial N: VALUE`);
+    the run time past the trial count at which every row's interval had cleared (decided_at)."""
+    jobs = [j for j in w.jobs if account.in_window(j) and j.ran and j.run_s]
+    seen = saved = 0.0
+    n_jobs = n_rows = 0
+    for j in jobs:
+        f = src.JOBS / j.id / "a1" / "log"
+        if not f.exists():
+            continue
+        rows: dict[str, list[float]] = defaultdict(list)
+        for m in TRIAL_LINE.finditer(f.read_text(errors="replace")):
+            rows[m["row"].strip()].append(float(m["v"]))
+        rows = {k: v for k, v in rows.items() if len(v) >= 3}
+        if not rows:
+            continue
+        n_jobs += 1
+        n_rows += len(rows)
+        total = max(len(v) for v in rows.values())
+        need_n = max(decided_at(v) for v in rows.values())
+        seen += j.run_s
+        saved += j.run_s * (1 - need_n / total)
+    return {
+        "jobs_with_trial_records": n_jobs,
+        "rows": n_rows,
+        "their_run_h": round(seen / H, 1),
+        "run_h_past_decision": round(saved / H, 1),
+        "margin": MARGIN,
+    }
+
+
 def run(w: World, out: Path) -> Json:
     summary, rows = classify(w, out)
+    summary["sizing_from_trial_records"] = sizing(w)
     (out / "need.json").write_text(json.dumps(summary, indent=1))
     (out / "need.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     return summary
