@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -102,8 +103,14 @@ class CampaignCase(unittest.TestCase):
             "CAMPAIGN_FINGERPRINT",
             "CMUX_WORKSPACE_ID",
             "CMUX_SURFACE_ID",
+            "CAMPAIGN_GIT",
+            "CMAKE_BUILD_PARALLEL_LEVEL",  # a job's own light-hold settings
+            "CTEST_PARALLEL_LEVEL",
+            "CTEST_OUTPUT_ON_FAILURE",
         ):
             self.env.pop(key, None)
+        for key in [k for k in self.env if re.match(r"GIT_CONFIG_(COUNT|KEY_|VALUE_)", k)]:
+            del self.env[key]  # the running job's mirror rewrites
         self.env.update(
             CAMPAIGN_JOBS=str(self.root / "jobs"),
             QUIET_DIR=str(self.root / "quiet"),
