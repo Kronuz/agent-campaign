@@ -309,10 +309,15 @@ def matches(path: str, globs: list[str] | tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(path, g) or fnmatch.fnmatchcase(name, g) for g in globs)
 
 
+COMMITISH = re.compile(r"\b[0-9a-f]{7,40}\b|\$\$")  # a commit or the shell's pid, which commands embed in paths
+
+
 def shape(j: Job) -> str:
-    """A job's identity without its code, host or toolchain: what makes a later one a rerun of it."""
+    """A job's identity without its code, host or toolchain: what makes a later one a rerun of it.
+    Commits and `$$` in the command are masked: commands name output paths after their commit."""
     base = src.base_repo(j.repo)
-    return json.dumps([str(base or j.repo), j.cmd, j.cwd, j.level, j.build, j.fails_without, sorted(j.env.items())])
+    cmd, build = COMMITISH.sub("<c>", j.cmd), COMMITISH.sub("<c>", j.build)
+    return json.dumps([str(base or j.repo), cmd, j.cwd, j.level, build, j.fails_without, sorted(j.env.items())])
 
 
 def classify_reruns(w: World, out: Path) -> tuple[Json, list[Json]]:
@@ -539,7 +544,8 @@ LABELS = ("agent turn", "job running", "job waiting for the machine", "waiting o
 def quest_hours(w: World) -> tuple[Json, list[Json]]:
     """query quest_hours: every in-flight quest-hour (status active, review or blocked) labelled by the
     first that holds: an agent run of the quest (`campaign usage`); a job of it running; a job of it
-    queued or in its hold; an `after` dependency (current value) not landed; else nothing moving it."""
+    queued or in its hold; an `after` dependency (current value) not landed; else nothing moving it.
+    Tasks (QUEST--TASK) are left out: their quest's hours cover them."""
     landed_at: dict[tuple[str, str], float] = {}
     for c, hist in w.history.items():
         for e in hist:
@@ -557,6 +563,8 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
     totals: dict[str, float] = defaultdict(float)
     per: list[Json] = []
     for (c, q), ivs in sorted(status_intervals(w).items()):
+        if "--" in q:
+            continue  # a task (QUEST--TASK): its quest's hours cover it
         rec = w.states.get(c, {}).get("quests", {}).get(q, {})
         dep_until = max((landed_at.get((c, d), src.UNTIL) for d in rec.get("after", [])), default=0.0)
         labelled: list[tuple[float, float, int]] = [(a, b, 0) for a, b in runs_of[(c, q)]]
@@ -606,6 +614,12 @@ def segments(iv: Interval, labelled: list[tuple[float, float, int]]) -> list[tup
 # ---------------------------------------------------------------- agent tokens per landed quest
 
 
+def active(times: list[float], gap: float = 300.0) -> float:
+    """Seconds between consecutive transcript lines in the window, each gap capped at GAP: time working."""
+    ts = [t for t in times if src.SINCE <= t < src.UNTIL]
+    return sum(min(b - a, gap) for a, b in zip(ts, ts[1:]))
+
+
 def agent_tokens(w: World) -> Json:
     """query agent_tokens: `campaign usage --json` runs begun in the window, per quest, for quests that
     landed in the window and for the rest; and the lead's tokens and active hours (its transcript)."""
@@ -647,7 +661,7 @@ def agent_tokens(w: World) -> Json:
             "agent_runs": sum(v["runs"] for v in mine.values()),
             "agent_h": round(sum(v["seconds"] for v in mine.values()) / H, 1),
             "lead_tokens_M": round(lead_tokens / 1e6, 1),
-            "lead_active_h": round(sum(1 for t in w.lead[c].activity if src.SINCE <= t < src.UNTIL) / H, 1),
+            "lead_active_h": round(active(w.lead[c].activity) / H, 1),
         }
     return out
 
