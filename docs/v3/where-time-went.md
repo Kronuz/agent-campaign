@@ -25,7 +25,8 @@ Most of the wall time was quests that nothing was moving, not machine time. In-f
 
 The machine was the smaller problem, but it was mostly idle. The light slots were 17.2% used.
 Exclusive jobs drained the machine for 47.3 wall hours to run for 19.7. Failed or timed-out runs
-took 102 of the 496 machine hours. Avoidable reruns, by contrast, were small: 12 hours.
+took 102 of the 496 machine hours. Avoidable reruns, by contrast, were small: 12 hours identical, 39 hours counting every run no
+question needed (`need`).
 
 Sorted by hours, the top causes were:
 1. Active quests with nothing moving them: 941 quest-hours.
@@ -35,7 +36,8 @@ Sorted by hours, the top causes were:
 4. Jobs waiting for the machine: 562 quest-hours, or 2,997 job-hours counted per job.
 5. Waiting on dependencies: 524 quest-hours.
 
-Failed runs (102 h), land-refusal episodes (68 h) and avoidable reruns (12 h) come after these.
+Failed runs (102 h), land-refusal episodes (68 h) and runs no question needed (39 h, 12 of them
+identical reruns) come after these.
 
 ## Machine time by level (query `machine_time`)
 
@@ -131,6 +133,47 @@ jobs run, `bench/kv/run.py`, gained three lines: a new workload set the queued r
 Their read set would contain that file, so input-scoped identity, even with strace, reruns all 23.
 Only an identity finer than files would have kept them: the rows' own configuration, or the hash of
 the binary the build produced.
+
+## Runs no question needed (query `need`)
+
+Counting only identical reruns understates the waste. `quiet light v2-replay-need 30 "v2-replay
+need" -- python3 tools/replay/replay.py need` (`tools/replay/need.py`, written to `need.json`)
+assigns each job submitted in the window the first category below that applies. That way, no job
+counts twice. A row is the job's shape with any trial index masked (`trial 2`, `-t3-`, `round 4`).
+
+| Category | Jobs | Ran | Run h | Wait job-h |
+|---|---|---|---|---|
+| Identical rerun (the table above, avoidable) | 165 | 151 | 12.0 | 57 |
+| Superseded: a newer submission of the same row, at another commit, arrived before it began | 631 | 332 | 22.3 | 196 |
+| Its quest had landed or been dropped before it began | 18 | 18 | 4.5 | 8 |
+| Landing-time rerun (after the quest's first accept or land refusal) whose changed paths miss its declared inputs | 1 | 1 | 0.3 | 0 |
+| Trial past the first two of a passing row at one commit | 1 | 1 | 0.0 | 6 |
+| All | 816 | 503 | 39.2 | 267 |
+
+That is 39.2 of the 502 machine hours in the window. Superseded runs are the largest
+category: 332 of them ran after their answer was already stale. 578 of the 631 superseded jobs are
+light. The 15 exclusive ones never ran, but they waited 10 job-hours.
+
+Three of the owner's cases cannot be counted exactly from v2's records:
+
+1. **A criterion already evidenced.** A criterion is answered by many rows, and v2 keeps no
+   verdict per criterion over time. So the row is the finest question the records name.
+2. **Runs sized past what decided them.** Only 17 jobs logged a value per trial
+   (`... trial N: VALUE`), and they ran 0.7 h. Using a 95% interval within 2% of the mean
+   (`need.sizing`), 0.0 h of that came after the decision. The run sizes of the other
+   jobs, such as "41 trials" or "6 rounds", went unrecorded per trial, so the waste there is
+   unknowable. Trials submitted as separate jobs mostly never ran: document-gate's A6 VM trials
+   were cancelled or skipped.
+3. **Landing-time reruns with unchanged inputs.** v2 declares no inputs. The proxy for them is:
+   - the paths the command and build name,
+   - the quest's file set,
+   - the top-level build files.
+
+   By that proxy, 1 of 548 landing-time reruns (48.0 h) changed no
+   input. The rest changed the quest's file set (454 jobs, 36.5 h) or a
+   top-level build file (61, 10.2 h), a path the command names (16, 0.4 h) or an outside script (16, 0.6 h). File sets are broad globs, so
+   48.0 h is the ceiling for what declared inputs finer than the file set could save, and
+   0.3 h is the floor.
 
 ## Land refusals (query `land_refusals`)
 
