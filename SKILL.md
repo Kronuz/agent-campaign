@@ -28,7 +28,8 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
    changes outside the quest's set and edits to the lead's files.
 3. **Criteria before code.** The lead writes each quest's acceptance criteria and the evidence each
    needs; contributors never edit them, and a changed criterion voids earlier acceptances.
-4. **Build whole features fast; check the whole at the end.** Only the suite and CI gate a landing.
+4. **Tasks build, the quest is checked.** Tasks merge into their quest's branch on their own
+   tests; reviews and measurements run once, on the finished feature, before it lands.
 5. **Nothing weakens silently.** Lowering a risk, removing a lens or a check, landing without CI or
    recording a landing done by hand needs a reason, which the tool records.
 6. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
@@ -86,8 +87,8 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Quests
 
-- **Size:** a whole feature, built end to end and iterated on its branch. Split only into
-  features that ship alone, never by step, risk or check.
+- **Size:** a whole feature, built on its quest branch. Split quests only into features that ship
+  alone; split the work inside one into tasks.
 - **Quick fixes** skip the quest: an obvious cause, tens of lines outside the high and critical
   areas, and a test failing without it. The lead or one economical agent commits fix and test to
   `main`, pushes, and fixes forward on red CI; the commit message is the record. A design choice
@@ -101,12 +102,10 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   sees two quests touching one. A quest in another repository changes that repository's contracts:
   a quest building on a library names it (`--consumes http`, or `http:client` for one part), and its
   lead hears of every quest any campaign starts there.
-- **Tasks:** parallel writers inside one quest (`campaign start ID --task T --files GLOBS`),
-  merged into the quest branch by the lead. The quest is still reviewed once.
-- **Land small and often:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest
-  file's "May land early" allows; the lead allows internal code behind tests by default. Never
-  early: bytes on disk or the wire, public API, user-visible behavior, or the part the review
-  exists for.
+- **Tasks** are the steps of a quest (`campaign start ID --task T --files GLOBS`): one agent each,
+  its assignment, tier and effort chosen for that step, on a branch off the quest branch. A task
+  merges into the quest branch when its own tests pass, with no review, job gate or exclusive run;
+  the lead merges, and the quest branch takes `main` daily. Tasks with disjoint files run at once.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work. Its journal stays in the home
@@ -123,10 +122,10 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Direct path first
 
-A quest's **gate** is its suite job and CI; nothing else blocks a landing. Reviews and
-measurements cover the finished feature: they run once at its end, on the landed code, and their
-findings are fixed forward. Sanitizers and the platform matrix are CI's; a red CI is fixed
-forward or reverted within the day.
+A **task**'s gate is its own tests. A **quest**'s gate, once, when the feature is done: the suite
+and CI, the review its risk needs, and the measurements its criteria name. Findings and slow rows
+become tasks on the quest branch; nothing reruns but what they change. Sanitizers and the platform
+matrix are CI's.
 
 Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **milestone checks**
 (`--later`): queued at low priority on the landed code, run once per milestone on `main`, green
@@ -140,26 +139,20 @@ job passing at the exact commit; it queues no local job.
 
 ## Run a quest
 
-1. `campaign start ID` creates `quest/<campaign>/ID` in its own worktree with a journal. Launch a
-   contributor **in the background**, so it can be resumed by message, with the "Contributor"
-   prompt (`references/prompts.md`). Keep every **launchable** quest running, critical path
-   first, capped by what the lead can review and land and by the host's light slots; `campaign
-   status` lists them (planned, `needs` landed, files free) in that order.
-2. The contributor works in its worktree, keeps its journal current, and produces evidence as jobs
-   tagged with the criteria they prove: `campaign verify ID --for A1` and `campaign job submit
-   --quest ID --for A2 -- CMD`. When only jobs remain, it records their ids and ends its turn.
-3. The lead waits with one background `campaign wait --commits` (free until a job ends, a
-   branch moves or a message arrives), then resumes the contributor by message while its context
-   is small (about 150k tokens). A larger context, or a harness that cannot resume it, gets a fresh
-   contributor with the "Resume" prompt, which rebuilds from the journal and job records. At
-   every wake it fills idle capacity within step 1's caps: launchable quests first, then an
-   exploration batch (below).
-4. A high or critical quest's reviewer starts at the contributor's candidate head, in parallel with
-   its evidence jobs, and writes `.campaign/<campaign>/reviews/ID-LENS.md`; the lead relays
-   blocking findings by id. Any other quest: the lead reads the diff.
-5. When the journal says "ready for review", the lead sets `status=review`, runs `campaign accept
-   ID LENS` for each required review (Risk and review), and `campaign land ID` on a green suite and
-   CI, which also removes the quest's worktrees, merged branches and build slot.
+1. `campaign start ID` creates `quest/<campaign>/ID` with a journal. The lead splits the feature
+   into tasks in the quest file and starts each launchable one (`--task T`), launching a
+   contributor **in the background** per task with the "Contributor" prompt
+   (`references/prompts.md`), critical path first, capped by what it can merge and the host's
+   light slots.
+2. A contributor builds its task, runs its tests (locally under `quiet light`, or as jobs), commits
+   and ends its turn; the lead merges the task into the quest branch and starts what it unblocked.
+3. The lead waits with one background `campaign wait --commits`, resumes a contributor by message
+   while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
+   prompt; at every wake it fills idle capacity: launchable tasks, then an exploration batch.
+4. When every task is in, the quest is the feature: the lead sets `status=review`, runs the suite,
+   launches the review its risk needs and the measurements its criteria name, all at once. Their
+   findings become tasks; then `campaign accept ID LENS` and `campaign land ID` on a green suite
+   and CI.
 
 ## Exploration batches
 
@@ -182,7 +175,7 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 | Risk (first match wins) | Before building | Before final landing |
 |---|---|---|
 | **critical**: irreversible (freezing a format or protocol for release, migrating users' data, removing user-visible behavior) | owner approval; a `design` review | the high-risk review, plus acceptance evidence the reviewer ran itself |
-| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | — | suite and CI green; one review of the finished feature by the dominant risk's lens, after landing |
+| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | — | one review of the finished feature by the dominant risk's lens |
 | **normal**: ordinary features and fixes; **low**: docs, tests, tooling, mechanical edits, behavior-preserving refactors | — | suite and CI green; the lead reads the diff |
 
 - **One reviewer,** carrying every risk question the quest raises (the prompt names three to five);
@@ -249,7 +242,7 @@ daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged
 changed code, the file set, tasks, criteria, messages, the suite at its code, reviews, CI.
 It fast-forwards `main`, or merges when only campaign files differ, verifies that the landed code
 equals the tested code, records the landing, and pushes only with `--push`. Exceptions are explicit
-and recorded with the landing: `--upto COMMIT --reason R` (an increment), `--no-ci REASON`, and
+and recorded with the landing: `--no-ci REASON`, and
 `--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). A red
 milestone check is fixed or reverted before the next landing.
 

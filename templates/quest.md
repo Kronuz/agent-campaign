@@ -29,3 +29,8 @@ quest depending on it can start before it lands.>
 
 <Internal code behind tests, unless the quest is a format, wire or public API. "None" when
 everything waits for the review; `land --upto` refuses then.>
+
+## Tasks
+
+<The steps that build the feature, one agent each: `T1 <what> (files; assignment, tier, effort;
+after T0)`. Each merges into the quest branch on its own tests.>
