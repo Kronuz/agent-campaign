@@ -43,10 +43,10 @@ def status_of(w: World) -> dict[tuple[str, str], str]:
     return {(c, q): r.get("status", "") for c, st in w.states.items() for q, r in st.get("quests", {}).items()}
 
 
-def scratch(w: World, now: float) -> Json:
-    """query scratch: ~/.scratch by owner (its first level) and task (second), size, age, .purpose."""
+def scratch(w: World, now: float, sizes: dict[str, int]) -> Json:
+    """query scratch: ~/.scratch by owner (its first level) and task (second), size, age, .purpose;
+    SIZES is one `du -d 4` walk of ~/.scratch, shared with job_store."""
     root = src.HOME / ".scratch"
-    sizes = du(root, 2)
     owners: Counter[str] = Counter()
     tasks: list[Json] = []
     for p, b in sizes.items():
@@ -77,12 +77,12 @@ def scratch(w: World, now: float) -> Json:
     }
 
 
-def job_store(w: World, now: float) -> Json:
+def job_store(w: World, now: float, sizes: dict[str, int]) -> Json:
     """query job_store: the store's job directories by job state, quest status and age, and its build
     slots by whether any quest that used them is still in flight."""
     root = src.JOBS
-    top = du(root, 1)
-    slots = du(root / "slots", 1)
+    top = {p: b for p, b in sizes.items() if p == str(root) or Path(p).parent == root}
+    slots = {p: b for p, b in sizes.items() if Path(p).parent == root / "slots"}
     st = status_of(w)
     by_job = {j.id: j for j in w.jobs}
     jobs_by: Counter[str] = Counter()
@@ -141,7 +141,7 @@ def job_store(w: World, now: float) -> Json:
 WT = re.compile(r"^worktree (.+)$", re.M)
 
 
-def worktrees(w: World, now: float) -> Json:
+def worktrees(w: World, now: float, walk: dict[str, int]) -> Json:
     """query worktrees: every `git worktree` of every repository under ~/code/Kronuz, by the status of
     the quest its path names (<repo>-wt/<campaign>/<quest>), with size for the leftover ones."""
     st = status_of(w)
@@ -168,8 +168,12 @@ def worktrees(w: World, now: float) -> Json:
             )
     leftover = [r for r in rows if r["exists"] and r["status"] in ("landed", "dropped")]
     unknown = [r for r in rows if r["exists"] and not r["status"]]
+    sizes: dict[str, int] = dict(walk)  # build-slot worktrees are in the ~/.scratch walk already
+    scratch_root = str(src.HOME / ".scratch") + "/"
+    for root in {str(Path(r["path"]).parents[1]) for r in leftover + unknown if not r["path"].startswith(scratch_root)}:
+        sizes.update(du(Path(root), 2))
     for r in leftover + unknown:
-        r["gib"] = round(du(Path(r["path"]), 0).get(r["path"], 0) / GIB, 2)
+        r["gib"] = round(sizes.get(r["path"], 0) / GIB, 2)
         r["age_days"] = age_days(Path(r["path"]), now)
     by: Counter[str] = Counter(r["status"] or "no quest" for r in rows if r["exists"])
     return {
@@ -314,11 +318,12 @@ def duplicates(w: World, out: Path) -> Json:
 
 def run(w: World, out: Path) -> Json:
     now = time.time()
+    walk = du(src.HOME / ".scratch", 4)  # one walk: owners, tasks, job directories and build slots
     res: Json = {
         "at": src.iso(now),
-        "scratch": scratch(w, now),
-        "job_store": job_store(w, now),
-        "worktrees": worktrees(w, now),
+        "scratch": scratch(w, now, walk),
+        "job_store": job_store(w, now, walk),
+        "worktrees": worktrees(w, now, walk),
         "zombies": zombies(w, now),
         "processes": processes(),
         "duplicates": duplicates(w, out),
