@@ -150,7 +150,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
         busy = {j.slot for j in running if j.slot} if p.slot_serial else set()
 
         def ready(j: SimJob) -> bool:
-            return all(by_id[x].phase == "done" for x in j.after if x in by_id)
+            return all(by_id[x].phase == "done" or by_id[x].level == "replaced" for x in j.after if x in by_id)
 
         # an exclusive job waiting on a drain starts once the light holds are gone
         for j in draining:
