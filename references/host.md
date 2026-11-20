@@ -86,7 +86,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns splitting the light slots, rounded up; `quiet` arbitrates across sessions. An exclusive
-  job drains the machine: while it waits or runs, no light job or build starts. It starts in a lull (no runnable light work, and the running light jobs end within
+  job drains the machine, blocking new light holds while it waits; it starts in a lull (no runnable light work, and the running light jobs end within
   10 minutes by their last runs), or once it has waited 20 minutes since the last drain ran
   (`CAMPAIGN_DRAIN_WAIT`). Ready heavy jobs run back to back in one drain, up to 6 jobs or 30 minutes (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`); then
   light work goes first once. An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`, an hour) in which

@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,6 @@ from pathlib import Path
 from typing import Any, Callable
 from unittest import mock
 
-import queue_sim
 from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, alone, campaign_module, session_members
 
 
@@ -77,29 +77,22 @@ class Batches(unittest.TestCase):
             running = sum(j["state"]["state"] == "running" for j in jobs)  # beside a strict job, its share
             self.assertEqual(levels.count("light"), (4 if joined else 8) - running)
 
-    def test_a_drain_admits_no_light_work_and_runs_its_batch_back_to_back(self) -> None:
-        """Beside a running exclusive job no light job or build starts: quiet would hold it until the
-        drain ends, or let it cut in after QUIET_STARVE_MIN. Once the job ends, the next queued exclusive
-        job joins its batch at once, though light work waits; a full batch lets light work go first,
-        even inside a drain turn."""
+    def test_a_full_batch_lets_light_work_go_first_even_inside_a_drain_turn(self) -> None:
+        """Inside a drain turn, once an exclusive job ends the next queued one joins its batch before light
+        work; a full batch lets light work go first once, and the drains behind it wait for their turn."""
         now = 1_800_000_000.0
-        first = self.job(1, "exclusive", "running", now - 300, claimed=now - 60, started=now - 60)
-        first["state"]["batch"] = {"since": now - 60, "jobs": 1}
+        ended = self.job(1, "exclusive", "done", now - 300, claimed=now - 60, started=now - 60, ended=now - 1)
+        ended["state"]["batch"] = {"since": now - 60, "jobs": 1}
         light = self.job(2, "light", "queued", now - 30)
-        light["spec"]["priority"] = 1
-        built = self.job(3, "exclusive", "queued", now - 30)
-        built["spec"]["build"] = "make"
-        second = self.job(4, "exclusive", "queued", now - 30)
+        second = self.job(3, "exclusive", "queued", now - 30)
+        turn = {"until": now + 3000, "for": "drain turn", "opened": now - 600}
 
-        def started(*jobs: dict[str, Any], turn: dict[str, Any] | None = None) -> list[str]:
-            return [j["id"] for j in self.module.plan(list(jobs), now, turn or {})[0]]
+        def started(*jobs: dict[str, Any]) -> list[str]:
+            return [j["id"] for j in self.module.plan(list(jobs), now, turn)[0]]
 
-        self.assertEqual(started(first, light, built, second), [])
-        ended = {**first, "state": {**first["state"], "state": "done", "ended": now - 1}}
         self.assertEqual(started(ended, light, second), [second["id"]])
         ended["state"]["batch"] = {"since": now - 600, "jobs": self.module.BATCH_JOBS}
-        turn = {"until": now + 3000, "for": "drain turn", "opened": now - 600}
-        self.assertEqual(started(ended, light, second, turn=turn), [light["id"]])
+        self.assertEqual(started(ended, light, second), [light["id"]])
 
     def test_a_heavy_jobs_build_takes_a_light_slot_and_its_command_then_waits_its_turn(self) -> None:
         now = 1_800_000_000.0
@@ -169,36 +162,99 @@ class Batches(unittest.TestCase):
         self.assertEqual(([j["id"] for j in start], turn.get("for")), ([drain["id"]], "drain turn"))
 
     def test_batches_cut_the_drains_of_a_replayed_queue(self) -> None:
-        """The host's recorded queue (queue_sim.recorded_queue), each hold granted as quiet grants it:
-        14 exclusive drains with no batches, 11 with them (BATCH_JOBS 6, BATCH_MINUTES 30)."""
+        """The host's queue (12 h to 2026-11-18 07:38, 719 jobs, 81 strict or exclusive), replayed with
+        each job's recorded length: 5.33 drains an hour with no batches, 2.83 with them (BATCH_JOBS 6,
+        BATCH_MINUTES 30); a drain is a heavy job started after light work was readmitted."""
         with mock.patch.object(self.module, "BATCH_JOBS", 1):
             before = self.replay()["drains"]
         after = self.replay()["drains"]
-        self.assertLess(after, 0.85 * before, f"{before:.0f} drains before, {after:.0f} after")
+        self.assertLess(after, 0.7 * before, f"{before:.2f} drains an hour before, {after:.2f} after")
 
     def test_builds_leave_the_heavy_slot_in_a_replayed_queue(self) -> None:
         """The same queue with its 18 heavy jobs' builds (94 of 391 heavy minutes) as light work: heavy
-        holds shrink by exactly the builds, light slots are used more (47% to 48%) and the queue empties
-        sooner (15.2 to 14.6 hours). A drain admits no build beside it, so builds run between batches
-        (11 drains, not 10)."""
+        holds shrink by exactly the builds and light work keeps its full slots meanwhile, so light jobs
+        wait less (p50 70.4 to 39.3 minutes) and use more (50% to 57%), at 2.83 drains an hour, not 3.08;
+        builds queue behind light work of their priority, so heavy jobs wait more (p50 3.6 to 10.3)."""
         before, after = self.replay(staged=False), self.replay()
         self.assertAlmostEqual(before["heavy"] - after["heavy"], 94, delta=1)
+        self.assertLess(after["light_wait"], 0.7 * before["light_wait"])
         self.assertGreater(after["light_use"], before["light_use"])
-        self.assertLess(after["hours"], before["hours"])
+        self.assertLessEqual(after["drains"], before["drains"])
 
-    def replay(self, staged: bool = True) -> dict[str, float]:
-        """The recorded queue through plan and a simulated quiet (queue_sim): its measures, after checking
-        that every batch keeps to its bounds and a command starts once its build ended."""
-        run = queue_sim.simulate(self.module, queue_sim.recorded_queue(staged))
-        for j in run["jobs"]:
-            st = j["state"]
-            if j["spec"]["level"] in self.module.HEAVY:
-                self.assertLessEqual(st["batch"]["jobs"], self.module.BATCH_JOBS)
-                self.assertLess(
-                    st.get("admitted", st["claimed"]) - st["batch"]["since"], 60 * self.module.BATCH_MINUTES
-                )
-                self.assertGreaterEqual(st["started"], st.get("build", {}).get("ended", 0))
-        return queue_sim.metrics(run)
+    def replay(self, staged: bool = True, tick: float = 30.0) -> dict[str, float]:
+        """The host's queue run through plan, tick by tick: drains an hour, heavy hold minutes, heavy and
+        light jobs' wait p50 (minutes, every phase's), and light slot use (builds' too). STAGED builds a
+        heavy job's --build as light work; else its build holds its heavy slot, as before."""
+        queue = json.loads((Path(__file__).parent / "fixtures" / "queue-12h.json").read_text())
+        base = 1_800_000_000.0
+        pending = sorted(queue["jobs"], key=lambda j: float(j["submitted"]))
+        jobs: dict[str, dict[str, Any]] = {}
+        took: dict[str, float] = {}
+        built: dict[str, float] = {}
+        turn: dict[str, Any] = {}
+        t = 0.0
+        while pending or any(j["state"]["state"] in ("queued", "running") for j in jobs.values()):
+            now = base + t
+            while pending and pending[0]["submitted"] <= t:
+                q = pending.pop(0)
+                job = self.job(q["id"], q["level"], "queued", base + q["submitted"])
+                job["spec"].update(minutes=q["minutes"], priority=q["priority"], campaign=str(q["campaign"]))
+                job["spec"]["after"] = [f"{x:06d}" for x in q["after"]]
+                jobs[job["id"]], took[job["id"]] = job, q["took"] + (0 if staged else q.get("build", 0))
+                if staged and "build" in q:
+                    job["spec"]["build"], built[job["id"]] = f"build {q['id']}", q["build"]
+            for jid, j in jobs.items():
+                st = j["state"]
+                if st.get("phase") == "build" and st["build"]["started"] + built[jid] <= now:
+                    st.update(phase="built", build={**st["build"], "ended": st["build"]["started"] + built[jid]})
+                elif st["state"] == "running" and st.get("started") and st["started"] + took[jid] <= now:
+                    j["state"] = {**st, "state": "done", "ended": st["started"] + took[jid]}
+            start, skip, turn = self.module.plan(list(jobs.values()), now, turn)
+            for j in skip:
+                jobs[j["id"]]["state"] = {"state": "skipped", "ended": now}
+            for n, j in enumerate(start):  # claims within a tick keep their order
+                st = {**j["state"], "state": "running"}
+                if j["state"]["state"] == "running":  # admitted to its hold once built
+                    st.update(admitted=now + n / 1000, started=now)
+                else:
+                    st.update(
+                        claimed=now + n / 1000, **({"build": {"started": now}} if "phase" in st else {"started": now})
+                    )
+                jobs[j["id"]] = {**j, "state": st}
+            t += tick
+        done = [j for j in jobs.values() if j["state"]["state"] == "done"]
+        views = self.module.phases(done)
+        heavy = sorted(
+            (v["state"] for v in views if v["spec"]["level"] in self.module.HEAVY), key=lambda s: s["claimed"]
+        )
+        light = [v["state"]["claimed"] for v in views if v["spec"]["level"] == "light"]
+        drains = sum(
+            i == 0 or any(heavy[i - 1]["ended"] < c < st["claimed"] for c in light) for i, st in enumerate(heavy)
+        )
+        for st in heavy:  # every batch keeps to its bound, and a command starts once its build ended
+            self.assertLessEqual(st["batch"]["jobs"], self.module.BATCH_JOBS)
+            self.assertLess(st["claimed"] - st["batch"]["since"], 60 * self.module.BATCH_MINUTES)
+            self.assertGreaterEqual(st["started"], st.get("build", {}).get("ended", 0))
+        waited: dict[str, float] = {j["id"]: 0.0 for j in done}
+        for v, a, b in self.module.waits(done, base + t):
+            waited[v.get("job", v)["id"]] += (b - a) / 60
+        held = {level: 0.0 for level in ("light", *self.module.HEAVY)}
+        for v, a, b in self.module.spans(done, base + t):
+            held[v["spec"]["level"]] += (b - a) / 60
+        hours = float(queue["hours"])
+
+        def p50(heavy: bool) -> float:
+            return statistics.median(
+                waited[j["id"]] for j in done if (j["spec"]["level"] in self.module.HEAVY) == heavy
+            )
+
+        return {
+            "drains": drains / hours,
+            "heavy": held["strict"] + held["exclusive"],
+            "heavy_wait": p50(True),
+            "light_wait": p50(False),
+            "light_use": held["light"] / (self.module.light_slots() * t / 60),
+        }
 
 
 HAS_CMAKE = all(map(shutil.which, ("cmake", "ninja", "cc")))

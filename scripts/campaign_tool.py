@@ -7166,9 +7166,6 @@ def plan(
     built = [j for j in queued if j["state"].get("phase") == "built"]
     busy = {slot_of(j["spec"]) for j in running + built} - {""}
     heavy = any(j["spec"].get("level") in HEAVY for j in running)
-    # an exclusive hold waiting or held keeps new light holds out until it ends: light work claimed
-    # beside it only waits, then cuts ahead of the drain after QUIET_STARVE_MIN or of the next one
-    draining = any(drains(j) for j in running)
     # a "none" job takes no hold: it never waits for a light slot, and has its own as many
     # a light job takes the slots it declares or is measured using
     lights = [j for j in running if j["spec"].get("level") not in (*HEAVY, "none")]
@@ -7252,15 +7249,14 @@ def plan(
         # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
         turn = {"until": now + drain_turn, "for": "drain turn", "opened": now}
         window = True
-    # while the last heavy job's drain holds and its batch has room, the next heavy job goes first and a
-    # drain joins it at once, so light work is not readmitted between them; a full batch lets light work
-    # go first once, even past an overdue drain, and the drains behind it wait for their turn
+    # while the last heavy job's drain holds and its batch has room, the next heavy job goes first, so
+    # light work is not readmitted between them; a full batch lets light work go first once, even past
+    # an overdue drain, and the drains behind it wait for their turn
     batch = batch_of(jobs)
     room = bool(batch) and batch["jobs"] < BATCH_JOBS and now - batch["since"] < 60 * BATCH_MINUTES
     if batch:
         queued.sort(key=lambda j: (j["spec"].get("level") in HEAVY) != room)
-    drained = bool(batch) and not heavy and not lights  # the drain holds: nothing of ours runs
-    joins, full = drained and room, drained and not room
+    full = bool(batch) and not room and not heavy and not lights  # its drain holds: nothing of ours runs
     yielded = False  # a full batch's light work started this tick
     start: list[Json] = []
     skip: list[Json] = []
@@ -7280,9 +7276,7 @@ def plan(
             continue
         if waiting or (is_heavy and heavy) or (is_bare and bare >= slots) or (weight and reserved):
             continue
-        if weight and draining:
-            continue  # a drain's hold waits or runs: light work would only lengthen it or split its batch
-        if drains(j) and j not in overdue and not joins and (not drain_ok or wanting):
+        if drains(j) and j not in overdue and (not drain_ok or wanting):
             continue  # for a lull in light work, or its turn after an hour of it
         if drains(j) and not drain_ok:
             continue  # an overdue drain claims as the running light work ends: quiet would block the lull
@@ -7296,7 +7290,6 @@ def plan(
             continue  # its campaign has its share while another campaign waits
         if held(j):
             continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
-        draining = draining or drains(j)
         yielded = yielded or (full and bool(weight))
         if is_heavy:
             batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}
