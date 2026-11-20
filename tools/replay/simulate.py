@@ -158,10 +158,12 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
         # heavy admission
         ex_queue = [j for j in queue if j.level == "exclusive" and j.phase in ("queued", "built") and ready(j)]
         if p.batching:
+            # a window opens every BATCH_EVERY and stays open while built exclusive work is ready
             window = t >= next_batch
-            if window and not ex_queue:
+            built = [j for j in ex_queue if not j.build or j.phase == "built"]
+            if window and not built and not ex_run and not draining:
                 next_batch = t + BATCH_EVERY
-            due: list[SimJob] = ex_queue if window else []
+            due: list[SimJob] = built if window else []
         else:
             light_waiting = any(j.level == "light" for j in queue if j.phase == "queued")
             due = [
@@ -195,7 +197,8 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
                 strict_run = True
                 cap = min(cap, 4)
                 break
-        limit = next_batch if p.batching and not draining and not ex_run else 0.0  # pack light work before the window
+        # before a window, light work that would overrun it waits; builds of heavy jobs never do
+        limit = next_batch if p.batching and t < next_batch else 0.0
         # light work and the builds of heavy jobs, shortest first, aged ones in submit order
         cands = [x for x in queue if x.phase == "queued" and (x.level in ("light", "none") or x.build) and ready(x)]
         cands.sort(key=lambda x: (0, x.arrival) if t - x.arrival > AGE else (1, est(x)))
@@ -208,7 +211,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
                 continue
             if lights >= cap or (j.slot and j.slot in busy):
                 continue
-            if limit and t + est(j) > limit and any(x.level == "exclusive" for x in queue):
+            if limit and j.level == "light" and t + est(j) > limit and any(x.level == "exclusive" for x in queue):
                 continue
             busy.add(j.slot)
             lights += 1
