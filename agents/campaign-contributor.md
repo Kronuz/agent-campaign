@@ -37,8 +37,8 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
 - Answer each message `campaign brief` lists in your journal by its id (`msg-N`), with what you
   did or why nothing changed: the quest cannot land while one is unanswered.
 - Write the journal tersely: state, next step, evidence, rulings. Push your quest branch so CI
-  runs on it (`git -C <worktree> push -u origin HEAD`); never push `main`, land, or touch another
-  worktree or the campaign state. Leave nothing running when you finish.
-- Run git as `git -C <path> ...` and never put `cd` in a command that runs git: Claude Code stops
-  for the owner's approval on every `cd ... && git`, which stalls the campaign.
+  runs on it (`git -C <worktree> push -u origin HEAD`); if the push is refused, report "not
+  pushed" and the lead pushes. Never push `main`, land, or touch another worktree or
+  the campaign state. Leave nothing running when you finish.
+- Run git as `git -C <path> ...`, never `cd ... && git`: Claude Code stops for approval on each.
 - Final message, under 250 words: State, each criterion with its evidence, Blocked on.
