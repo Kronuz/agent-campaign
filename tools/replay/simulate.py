@@ -66,6 +66,8 @@ class Policy:
     need: bool = False  # jobs only for an unanswered question; evidence by declared inputs; resubmission replaces
     sizing: bool = False  # with need: no trial past the first two of a passing row at one commit
     light_slots: int = 8
+    drain_turn: float = DRAIN_TURN  # calibration: how long an overdue drain keeps draining
+    slot_serial: bool = True  # calibration: a build slot runs one job at a time
 
 
 def sim_jobs(w: World, drop: set[str], shift: dict[str, float], replaced: dict[str, float]) -> list[SimJob]:
@@ -114,6 +116,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
     t = src.SINCE
     next_hour = src.SINCE - (src.SINCE % H) + H
     heap_end: list[tuple[float, str]] = []
+    drain_s = ex_s = 0.0
 
     def est(j: SimJob) -> float:
         xs = expected.get(j.shape)
@@ -144,7 +147,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
         strict_run = any(j.level == "strict" for j in heavy_run)
         draining = [j for j in running if j.phase == "draining"]
         cap = 0 if ex_run or draining else (min(p.light_slots, 4) if strict_run else p.light_slots)
-        busy = {j.slot for j in running if j.slot}
+        busy = {j.slot for j in running if j.slot} if p.slot_serial else set()
 
         def ready(j: SimJob) -> bool:
             return all(by_id[x].phase == "done" for x in j.after if x in by_id)
@@ -172,7 +175,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
                 if t < turn_until or not light_waiting or t - max(j.arrival, last_drain) >= DRAIN_WAIT
             ]
             if due and t >= turn_until:
-                turn_until = t + DRAIN_TURN
+                turn_until = t + p.drain_turn
         if due and not ex_run and not draining and not strict_run:
             j = sorted(due, key=lambda x: x.arrival)[0]
             if j.build and j.phase == "queued":
@@ -226,8 +229,12 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
         # a built heavy job goes back to the heavy queue (it keeps its slot in v2; here, freed)
         for j in [x for x in running if x.phase == "built"]:
             running.remove(j)
+        if draining and not ex_run:
+            drain_s += TICK
+        if ex_run:
+            ex_s += TICK
         t += TICK
-    return {"hourly_queue": hourly}
+    return {"hourly_queue": hourly, "drain_h": round(drain_s / H, 1), "exclusive_h": round(ex_s / H, 1)}
 
 
 def last_evidence(w: World) -> dict[tuple[str, str], tuple[float, float]]:
@@ -350,17 +357,28 @@ def run(w: World, out: Path, names: list[str]) -> Json:
             "agent_tokens_M": round(agents / 1e6),
             "lead_tokens_M": round(lead / 1e6),
             "wait_job_h": round(sum(waits) / H, 1),
+            "drain_wall_h": mach["drain_h"],
+            "exclusive_wall_h": mach["exclusive_h"],
             "quest_h_saved_vs_v2": round(quest_h_saved, 1),
             "_land_at": land_at,
         }
 
-    # calibration: the light slots v2 effectively filled, fitted to the recorded hourly queue
-    fits = []
-    for slots in (2, 3, 4, 5, 6, 8):
-        r = one(Policy(f"v2 model, {slots} light slots", light_slots=slots))
-        fits.append((r["queue_error_pct_vs_recorded"] or 0.0, slots, r))
+    # calibration: three machine parameters v2 does not record, fitted to the recorded hourly queue
+    fits: list[tuple[float, Policy, Json]] = []
+    for slots in (6, 8):
+        for turn in (0.0, DRAIN_TURN):
+            for serial in (True, False):
+                cand = Policy(
+                    f"v2 model, {slots} slots, drain turn {turn / 60:.0f} min, serial slots {serial}",
+                    light_slots=slots,
+                    drain_turn=turn,
+                    slot_serial=serial,
+                )
+                r = one(cand)
+                fits.append((r["queue_error_pct_vs_recorded"] or 0.0, cand, r))
     fits.sort(key=lambda x: x[0])
-    slots = fits[0][1]
+    fit = fits[0][1]
+    slots = fit.light_slots
     recorded = {
         "landings": len(lands),
         "landings_per_day": round(len(lands) / 14, 2),
@@ -373,14 +391,58 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         "merge_episode_agent_tokens_M": round(merge_saved / 1e6),
     }
     policies = [
-        Policy("v2 as recorded (calibrated)", light_slots=slots),
-        Policy("input-scoped identity", identity=True, light_slots=slots),
-        Policy("merge queue", merge_queue=True, light_slots=slots),
-        Policy("exclusive batching", batching=True, light_slots=slots),
-        Policy("deterministic driver", driver=True, light_slots=slots),
-        Policy("need: unanswered questions only", need=True, light_slots=slots),
-        Policy("need, plus no trial past a decided row", need=True, sizing=True, light_slots=slots),
-        Policy("all four", identity=True, merge_queue=True, batching=True, driver=True, light_slots=slots),
+        Policy(
+            "v2 as recorded (calibrated)", light_slots=slots, drain_turn=fit.drain_turn, slot_serial=fit.slot_serial
+        ),
+        Policy(
+            "input-scoped identity",
+            identity=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
+        Policy(
+            "merge queue", merge_queue=True, light_slots=slots, drain_turn=fit.drain_turn, slot_serial=fit.slot_serial
+        ),
+        Policy(
+            "exclusive batching",
+            batching=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
+        Policy(
+            "deterministic driver",
+            driver=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
+        Policy(
+            "need: unanswered questions only",
+            need=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
+        Policy(
+            "need, plus no trial past a decided row",
+            need=True,
+            sizing=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
+        Policy(
+            "all four",
+            identity=True,
+            merge_queue=True,
+            batching=True,
+            driver=True,
+            light_slots=slots,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
+        ),
         Policy(
             "all four and need",
             identity=True,
@@ -397,6 +459,8 @@ def run(w: World, out: Path, names: list[str]) -> Json:
             batching=True,
             driver=True,
             need=True,
+            drain_turn=fit.drain_turn,
+            slot_serial=fit.slot_serial,
         ),
     ]
     if names:
@@ -407,8 +471,12 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         r.pop("_land_at", None)
     res: Json = {
         "recorded": recorded,
-        "calibration": [{"light_slots": s, **r} for _, s, r in fits],
-        "fitted_light_slots": slots,
+        "calibration": [r for _, _, r in fits],
+        "fitted": {
+            "light_slots": fit.light_slots,
+            "drain_turn_min": fit.drain_turn / 60,
+            "slot_serial": fit.slot_serial,
+        },
         "results": results,
     }
     (out / "simulation.json").write_text(json.dumps(res, indent=1))
