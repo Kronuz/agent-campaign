@@ -117,6 +117,14 @@ table with an index on (campaign, quest, state), 4.6 MB. The other is an append-
    git forks cost 1.1 s. v3 records CI and refs as events when they change, and reads only its
    store.
 
+5. **Reads must be pure.** v2's read commands write. `status` reaps, so it requeues the jobs
+   whose runners it cannot see. And `status`, `wait` and others start a worker when none beats
+   while jobs are queued. During this pass a worker started on the store copy (pid 81798,
+   2026-11-19 19:39 PST) and ran 56 copied jobs for real: 4.6 machine hours, exclusive holds
+   included, and 14 git worktrees registered under the copy. It was found and stopped at 22:20.
+   The list of runs is in `rogue-worker/runs.json`, and the pass now keeps a worker heartbeat in
+   the copy (agent-campaign:b9609c9). In v3, a query never starts or changes anything.
+
 What this does not settle: the cost of the write commands (`land` at a median 10.7 s, `job submit`
 at 3.8 s, `set` at 6.6 s) was not profiled, because they cannot run on the real state without
 changing it. A copy of a home with its repositories would allow that.
