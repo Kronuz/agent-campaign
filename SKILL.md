@@ -76,12 +76,13 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
    writes Goals, Non-goals, Constraints and Reserved decisions in `.campaign/<campaign>/PLAN.md`.
-2. Split the goals into quests: `campaign new ID --title T --risk R --files GLOBS [--needs IDS]
+2. Split the goals into quests, each ID naming the feature it builds (`group-heal`, never `p3-step2`
+   or `t7`): `campaign new ID --title T --risk R --files GLOBS [--needs IDS]
    [--after IDS] [--provides C] [--consumes C] [--milestone M]`; its gate is its repository's suite
    (`campaign config suite=CMD` for the home, `suite.REPO=CMD` for another), unless `--check
    NAME[:LEVEL[:MIN]]=CMD` names others. Fill in each quest file
    (`.campaign/<campaign>/quests/ID.md`): outcome, three to five criteria at outcome level, each
-   naming its test (Evidence, below), contracts, decisions, what may land early.
+   naming its test (Evidence, below), contracts, decisions, tasks.
 3. When the architecture is consequential, one reviewer (lens `design`) challenges the plan and the
    quest list before anything is built. This is the one review worth waiting for.
 
@@ -264,9 +265,8 @@ write it under "Blocked on" and ask.
 
 - Quota is a hint, never a constraint: launch all ready work by impact. Idle light slots take
   token-free `--priority -1` work: fuzz soaks, flake hunts, `main` benchmarks for hunt targets.
-- The lead coordinates, never re-deriving the state: it reads this file, `references/prompts.md`
-  and what the table below names, orients with `campaign brief`, and learns of changes from
-  `campaign wait --commits`, not journals, diffs or code.
+- The lead coordinates, never re-deriving the state: it orients with `campaign brief` and learns
+  of changes from `campaign wait --commits`, not journals, diffs or code.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
 - Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
