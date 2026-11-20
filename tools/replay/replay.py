@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import account
 import calls
+import leftovers
+import simulate
 import sources as src
 import timeline
 import toolcost
@@ -28,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inventory", help="load every source, write timeline.jsonl and inventory.json")
     sub.add_parser("account", help="where the time went: account.json")
     sub.add_parser("toolcost", help="time read-only v2 commands and the v3 hot-path prototype: toolcost.json")
+    sub.add_parser("leftovers", help="disk, zombies, processes and duplicate work v2 leaves: leftovers.json")
+    sim = sub.add_parser("simulate", help="replay the arrivals under policies: simulation.json")
+    sim.add_argument("--policy", action="append", default=[], help="a policy's name (default: all)")
     sub.add_parser("calls", help="every campaign and quiet call in the transcripts, with latency: calls.json")
     a = p.parse_args(argv)
     if a.cmd == "inventory":
@@ -43,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
             if leads:
                 sessions[name] = leads[0]["session"]
         print(json.dumps(calls.run(sessions, a.out, a.refresh), indent=1))
+    elif a.cmd == "leftovers":
+        print(json.dumps(leftovers.run(timeline.load(a.out, a.refresh, repos=False), a.out), indent=1))
+    elif a.cmd == "simulate":
+        print(json.dumps(simulate.run(timeline.load(a.out, a.refresh, repos=False), a.out, a.policy), indent=1))
     elif a.cmd == "toolcost":
         print(json.dumps(toolcost.run(a.out), indent=1))
     return 0

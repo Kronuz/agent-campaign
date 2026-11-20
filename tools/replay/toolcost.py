@@ -27,29 +27,25 @@ CAMPAIGN = shutil.which("campaign") or str(Path.home() / ".local" / "bin" / "cam
 QUIET = shutil.which("quiet") or str(Path.home() / ".local" / "bin" / "quiet")
 
 
+COPIED = ("spec.json", "state.json", "for.json", "heartbeat", "claim")
+
+
 def copy_store(out: Path) -> Path:
-    """The job store's records (spec, state, for.json, heartbeat, claim, keys/) under OUT/jobs-copy."""
+    """The job store's records (spec, state, for.json, heartbeat, claim; keys/ links) under OUT/jobs-copy,
+    file by file: the store's build slots and logs hold millions of files a walk would visit."""
     dest = out / "jobs-copy"
-    dest.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "rsync",
-            "-a",
-            "--delete",
-            "--include=*/",
-            "--include=spec.json",
-            "--include=state.json",
-            "--include=for.json",
-            "--include=heartbeat",
-            "--include=claim",
-            "--include=keys/**",
-            "--exclude=*",
-            "--prune-empty-dirs",
-            f"{src.JOBS}/",
-            f"{dest}/",
-        ],
-        check=True,
-    )
+    shutil.rmtree(dest, ignore_errors=True)
+    (dest / "keys").mkdir(parents=True)
+    for d in src.JOBS.iterdir():
+        if not re.fullmatch(r"\d{6}-\d{6}-[0-9a-f]{6}", d.name):
+            continue
+        (dest / d.name).mkdir()
+        for f in COPIED:
+            if (d / f).is_file():
+                shutil.copy2(d / f, dest / d.name / f)
+    for link in (src.JOBS / "keys").iterdir() if (src.JOBS / "keys").is_dir() else []:
+        if link.is_symlink():
+            (dest / "keys" / link.name).symlink_to(os.readlink(link))
     return dest
 
 
@@ -97,23 +93,25 @@ def profile(argv: list[str], cwd: Path, env: dict[str, str], out: Path, name: st
     subprocess.run([sys.executable, "-m", "cProfile", "-o", str(prof), *argv], cwd=cwd, env=env, capture_output=True)
     st = pstats.Stats(str(prof))
     stats: dict[tuple[str, int, str], tuple[int, int, float, float, object]] = st.stats  # type: ignore[attr-defined]
-    prim = {
+    prim = {  # label: (file suffix, function name) for Python code; ("~", substring) for a built-in
         "subprocess (Popen)": ("subprocess.py", "__init__"),
-        "fork_exec": ("", "fork_exec"),
-        "os.stat": ("~", "<built-in method posix.stat>"),
-        "os.lstat": ("~", "<built-in method posix.lstat>"),
-        "open": ("~", "<built-in method io.open>"),
-        "os.listdir": ("~", "<built-in method posix.listdir>"),
-        "os.scandir": ("~", "<built-in method posix.scandir>"),
-        "json.loads": ("__init__.py", "loads"),
-        "read (waiting on a child)": ("~", "<built-in method posix.read>"),
-        "waitpid": ("~", "<built-in method posix.waitpid>"),
+        "fork_exec": ("~", "fork_exec"),
+        "stat": ("~", "posix.stat"),
+        "lstat": ("~", "posix.lstat"),
+        "open": ("~", "io.open"),
+        "listdir": ("~", "posix.listdir"),
+        "scandir": ("~", "posix.scandir"),
+        "json.loads": ("json/__init__.py", "loads"),
+        "read": ("~", "posix.read"),
+        "waitpid": ("~", "posix.waitpid"),
+        "select.poll": ("~", "select.poll"),
     }
     counts: Json = {}
     for label, (fname, func) in prim.items():
         n, t = 0, 0.0
         for (f, _, fn), (_, nc, tt, ct, _) in stats.items():
-            if fn == func and (not fname or f.endswith(fname) or fname == "~"):
+            hit = func in fn if fname == "~" else fn == func and f.endswith(fname)
+            if hit:
                 n += nc
                 t += tt if fname == "~" else ct
         counts[label] = {"calls": n, "seconds": round(t, 3)}
@@ -122,7 +120,7 @@ def profile(argv: list[str], cwd: Path, env: dict[str, str], out: Path, name: st
     top = [line.strip() for line in buf.getvalue().splitlines() if re.match(r"\s*\d", line)][:15]
     cum = io.StringIO()
     pstats.Stats(str(prof), stream=cum).sort_stats("cumulative").print_stats("campaign_tool", 25)
-    tops = [line.strip() for line in cum.getvalue().splitlines() if "campaign_tool" in line][:25]
+    tops = [x.strip() for x in cum.getvalue().splitlines() if "campaign_tool.py:" in x][:25]
     return {"primitives": counts, "top_tottime": top, "top_cumulative_in_tool": tops, "total_s": round(st.total_tt, 2)}  # type: ignore[attr-defined]
 
 
