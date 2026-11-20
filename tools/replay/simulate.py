@@ -4,8 +4,8 @@ The machine model is v2's on this host: 8 light slots, 4 beside a heavy job, str
 beside light work, an exclusive job alone after it drains the light holds, one job per build slot,
 `after` dependencies. Durations are the recorded ones. A quest lands at its last evidence job's
 simulated end plus its recorded post-evidence delay (review, CI, refusals, the lead), which a policy
-may shorten. Calibration fits one parameter, the light slots v2 actually filled, to the recorded
-waits, then checks landings and hourly queue lengths against the records.
+may shorten. Calibration fits three parameters v2 does not record (light slots filled, drain turn,
+slot serialization) to the recorded hourly queue, then checks landings and waits against the records.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import heapq
 import json
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import account
@@ -28,6 +28,7 @@ TICK = 30.0
 DRAIN_WAIT = 20 * 60.0  # v2: an exclusive job waits two capped lengths for a lull
 DRAIN_TURN = 3600.0  # v2: an overdue drain opens an hour of back-to-back drains
 AGE = 3600.0  # v2: a job queued past an hour goes ahead in submit order
+LIGHT_SLOTS = 8  # v2: half the host's 16 CPUs
 BATCH_EVERY = 4 * H
 NEED_DROP = (
     need.CATEGORIES[0],
@@ -378,7 +379,6 @@ def run(w: World, out: Path, names: list[str]) -> Json:
                 fits.append((r["queue_error_pct_vs_recorded"] or 0.0, cand, r))
     fits.sort(key=lambda x: x[0])
     fit = fits[0][1]
-    slots = fit.light_slots
     recorded = {
         "landings": len(lands),
         "landings_per_day": round(len(lands) / 14, 2),
@@ -391,79 +391,24 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         "lead_routine_tokens_M": round(routine_tokens / 1e6),
         "merge_episode_agent_tokens_M": round(merge_saved / 1e6),
     }
+
+    def at_fit(name: str, **kw: bool) -> Policy:
+        return replace(fit, name=name, **kw)  # every policy runs on the fitted machine
+
+    every = {"identity": True, "merge_queue": True, "batching": True, "driver": True}
     policies = [
-        Policy(
-            "v2 as recorded (calibrated)", light_slots=slots, drain_turn=fit.drain_turn, slot_serial=fit.slot_serial
-        ),
-        Policy(
-            "input-scoped identity",
-            identity=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "merge queue", merge_queue=True, light_slots=slots, drain_turn=fit.drain_turn, slot_serial=fit.slot_serial
-        ),
-        Policy(
-            "exclusive batching",
-            batching=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "deterministic driver",
-            driver=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "need: unanswered questions only",
-            need=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "need, plus no trial past a decided row",
-            need=True,
-            sizing=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "all four",
-            identity=True,
-            merge_queue=True,
-            batching=True,
-            driver=True,
-            light_slots=slots,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
-        Policy(
-            "all four and need",
-            identity=True,
-            merge_queue=True,
-            batching=True,
-            driver=True,
-            need=True,
-            light_slots=slots,
-        ),
-        Policy(
-            "all four and need, 8 light slots filled",
-            identity=True,
-            merge_queue=True,
-            batching=True,
-            driver=True,
-            need=True,
-            drain_turn=fit.drain_turn,
-            slot_serial=fit.slot_serial,
-        ),
+        at_fit("v2 as recorded (calibrated)"),
+        at_fit("input-scoped identity", identity=True),
+        at_fit("merge queue", merge_queue=True),
+        at_fit("exclusive batching", batching=True),
+        at_fit("deterministic driver", driver=True),
+        at_fit("need: unanswered questions only", need=True),
+        at_fit("need, plus no trial past a decided row", need=True, sizing=True),
+        at_fit("all four", **every),
+        at_fit("all four and need", **every, need=True),
     ]
+    if fit.light_slots < LIGHT_SLOTS:
+        policies.append(replace(policies[-1], name="all four and need, 8 light slots filled", light_slots=LIGHT_SLOTS))
     if names:
         policies = [p for p in policies if p.name in names] or policies
     baseline = one(policies[0])
