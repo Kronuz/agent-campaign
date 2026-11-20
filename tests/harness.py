@@ -111,6 +111,7 @@ class CampaignCase(unittest.TestCase):
             self.env.pop(key, None)
         for key in [k for k in self.env if re.match(r"GIT_CONFIG_(COUNT|KEY_|VALUE_)", k)]:
             del self.env[key]  # the running job's mirror rewrites
+        self.env["PATH"] = ":".join(d for d in self.env["PATH"].split(":") if not d.endswith("/git-mirrors/bin"))
         self.env.update(
             CAMPAIGN_JOBS=str(self.root / "jobs"),
             QUIET_DIR=str(self.root / "quiet"),
