@@ -60,7 +60,23 @@ TIME_L = {
 }
 
 
+def hold_off_worker(store: Path) -> None:
+    """A fresh worker heartbeat in the copy: `status`, `wait` and others start a worker when none
+    beats and jobs are queued, and one serving the copy would run its queued jobs for real."""
+    beat = store / ".worker" / "heartbeat"
+    beat.parent.mkdir(exist_ok=True)
+    beat.touch()
+
+
+def copy_workers(store: Path) -> list[int]:
+    """Processes whose environment points CAMPAIGN_JOBS at the copy (none should outlive a command)."""
+    ps = subprocess.run(["ps", "-E", "-A", "-o", "pid=,command="], capture_output=True, text=True, errors="replace")
+    mark = f"CAMPAIGN_JOBS={store}"
+    return [int(x.split()[0]) for x in ps.stdout.splitlines() if mark in x and "toolcost" not in x]
+
+
 def timed(argv: list[str], cwd: Path, env: dict[str, str]) -> Json:
+    hold_off_worker(Path(env["CAMPAIGN_JOBS"]))
     res = subprocess.run(
         ["/usr/bin/time", "-l", *argv], cwd=cwd, env=env, capture_output=True, text=True, errors="replace"
     )
@@ -90,6 +106,7 @@ def commands(home: Path, quest: str, done_job: str) -> list[tuple[str, list[str]
 def profile(argv: list[str], cwd: Path, env: dict[str, str], out: Path, name: str) -> Json:
     """cProfile of one command in a child: top functions by own time, and calls of the costly primitives."""
     prof = out / f"{name}.prof"
+    hold_off_worker(Path(env["CAMPAIGN_JOBS"]))
     subprocess.run([sys.executable, "-m", "cProfile", "-o", str(prof), *argv], cwd=cwd, env=env, capture_output=True)
     st = pstats.Stats(str(prof))
     stats: dict[tuple[str, int, str], tuple[int, int, float, float, object]] = st.stats  # type: ignore[attr-defined]
@@ -239,6 +256,9 @@ def run(out: Path, reps: int = 3) -> Json:
         "profiles": profiles,
         "prototype": prototype(out, store),
         "state_json_unchanged": (home / ".campaign" / "xapiand" / "state.json").stat().st_mtime == mtime,
+        "processes_on_the_copy_after": copy_workers(store),
     }
     (out / "toolcost.json").write_text(json.dumps(res, indent=1))
+    if not res["processes_on_the_copy_after"]:
+        shutil.rmtree(store)  # rebuilt on each pass; a copy left behind is a store nothing serves
     return res
