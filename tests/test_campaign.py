@@ -247,7 +247,8 @@ class Ownership(CampaignCase):
         self.ok(self.home, "new", "parked", *new, "parked.py")
         self.ok(self.home, "set", "parked", "status=blocked", "until=owner", "reason=owner")
         out = self.ok(self.home, "status").out
-        self.assertIn("  launchable now: root, leaf\n  held by file sets: one holds clash\n", out)
+        idle = "  no job queued and nothing to wait for: one (resume, review or land each)\n"
+        self.assertIn(f"  launchable now: root, leaf\n{idle}  held by file sets: one holds clash\n", out)
         self.assertIn("  hunt list: 0 open (.campaign/demo/hunt.md)\n", out)  # init wrote it
         o = json.loads(self.ok(self.home, "status", "--json").out)["overview"]
         self.assertEqual((o["launchable"], o["held"]), (["root", "leaf"], {"clash": ["one"]}))

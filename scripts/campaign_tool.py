@@ -1008,6 +1008,23 @@ def in_flight(counts: dict[str, int]) -> str:
     return f"{sum(counts[s] for s in FLIGHT)} in flight" + (f" ({', '.join(stages)})" if stages else "")
 
 
+def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
+    """Active or in-review quests with every dependency landed and no job of theirs queued or running:
+    nothing moves them unless an agent is, so the lead resumes, reviews or lands each."""
+    busy = {
+        j["spec"].get("quest")
+        for j in jobs
+        if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
+    }
+    return sorted(
+        k
+        for k, p in c.quests.items()
+        if p["status"] in ("active", "review")
+        and k not in busy
+        and all(c.landed(d) for d in [*p["needs"], *p.get("after", [])])
+    )
+
+
 def overview(c: Campaign) -> Json:
     """Counts by status, the launchable quests, the ready ones a file set holds, the hunt list's open
     rows, and the current milestone, among the map's in its order: the first with a quest in review
@@ -4389,6 +4406,8 @@ def show_status(a: argparse.Namespace) -> int:
     print(f"  quests: {n['landed']} landed, {in_flight(n)}, {n['planned']} planned")
     if n["planned"]:
         print(f"  launchable now: {', '.join(o['launchable']) or 'none'}")
+    if idle := unattended(c, jobs):
+        print(f"  no job queued and nothing to wait for: {', '.join(idle)} (resume, review or land each)")
     holders: dict[str, list[str]] = {}
     for k, by in o["held"].items():
         for x in by:
