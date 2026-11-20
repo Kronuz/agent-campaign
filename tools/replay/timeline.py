@@ -22,8 +22,7 @@ class World:
     history: dict[str, list[src.StateEvent]]
     journals: dict[str, list[src.JournalLog]]
     usage: dict[str, Json]
-    lead: dict[str, list[src.LeadCommand]]
-    activity: dict[str, list[float]]
+    lead: dict[str, src.LeadLog]
     efficiency: dict[str, Json]
     repos: list[src.RepoLog]
     quiet: Json
@@ -31,14 +30,13 @@ class World:
 
 def load(out: Path = src.OUT, refresh: bool = False, repos: bool = True) -> World:
     homes = src.campaign_homes()
-    lead: dict[str, list[src.LeadCommand]] = {}
-    activity: dict[str, list[float]] = {}
+    lead: dict[str, src.LeadLog] = {}
     usage: dict[str, Json] = {}
     for name, home in homes.items():
         usage[name] = src.usage(home, name, out, refresh)
         sessions = sorted(usage[name].get("lead", []), key=lambda r: -float(r.get("tokens") or 0))
         log = src.lead_transcript(sessions[0]["session"]) if sessions else None
-        lead[name], activity[name] = src.lead_commands(log, name, out, refresh) if log else ([], [])
+        lead[name] = src.lead_log(log, name, out, refresh) if log else src.LeadLog([], [], {}, [])
     return World(
         homes=homes,
         jobs=src.load_jobs(),
@@ -47,7 +45,6 @@ def load(out: Path = src.OUT, refresh: bool = False, repos: bool = True) -> Worl
         journals={n: src.journal_logs(h, n) for n, h in homes.items()},
         usage=usage,
         lead=lead,
-        activity=activity,
         efficiency={n: src.efficiency_notes(h / ".campaign" / n / "efficiency.md") for n, h in homes.items()},
         repos=src.repo_logs() if repos else [],
         quiet=src.quiet_holds(),
@@ -91,8 +88,8 @@ def events(w: World) -> list[Json]:
                 agent=r.get("agent", ""),
             )
             add(src.stamp(r.get("ended", "")), name, q, "agent", "run-end", tokens=r.get("tokens", 0))
-    for name, cmds in w.lead.items():
-        for c in cmds:
+    for name, lg in w.lead.items():
+        for c in lg.commands:
             add(c.t, name, c.quest, "lead", c.verb, refused="cannot land yet" in c.output)
     ev.sort(key=lambda e: (e["t"], e["source"], e["kind"]))
     return ev
@@ -179,11 +176,18 @@ def inventory(w: World) -> Json:
         },
         "lead": {
             n: {
-                "commands": len(w.lead[n]),
-                "span": span([c.t for c in w.lead[n]]),
-                "verbs": dict(Counter(c.verb for c in w.lead[n])),
-                "land_refusals": sum(1 for c in w.lead[n] if c.verb == "land" and "cannot land yet" in c.output),
-                "activity_lines": len(w.activity[n]),
+                "commands": len(w.lead[n].commands),
+                "span": span([c.t for c in w.lead[n].commands]),
+                "verbs": dict(Counter(c.verb for c in w.lead[n].commands)),
+                "land_refusals": sum(
+                    1 for c in w.lead[n].commands if c.verb == "land" and "cannot land yet" in c.output
+                ),
+                "active_seconds": len(w.lead[n].activity),
+                "tokens_in_window": sum(
+                    v for h, v in w.lead[n].tokens.items() if src.SINCE <= src.stamp(h + ":00Z") < src.UNTIL
+                ),
+                "prompts": sum(1 for p in w.lead[n].prompts if p["kind"] == "prompt"),
+                "notices": sum(1 for p in w.lead[n].prompts if p["kind"] == "notice"),
             }
             for n in w.homes
         },

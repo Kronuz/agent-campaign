@@ -92,6 +92,8 @@ class Job:
     repo: str
     commit: str
     cmd: str
+    cwd: str
+    env: Json
     level: str
     minutes: float
     slot: str
@@ -169,6 +171,8 @@ def load_jobs(store: Path = JOBS) -> list[Job]:
                 repo=spec.get("repo", ""),
                 commit=spec.get("commit", "") or "",
                 cmd=spec.get("cmd", ""),
+                cwd=spec.get("cwd", "") or "",
+                env=spec.get("env") or {},
                 level=spec.get("level", "light"),
                 minutes=float(spec.get("minutes") or 0),
                 slot=spec.get("slot", "") or "",
@@ -356,35 +360,60 @@ def lead_transcript(session: str) -> Path | None:
     return hits[0] if hits else None
 
 
-def lead_commands(log: Path, campaign: str, out: Path, refresh: bool = False) -> tuple[list[LeadCommand], list[float]]:
-    """The lead's `campaign` calls with their outputs, and the times of all its transcript lines
-    (its activity), from one Claude Code transcript; cached under OUT (the transcripts are large)."""
+@dataclass
+class LeadLog:
+    commands: list[LeadCommand]
+    activity: list[float]  # seconds with a transcript line
+    tokens: dict[str, int]  # hour (ISO, UTC) -> tokens of the lead's responses (each message id once)
+    prompts: list[Json]  # user turns that are not tool results: owner prompts and harness notices
+
+
+BACKGROUND = re.compile(r"Command running in background with ID: (?P<id>\w+)")
+TASKS = Path("/private/tmp/claude-501")  # Claude Code's background task outputs: <project>/<session>/tasks/<id>.output
+TOKEN_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def lead_log(log: Path, campaign: str, out: Path, refresh: bool = False) -> LeadLog:
+    """The lead's `campaign` calls with their outputs, its activity, tokens per hour and prompts, from
+    its Claude Code transcript (main thread only); cached under OUT (the transcripts are large)."""
     cache = out / f"lead-{campaign}.json"
     if not refresh and cache.exists():
         data = read_json(cache) or {}
-        return [LeadCommand(**c) for c in data.get("commands", [])], list(data.get("activity", []))
+        return LeadLog(
+            [LeadCommand(**c) for c in data.get("commands", [])],
+            [float(x) for x in data.get("activity", [])],
+            dict(data.get("tokens", {})),
+            list(data.get("prompts", [])),
+        )
     asked: dict[str, tuple[float, str]] = {}
+    tasks = TASKS / log.parent.name / log.stem / "tasks"
     commands: list[LeadCommand] = []
-    activity: list[float] = []
+    activity: set[int] = set()
+    tokens: dict[str, int] = {}
+    seen: set[str] = set()
+    prompts: list[Json] = []
     with log.open(errors="replace") as f:
         for line in f:
-            if '"timestamp"' not in line:
-                continue
-            fast = '"tool_use"' in line or '"tool_result"' in line
-            if not fast:
-                m = re.search(r'"timestamp":"([^"]+)"', line)
-                if m:
-                    activity.append(stamp(m[1]))
+            if '"timestamp"' not in line or '"isSidechain":true' in line:
                 continue
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
             t = stamp(e.get("timestamp", ""))
-            activity.append(t)
-            if e.get("isSidechain"):
+            if not t:
                 continue
-            content = (e.get("message") or {}).get("content")
+            activity.add(int(t))
+            msg = e.get("message") or {}
+            mid, use = msg.get("id"), msg.get("usage")
+            if isinstance(use, dict) and mid and mid not in seen:
+                seen.add(mid)
+                hour = iso(t)[:13]
+                tokens[hour] = tokens.get(hour, 0) + sum(int(use.get(k) or 0) for k in TOKEN_FIELDS)
+            content = msg.get("content")
+            if e.get("type") == "user" and isinstance(content, str):
+                kind = "notice" if content.lstrip().startswith("<") else "prompt"
+                prompts.append({"t": t, "kind": kind, "text": content[:200]})
             if not isinstance(content, list):
                 continue
             for block in content:
@@ -402,18 +431,41 @@ def lead_commands(log: Path, campaign: str, out: Path, refresh: bool = False) ->
                         if isinstance(body, list)
                         else str(body or "")
                     )
+                    t_done = t
+                    bg = BACKGROUND.match(text)
+                    if bg:  # a background call's output is in its task file; it ended when that was written
+                        task = tasks / f"{bg['id']}.output"
+                        if task.is_file() and not task.is_symlink():
+                            text, t_done = task.read_text(errors="replace"), task.stat().st_mtime
                     for m in CAMPAIGN_CALL.finditer(cmd):
                         verb = re.sub(r"\s+", " ", m["verb"])
                         if verb in LEAD_VERBS:
                             keep = text[:4000] if verb in ("land", "accept") else text[:300]
-                            quest = m["quest"] or ""
                             commands.append(
-                                LeadCommand(t, t0, campaign, cmd[:500], verb, quest, keep, bool(block.get("is_error")))
+                                LeadCommand(
+                                    t_done,
+                                    t0,
+                                    campaign,
+                                    cmd[:500],
+                                    verb,
+                                    m["quest"] or "",
+                                    keep,
+                                    bool(block.get("is_error")),
+                                )
                             )
-    activity = sorted(set(round(x) for x in activity if x))
+    lead = LeadLog(commands, [float(x) for x in sorted(activity)], tokens, prompts)
     out.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"commands": [c.__dict__ for c in commands], "activity": activity}))
-    return commands, [float(x) for x in activity]
+    cache.write_text(
+        json.dumps(
+            {
+                "commands": [c.__dict__ for c in commands],
+                "activity": sorted(activity),
+                "tokens": tokens,
+                "prompts": prompts,
+            }
+        )
+    )
+    return lead
 
 
 # ---------------------------------------------------------------- quiet
