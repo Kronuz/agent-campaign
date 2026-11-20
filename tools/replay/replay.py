@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inventory", help="load every source, write timeline.jsonl and inventory.json")
     sub.add_parser("account", help="where the time went: account.json")
     sub.add_parser("toolcost", help="time read-only v2 commands and the v3 hot-path prototype: toolcost.json")
-    sub.add_parser("leftovers", help="disk, zombies, processes and duplicate work v2 leaves: leftovers.json")
+    left = sub.add_parser("leftovers", help="disk, zombies, processes and duplicate work v2 leaves: leftovers.json")
+    left.add_argument("--part", action="append", default=[], choices=leftovers.PARTS, help="rerun only this query")
     sim = sub.add_parser("simulate", help="replay the arrivals under policies: simulation.json")
     sim.add_argument("--policy", action="append", default=[], help="a policy's name (default: all)")
     rep = sub.add_parser("report", help="Markdown tables from the JSON outputs, as docs/v3 quotes them")
@@ -52,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
                 sessions[name] = leads[0]["session"]
         print(json.dumps(calls.run(sessions, a.out, a.refresh), indent=1))
     elif a.cmd == "leftovers":
-        print(json.dumps(leftovers.run(timeline.load(a.out, a.refresh, repos=False), a.out), indent=1))
+        print(json.dumps(leftovers.run(timeline.load(a.out, a.refresh, repos=False), a.out, a.part), indent=1))
     elif a.cmd == "simulate":
         print(json.dumps(simulate.run(timeline.load(a.out, a.refresh, repos=False), a.out, a.policy), indent=1))
     elif a.cmd == "report":

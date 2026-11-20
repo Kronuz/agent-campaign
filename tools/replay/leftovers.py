@@ -228,13 +228,14 @@ def zombies(w: World, now: float) -> Json:
         for e in hist:
             last[(c, e.quest)] = max(last[(c, e.quest)], e.t)
     quests: list[Json] = []
+    homes = src.campaign_homes()
     for c, stt in w.states.items():
         for q, r in stt.get("quests", {}).items():
             if r.get("status") not in ("active", "review"):
                 continue
             idle = (now - last[(c, q)]) / DAY if last[(c, q)] else None
             wt = r.get("worktree", "")
-            gone = bool(wt) and not Path(wt).is_dir()
+            gone = bool(wt) and not (homes[c] / wt).is_dir()  # state paths are relative to the home
             if gone or idle is None or idle > 3:
                 quests.append(
                     {
@@ -316,18 +317,29 @@ def duplicates(w: World, out: Path) -> Json:
     }
 
 
-def run(w: World, out: Path) -> Json:
+PARTS = ("scratch", "job_store", "worktrees", "zombies", "processes", "duplicates")
+
+
+def run(w: World, out: Path, parts: list[str]) -> Json:
+    """Every query, or only PARTS, keeping the others from the last leftovers.json."""
     now = time.time()
-    walk = du(src.HOME / ".scratch", 4)  # one walk: owners, tasks, job directories and build slots
-    res: Json = {
-        "at": src.iso(now),
-        "scratch": scratch(w, now, walk),
-        "job_store": job_store(w, now, walk),
-        "worktrees": worktrees(w, now, walk),
-        "zombies": zombies(w, now),
-        "processes": processes(),
-        "duplicates": duplicates(w, out),
+    want = set(parts or PARTS)
+    old: Json = src.read_json(out / "leftovers.json") or {}
+    walk = du(src.HOME / ".scratch", 4) if want & {"scratch", "job_store", "worktrees"} else {}
+    queries = {
+        "scratch": lambda: scratch(w, now, walk),
+        "job_store": lambda: job_store(w, now, walk),
+        "worktrees": lambda: worktrees(w, now, walk),
+        "zombies": lambda: zombies(w, now),
+        "processes": processes,
+        "duplicates": lambda: duplicates(w, out),
     }
+    res: Json = {"at": src.iso(now), **{k: old.get(k) for k in PARTS}} if not parts else dict(old)
+    rerun: Json = res.setdefault("rerun_at", {}) if parts else {}
+    for k in PARTS:
+        if k in want:
+            res[k] = queries[k]()
+            rerun[k] = src.iso(now)
     out.mkdir(parents=True, exist_ok=True)
     (out / "leftovers.json").write_text(json.dumps(res, indent=1))
     return res
