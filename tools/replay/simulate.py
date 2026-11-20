@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import account
+import need
 import sources as src
 from sources import Json
 from timeline import World
@@ -27,7 +28,12 @@ TICK = 30.0
 DRAIN_WAIT = 20 * 60.0  # v2: an exclusive job waits two capped lengths for a lull
 DRAIN_TURN = 3600.0  # v2: an overdue drain opens an hour of back-to-back drains
 AGE = 3600.0  # v2: a job queued past an hour goes ahead in submit order
-BATCH_EVERY = 4 * H  # exclusive batching: one planned drain window every four hours
+BATCH_EVERY = 4 * H
+NEED_DROP = (
+    need.CATEGORIES[0],
+    need.CATEGORIES[1],
+    need.CATEGORIES[4],
+)  # never submitted under need  # exclusive batching: one planned drain window every four hours
 
 
 @dataclass
@@ -57,11 +63,14 @@ class Policy:
     merge_queue: bool = False  # merged result tested once: no main-moved refusal episodes
     batching: bool = False  # exclusive jobs in planned windows, light work packed around them
     driver: bool = False  # resumes, reviews and lands with no lead delay
+    need: bool = False  # jobs only for an unanswered question; evidence by declared inputs; resubmission replaces
+    sizing: bool = False  # with need: no trial past the first two of a passing row at one commit
     light_slots: int = 8
 
 
-def sim_jobs(w: World, drop: set[str], shift: dict[str, float]) -> list[SimJob]:
-    """The window's jobs less DROP, each submitted SHIFT[id] seconds earlier (a driver with no delay)."""
+def sim_jobs(w: World, drop: set[str], shift: dict[str, float], replaced: dict[str, float]) -> list[SimJob]:
+    """The window's jobs less DROP, each submitted SHIFT[id] seconds earlier (a driver with no delay);
+    a REPLACED job never runs and leaves the queue when its resubmission arrives."""
     out: list[SimJob] = []
     for j in w.jobs:
         if j.id in drop:
@@ -70,15 +79,17 @@ def sim_jobs(w: World, drop: set[str], shift: dict[str, float]) -> list[SimJob]:
             continue
         early = shift.get(j.id, 0.0)
         gone = 0.0 if j.ran else (j.ended or src.UNTIL) - early
+        if j.id in replaced:
+            gone = replaced[j.id] - early
         out.append(
             SimJob(
                 id=j.id,
                 campaign=j.campaign,
                 quest=j.quest,
-                level=j.level,
+                level="replaced" if j.id in replaced else j.level,
                 arrival=j.submitted - early,
                 run=j.run_s,
-                build=j.build_s,
+                build=0.0 if j.id in replaced else j.build_s,
                 slot=j.slot,
                 after=list(j.after),
                 gone=gone,
@@ -259,6 +270,9 @@ def run(w: World, out: Path, names: list[str]) -> Json:
     rec_ends = {j.id: j.ended for j in w.jobs}
     rec_wait = [j.began - j.submitted for j in w.jobs if j.ran and src.SINCE <= j.submitted < src.UNTIL]
     rec_hourly = [h["queued"] for h in (src.read_json(out / "hourly.json") or [])]
+    need_rows: list[Json] = (
+        [json.loads(x) for x in (out / "need.jsonl").read_text().splitlines()] if (out / "need.jsonl").exists() else []
+    )
 
     # tokens: agent runs begun in the window; the lead's from its transcript
     runs = [
@@ -287,12 +301,18 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         lead_tokens += mine
         routine_tokens += mine * min(1.0, lead_calls / in_window) if in_window else 0.0
 
-    def one(p: Policy) -> Json:
+    def one(p: Policy, base: dict[tuple[str, str], float] | None = None) -> Json:
         drop = (avoidable if p.identity else set()) | (in_episode if p.merge_queue else set())
-        jobs = sim_jobs(w, drop, shift if p.driver else {})
+        replaced: dict[str, float] = {}
+        if p.need:
+            drop |= {r["job"] for r in need_rows if r["category"] in NEED_DROP}
+            drop |= {r["job"] for r in need_rows if p.sizing and r["category"] == need.CATEGORIES[3]}
+            replaced = {r["job"]: r["replaced_at"] for r in need_rows if r["category"] == need.CATEGORIES[2]}
+        jobs = sim_jobs(w, drop, shift if p.driver else {}, replaced)
         mach = run_machine(jobs, p)
         waits = [j.start - j.arrival for j in jobs if j.start]
         landed = 0
+        land_at: dict[tuple[str, str], float] = {}
         for (c, q), (lt, le) in lands.items():
             mine = [j for j in jobs if j.campaign == c and j.quest == q and j.end and rec_ends.get(j.id, 0) <= lt]
             e_sim = max((j.end for j in mine), default=0.0)
@@ -304,10 +324,13 @@ def run(w: World, out: Path, names: list[str]) -> Json:
                 delay -= idle_before(g, lt) - idle_before(g, le) if le else 0.0
                 delay = max(15 * 60.0, delay)
             delay = max(0.0, delay)
-            base = e_sim if e_sim else (lt - (idle_before(g, lt) if p.driver else 0.0))
-            if base + delay < src.UNTIL:
+            start = e_sim if e_sim else (lt - (idle_before(g, lt) if p.driver else 0.0))
+            land_at[(c, q)] = start + delay
+            if start + delay < src.UNTIL:
                 landed += 1
         machine_h = sum(j.run + j.build for j in jobs if j.start) / H
+        common = [k for k in land_at if base and k in base]
+        quest_h_saved = sum(base[k] - land_at[k] for k in common) / H if base else 0.0
         sim_h = mach["hourly_queue"][: len(rec_hourly)]
         err = sum(abs(a - b) for a, b in zip(sim_h, rec_hourly)) / max(1, sum(rec_hourly)) * 100 if rec_hourly else None
         agents = agent_tokens - (merge_saved if p.merge_queue else 0)
@@ -323,6 +346,9 @@ def run(w: World, out: Path, names: list[str]) -> Json:
             "queue_error_pct_vs_recorded": round(err, 1) if err is not None else None,
             "agent_tokens_M": round(agents / 1e6),
             "lead_tokens_M": round(lead / 1e6),
+            "wait_job_h": round(sum(waits) / H, 1),
+            "quest_h_saved_vs_v2": round(quest_h_saved, 1),
+            "_land_at": land_at,
         }
 
     # calibration: the light slots v2 effectively filled, fitted to the recorded hourly queue
@@ -349,16 +375,38 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         Policy("merge queue", merge_queue=True, light_slots=slots),
         Policy("exclusive batching", batching=True, light_slots=slots),
         Policy("deterministic driver", driver=True, light_slots=slots),
+        Policy("need: unanswered questions only", need=True, light_slots=slots),
+        Policy("need, plus no trial past a decided row", need=True, sizing=True, light_slots=slots),
         Policy("all four", identity=True, merge_queue=True, batching=True, driver=True, light_slots=slots),
-        Policy("all four, 8 light slots filled", identity=True, merge_queue=True, batching=True, driver=True),
+        Policy(
+            "all four and need",
+            identity=True,
+            merge_queue=True,
+            batching=True,
+            driver=True,
+            need=True,
+            light_slots=slots,
+        ),
+        Policy(
+            "all four and need, 8 light slots filled",
+            identity=True,
+            merge_queue=True,
+            batching=True,
+            driver=True,
+            need=True,
+        ),
     ]
     if names:
         policies = [p for p in policies if p.name in names] or policies
+    baseline = one(policies[0])
+    results = [baseline] + [one(p, baseline["_land_at"]) for p in policies[1:]]
+    for r in results + [x for _, _, x in fits]:
+        r.pop("_land_at", None)
     res: Json = {
         "recorded": recorded,
         "calibration": [{"light_slots": s, **r} for _, s, r in fits],
         "fitted_light_slots": slots,
-        "results": [one(p) for p in policies],
+        "results": results,
     }
     (out / "simulation.json").write_text(json.dumps(res, indent=1))
     return res
