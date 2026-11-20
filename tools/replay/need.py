@@ -5,7 +5,7 @@ declared inputs had not changed.
 Each job gets the first category that applies, so no job counts twice; `replay.py need` writes
 need.json (the totals) and need.jsonl (one row per job). v2 records no declared inputs, so the
 inputs are a stated proxy: the paths a job's command and build name, the quest's file set
-(current value), the top-level build files, and build files under those paths.
+(current value) and the top-level build files.
 """
 
 from __future__ import annotations
@@ -69,19 +69,17 @@ def landing_starts(w: World, episodes: list[Json]) -> dict[tuple[str, str], floa
     return out
 
 
-def declared(j: Job, files: list[str], changed: list[str]) -> bool:
-    """Whether a changed path is among the job's inputs, by the proxy in the module docstring."""
+def input_hit(j: Job, files: list[str], changed: list[str]) -> str:
+    """Which part of the declared-input proxy a changed path hits, or "" for none."""
     named = account.named_paths(f"{j.cmd} {j.build}", j.cwd)
-
-    def under(x: str) -> bool:
-        return any(x == n or x.startswith(n + "/") for n in named) or account.matches(x, files)
-
     for x in changed:
-        if under(x):
-            return True
-        if account.matches(x, account.BUILD_FILES) and ("/" not in x or under(x.rsplit("/", 1)[0])):
-            return True
-    return False
+        if any(x == n or x.startswith(n + "/") for n in named):
+            return "a path its command names"
+        if account.matches(x, files):
+            return "the quest's file set"
+        if account.matches(x, account.BUILD_FILES) and "/" not in x:
+            return "a top-level build file"
+    return ""
 
 
 def classify(w: World, out: Path) -> tuple[Json, list[Json]]:
@@ -103,6 +101,8 @@ def classify(w: World, out: Path) -> tuple[Json, list[Json]]:
             if b.commit != a.commit:
                 newer[a.id] = b.submitted
     trials: dict[str, list[Job]] = defaultdict(list)
+    landing_reruns: Counter[str] = Counter()
+    landing_h: defaultdict[str, float] = defaultdict(float)
     rows: list[Json] = []
     for j in jobs:
         tg = trial_group(j)
@@ -126,7 +126,12 @@ def classify(w: World, out: Path) -> tuple[Json, list[Json]]:
             p = by_id.get(r["prev"])
             changed = diffs.names(j.repo, p.commit, j.commit) if p else None
             same_scripts = p is not None and j.scripts == p.scripts
-            if changed is not None and same_scripts and not declared(j, files.get(k, []), changed):
+            why = (
+                "unknown" if changed is None else input_hit(j, files.get(k, []), changed) if same_scripts else "script"
+            )
+            landing_reruns[why] += 1
+            landing_h[why] += j.run_s + j.build_s
+            if why == "":
                 cat = CATEGORIES[4]
         if cat:
             rows.append(
