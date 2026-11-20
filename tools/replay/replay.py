@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import account
 import calls
 import leftovers
+import report
 import simulate
 import sources as src
 import timeline
@@ -33,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("leftovers", help="disk, zombies, processes and duplicate work v2 leaves: leftovers.json")
     sim = sub.add_parser("simulate", help="replay the arrivals under policies: simulation.json")
     sim.add_argument("--policy", action="append", default=[], help="a policy's name (default: all)")
+    rep = sub.add_parser("report", help="Markdown tables from the JSON outputs, as docs/v3 quotes them")
+    rep.add_argument("name", choices=("inventory", "account"))
     sub.add_parser("calls", help="every campaign and quiet call in the transcripts, with latency: calls.json")
     a = p.parse_args(argv)
     if a.cmd == "inventory":
@@ -52,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(leftovers.run(timeline.load(a.out, a.refresh, repos=False), a.out), indent=1))
     elif a.cmd == "simulate":
         print(json.dumps(simulate.run(timeline.load(a.out, a.refresh, repos=False), a.out, a.policy), indent=1))
+    elif a.cmd == "report":
+        print(report.run(a.out, a.name))
     elif a.cmd == "toolcost":
         print(json.dumps(toolcost.run(a.out), indent=1))
     return 0
