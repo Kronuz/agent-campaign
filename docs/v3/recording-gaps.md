@@ -6,21 +6,27 @@ did not land. Each gap below names the field that would have answered it, what t
 instead, and how much of the accounting rests on that inference. v3 records each as an append-only
 event with a timestamp, the actor (lead, agent id and turn, worker, owner) and the quest.
 
-The counts come from `python3 tools/replay/replay.py inventory` (`inventory.json`) and
-`replay.py account` (`account.json`), over 2026-11-06T02:39Z to 2026-11-20T02:39Z.
+The counts come from `python3 tools/replay/replay.py inventory` (`inventory.json`), `replay.py
+account` (`account.json`) and `replay.py calls`, over 2026-11-06T02:39Z to 2026-11-20T02:39Z.
+Together the inferred figures cover:
+1. All 3,340 reruns (the shape-and-diff proxy).
+2. 288 of the 601 idle light slot-hours (no cause at all).
+3. All 125 land refusals (transcripts, a floor).
+4. All 3,571 in-flight quest-hours (status from commit subjects, dependencies from current values).
 
 ## Jobs
 
 | Gap | Field v3 records | What the replay did instead | What rests on it |
 |---|---|---|---|
 | Why the job was submitted | `cause`: criterion or check, `retry_of`, `rerun_of`, and the event that made it necessary (a commit, a main merge, a script edit, a flake) | grouped jobs by shape (repository, command, directory, level, build, environment) and called a later one a rerun | the whole rerun split in `where-time-went.md` |
-| Who submitted it | `by`: agent id and turn, or the lead, or the tool (`verify`, `rerun`) | nothing: 197 of 7,704 jobs name no quest; none names an agent | agent cost per job |
-| What it read | `reads`: every file and blob it opened, and every outside file | `reads.json` exists for 0 of 7,704 jobs (no strace on macOS); used `git diff` against the command's named paths, the build files and the quest's file set | the necessary/avoidable split; its avoidable share is an upper bound |
+| Who submitted it | `by`: agent id and turn, or the lead, or the tool (`verify`, `rerun`) | nothing: 197 of 7,737 jobs name no quest; none names an agent. Transcripts show 5,404 `job submit` calls, 5,188 of them by agents | agent cost per job |
+| What it read | `reads`: every file and blob it opened, and every outside file | `reads.json` exists for 0 of 7,737 jobs (no strace on macOS); used `git diff` against the command's named paths, the build files and the quest's file set | the necessary/avoidable split; its avoidable share is an upper bound |
 | Its declared inputs | `inputs` on every check | 0 jobs carry `inputs` | same |
 | Each phase | `queued`, `claimed`, `source_ready`, `build_started/ended`, `hold_requested`, `hold_granted`, `began`, `ended` | `claimed..began` lumps preparation, build, admission and quiet's wait together | hold waits (`waits` query) |
 | Why it waited, at each moment | a wait record per change of cause: `slot busy`, `light cap`, `drain`, `strict beside`, `load gate`, `fair share`, `order`, `dependency`, `owner hold` | sampled the machine every minute and blamed what held it; 288 slot-hours of idle light capacity with light work ready have no recorded reason | the light-capacity split |
 | Its weight | the light slots it was charged, over time, and its CPU time (rusage) | none: the worker's measured-use charges are not stored | the same 288 slot-hours |
 | Host load | load average and free memory each minute | none (quiet's load gate refuses holds above 2x CPUs, unrecorded) | the same |
+| Commands that embed their commit | identity computed from the command with its commit and `$$` masked, or the command declares its output directory apart | masked hex ids and `$$` in the replay's shape | which document-gate jobs are reruns |
 | Results beyond 14 days | a compact record per job, kept forever (the logs may go) | jobs before 2026-11-05 15:05 are pruned (`prune.log` names them only) | any window longer than 14 days |
 
 ## The machine (quiet and the worker)
@@ -45,9 +51,9 @@ The counts come from `python3 tools/replay/replay.py inventory` (`inventory.json
 
 | Gap | Field v3 records | Instead |
 |---|---|---|
-| Each agent turn | start, end, tokens by kind, cost, the quest, the prompt kind (launch, resume, fix), why it ended, and its outcome (commits, jobs submitted, state changes) | `campaign usage --json` totals per run; no outcome |
+| Each agent turn | start, end, tokens by kind, cost, the quest, the prompt kind (launch, resume, fix), why it ended, and its outcome (commits, jobs submitted, state changes) | `campaign usage --json` totals per run; no outcome. No xapiand run is attributed after 2026-11-18T19:20Z, though agents ran on 2026-11-19 |
 | Lead cost per quest | tokens and time per lead action, attributed to the quest it acted on | the lead is one session: its tokens are summed per hour from its transcript, never per quest |
-| Each tool call | command, caller, latency, exit, result size | scanned transcripts for `campaign` and `quiet` calls (`replay.py calls`); Codex sessions are not scanned |
+| Each tool call | command, caller, latency, exit, result size | scanned 3.7 GB of transcripts for 32,738 `campaign` and `quiet` calls in the window; 18,489 of them ran in the background or shared a command line, so they have no latency; Codex sessions are not scanned |
 | Owner prompts and decisions | each owner instruction and each decision asked of the owner, with when it was answered | user lines in the lead's transcript |
 | Cost | the harness's cost per run | `cost_available` is false for every run |
 
