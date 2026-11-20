@@ -28,8 +28,7 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
    changes outside the quest's set and edits to the lead's files.
 3. **Criteria before code.** The lead writes each quest's acceptance criteria and the evidence each
    needs; contributors never edit them, and a changed criterion voids earlier acceptances.
-4. **A gate blocks a landing only when it catches something nothing later would.** CI and
-   milestone checks run the rest.
+4. **Build whole features fast; check the whole at the end.** Only the suite and CI gate a landing.
 5. **Nothing weakens silently.** Lowering a risk, removing a lens or a check, landing without CI or
    recording a landing done by hand needs a reason, which the tool records.
 6. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
@@ -87,8 +86,8 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Quests
 
-- **Size:** the smallest change that delivers a complete, meaningful behavior a reviewer can hold
-  in mind, usually a few hundred to ~1,500 lines. Split bigger ones.
+- **Size:** a whole feature, built end to end and iterated on its branch. Split only into
+  features that ship alone, never by step, risk or check.
 - **Quick fixes** skip the quest: an obvious cause, tens of lines outside the high and critical
   areas, and a test failing without it. The lead or one economical agent commits fix and test to
   `main`, pushes, and fixes forward on red CI; the commit message is the record. A design choice
@@ -124,10 +123,10 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Direct path first
 
-A quest's **gate** is its suite job and CI.
-Sanitizers (ASan, UBSan, TSan) and the platform matrix are CI's, on the quest branch or on `main`
-after landing; a red CI is fixed forward or reverted within the day. The only local sanitizer gate
-is a TSan test a high-risk quest adds to prove a concurrency claim.
+A quest's **gate** is its suite job and CI; nothing else blocks a landing. Reviews and
+measurements cover the finished feature: they run once at its end, on the landed code, and their
+findings are fixed forward. Sanitizers and the platform matrix are CI's; a red CI is fixed
+forward or reverted within the day.
 
 Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **milestone checks**
 (`--later`): queued at low priority on the landed code, run once per milestone on `main`, green
@@ -183,7 +182,7 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
 | Risk (first match wins) | Before building | Before final landing |
 |---|---|---|
 | **critical**: irreversible (freezing a format or protocol for release, migrating users' data, removing user-visible behavior) | owner approval; a `design` review | the high-risk review, plus acceptance evidence the reviewer ran itself |
-| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | a `design` review when a decision is expensive to reverse | one review by the dominant risk's lens (`durability`, `security` or `correctness`), run in parallel with the evidence |
+| **high**: persistent formats, wire protocols, durability, concurrency, security surfaces, shared public APIs | — | suite and CI green; one review of the finished feature by the dominant risk's lens, after landing |
 | **normal**: ordinary features and fixes; **low**: docs, tests, tooling, mechanical edits, behavior-preserving refactors | — | suite and CI green; the lead reads the diff |
 
 - **One reviewer,** carrying every risk question the quest raises (the prompt names three to five);
