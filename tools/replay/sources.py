@@ -473,6 +473,6 @@ def lead_log(log: Path, campaign: str, out: Path, refresh: bool = False) -> Lead
 
 def quiet_holds(root: Path = QUIET) -> Json:
     """quiet keeps live holds only: files for current holds and pills; no history."""
-    files = [p for p in root.rglob("*") if p.is_file()] if root.is_dir() else []
+    files: list[Path] = [p for p in root.rglob("*") if p.is_file()] if root.is_dir() else []
     holds = [p for p in files if p.parent == root and not p.name.startswith(".")]
     return {"files": len(files), "live_holds": len(holds), "names": sorted(p.name for p in holds)}

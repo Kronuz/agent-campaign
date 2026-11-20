@@ -65,7 +65,7 @@ def in_window(j: Job) -> bool:
 
 def machine_time(jobs: list[Job]) -> Json:
     """query machine_time: run (began..ended) and staged-build hours of every job, clipped to the window."""
-    rows: dict[str, dict[str, Counter[str]]] = defaultdict(lambda: defaultdict(Counter))
+    rows: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     for j in jobs:
         rows[j.campaign][j.level][j.state] += overlap(j.began, j.ended) if j.began and j.ended else 0.0
         rows[j.campaign][j.level]["(staged build)"] += overlap(j.build_started, j.build_ended) if j.build_s else 0.0
@@ -87,9 +87,9 @@ def waits(jobs: list[Job]) -> Json:
     """query waits: job-hours queued (submitted..claimed) and in hold (claimed..began: source
     preparation, a staged build, admission and quiet's wait), by level, for jobs submitted in the
     window; jobs that never ran count until they ended (cancelled or skipped) or the window's end."""
-    q: Counter[str] = Counter()
-    hold: Counter[str] = Counter()
-    never: Counter[str] = Counter()
+    q: dict[str, float] = defaultdict(float)
+    hold: dict[str, float] = defaultdict(float)
+    never: dict[str, float] = defaultdict(float)
     n: Counter[str] = Counter()
     per: dict[str, list[float]] = defaultdict(list)
     for j in jobs:
@@ -554,7 +554,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
             a, b = src.stamp(r.get("began", "")), src.stamp(r.get("ended", ""))
             if a and b > a:
                 runs_of[(c, r.get("quest", ""))].append((a, b))
-    totals: Counter[str] = Counter()
+    totals: dict[str, float] = defaultdict(float)
     per: list[Json] = []
     for (c, q), ivs in sorted(status_intervals(w).items()):
         rec = w.states.get(c, {}).get("quests", {}).get(q, {})
@@ -565,7 +565,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
             if j.began:
                 labelled.append((j.began, end, 1))
             labelled.append((j.submitted, j.began or end, 2))
-        mine: Counter[str] = Counter()
+        mine: dict[str, float] = defaultdict(float)
         for a0, b0, status in ivs:
             iv = clip(a0, b0) if status in FLIGHT else None
             if not iv:
@@ -575,7 +575,8 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
                 name = LABELS[lab] if lab < len(LABELS) else f"nothing moving it ({status})"
                 mine[name] += b - a
         if mine:
-            totals.update(mine)
+            for k, v in mine.items():
+                totals[k] += v
             per.append(
                 {
                     "campaign": c,
@@ -585,7 +586,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
                 }
             )
     whole = sum(totals.values())
-    table: Json = {k: {"h": hours(v), "pct": share(v, whole)} for k, v in totals.most_common()}
+    table: Json = {k: {"h": hours(v), "pct": share(v, whole)} for k, v in sorted(totals.items(), key=lambda kv: -kv[1])}
     table["total"] = {"h": hours(whole), "pct": 100.0, "quests": len(per)}
     return table, per
 
@@ -613,7 +614,7 @@ def agent_tokens(w: World) -> Json:
         for e in hist:
             if e.verb == "land" and "increment" not in e.args and src.SINCE <= e.t < src.UNTIL:
                 landed.add((c, e.quest))
-    per: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    per: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for c, u in w.usage.items():
         for r in u.get("runs", []):
             if not (src.SINCE <= src.stamp(r.get("began", "")) < src.UNTIL):
@@ -630,7 +631,7 @@ def agent_tokens(w: World) -> Json:
         rest = [v for q, v in mine.items() if (c, q) not in landed]
         lead_tokens = sum(v for h, v in w.lead[c].tokens.items() if src.SINCE <= src.stamp(h + ":00Z") < src.UNTIL)
 
-        def med(key: str, scale: float, vs: list[Counter[str]] = lq) -> float | None:
+        def med(key: str, scale: float, vs: list[dict[str, float]] = lq) -> float | None:
             return round(statistics.median([v[key] for v in vs]) / scale, 2) if vs else None
 
         out[c] = {

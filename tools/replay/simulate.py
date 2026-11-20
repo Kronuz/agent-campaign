@@ -148,7 +148,7 @@ def run_machine(jobs: list[SimJob], p: Policy) -> Json:
             window = t >= next_batch
             if window and not ex_queue:
                 next_batch = t + BATCH_EVERY
-            due = ex_queue if window else []
+            due: list[SimJob] = ex_queue if window else []
         else:
             light_waiting = any(j.level == "light" for j in queue if j.phase == "queued")
             due = [
@@ -226,7 +226,7 @@ def last_evidence(w: World) -> dict[tuple[str, str], tuple[float, float]]:
 
 
 def run(w: World, out: Path, names: list[str]) -> Json:
-    rows = (
+    rows: list[Json] = (
         [json.loads(x) for x in (out / "reruns.jsonl").read_text().splitlines()]
         if (out / "reruns.jsonl").exists()
         else []

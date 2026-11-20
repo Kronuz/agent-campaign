@@ -213,7 +213,7 @@ def account(out: Path) -> str:
         )
     )
     at = a["agent_tokens"]
-    keys = list(next(iter(at.values())).keys()) if at else []
+    keys: list[str] = list(next(iter(at.values())).keys()) if at else []
     parts.append("agent_tokens\n\n" + table(["measure", *at.keys()], [[k, *[at[c][k] for c in at]] for k in keys]))
     return "\n\n".join(parts)
 

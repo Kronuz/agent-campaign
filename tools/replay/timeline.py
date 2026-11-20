@@ -210,7 +210,7 @@ def write(out: Path, w: World) -> Json:
         for e in ev:
             f.write(json.dumps(e) + "\n")
     inv = inventory(w)
-    inv["timeline"] = {"path": str(out / "timeline.jsonl"), "events": len(ev), "by_source": {}}
-    inv["timeline"]["by_source"] = dict(Counter(e["source"] for e in ev))
+    by_source = dict(Counter(e["source"] for e in ev))
+    inv["timeline"] = {"path": str(out / "timeline.jsonl"), "events": len(ev), "by_source": by_source}
     (out / "inventory.json").write_text(json.dumps(inv, indent=1, default=str))
     return inv

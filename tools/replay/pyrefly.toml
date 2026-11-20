@@ -1,0 +1,5 @@
+# Type checking for the replay: strict, on the oldest supported Python.
+preset = "strict"
+python-version = "3.9"
+project-includes = ["*.py"]
+search-path = ["."]

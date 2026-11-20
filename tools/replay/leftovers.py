@@ -278,7 +278,7 @@ def duplicates(w: World, out: Path) -> Json:
     """query duplicates: jobs whose run repeated a passed one at code differing only outside its inputs
     (classify_reruns' avoidable rows), and quests dropped as redundant or superseded, with their jobs'
     machine time and their agents' tokens."""
-    rows = (
+    rows: list[Json] = (
         [json.loads(x) for x in (out / "reruns.jsonl").read_text().splitlines()]
         if (out / "reruns.jsonl").exists()
         else []
