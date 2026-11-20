@@ -79,29 +79,28 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   finds the quest's build, and a drain waiting for it blocks no one. Landing removes the quest's slots. A slot's `--ref NAME` checkouts live at `slot/ref-NAME`, one path for every job
   there and reset to the ref per job (a build dir configured from `$JOB_REF_NAME` stays valid);
   without a slot they live under the job's own directory. `job submit` prints the parsed command
-  and options to stderr, and warns when a submit flag such as `--ref` follows `--`. A reused slot halved a Xapiand build-and-test (310 s against 586 s fresh).
+  and options to stderr, and warns when a submit flag such as `--ref` follows `--`.
 - **Builds for measurements.** `--after` only orders jobs. `--build CMD` runs CMD as a light job (30
   minutes, outside `--minutes`) in the job's checkout; a passed build's command then queues for its
   heavy hold, keeping the slot.
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
-  campaigns sharing the light slots; `quiet` arbitrates across sessions. Ready heavy jobs run back
-  to back behind one drain before light work returns, up to 6 jobs or 30 minutes
-  (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`). An
-  exclusive job drains the machine, blocking new light holds while it waits; it starts in a lull (no runnable light work, and the
-  running light jobs end within 10 minutes by their last runs), or once it has waited 20 minutes since
-  the last drain ran (`CAMPAIGN_DRAIN_WAIT`). An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`,
-  an hour) in which queued drains run back to back, admitting only light jobs that end before the running ones; a priority-1 light job
-  that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
+  campaigns splitting the light slots, rounded up; `quiet` arbitrates across sessions. An exclusive
+  job drains the machine: while it waits or runs, no light job or build starts. It starts in a lull (no runnable light work, and the running light jobs end within
+  10 minutes by their last runs), or once it has waited 20 minutes since the last drain ran
+  (`CAMPAIGN_DRAIN_WAIT`). Ready heavy jobs run back to back in one drain, up to 6 jobs or 30 minutes (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`); then
+  light work goes first once. An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`, an hour) in which
+  queued drains are due, admitting only light work ending before the running ones; a priority-1
+  light job that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
   TEXT` opens such a turn by hand; `--close` ends it.
   `campaign worker --restart` re-executes the worker on the current code after its tick; jobs keep
   running. Priorities: gate checks and
   light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and
   measurements at 0, deferred checks and `--long` jobs at -1, using at most half the light slots;
   `--priority` overrides.
-- **Queue health.** `campaign status` prints the last hour's light slot-minutes used against the
-  slots, minutes drains held the host, minutes runnable work waited beside an idle slot, and the
-  jobs that ended without a result. `check` warns when a
+- **Queue health.** `campaign status` prints the last hour's light slot-minutes used (by
+  charged slots) against the slots, minutes drains held the host, minutes runnable work waited
+  beside free slots, and the jobs that ended without a result. `check` warns when a
   queued job waited over 30 minutes beside idle slots.
 - **Build and test defaults.** Several light jobs run at once, so each keeps to 4 jobs
   (`CAMPAIGN_LIGHT_BUILD_JOBS`): it gets `CMAKE_BUILD_PARALLEL_LEVEL` and `CTEST_PARALLEL_LEVEL`
@@ -193,8 +192,8 @@ quiet list | check                       # check: 0 free, 2 light work only, 1 n
   host makes builds slower, not wrong. None starts below 4 GiB of free memory (`QUIET_MIN_MEM_GB`),
   or above a load of twice the CPUs; a `none` job takes no slot.
 - **A light job takes the slots it uses:** one whose process tree averages over a slot's cores
-  (CPUs over slots) for 2 minutes is charged the nearest whole number of slots; `--cpus N`
-  declares them. `job submit` warns of undeclared copies (`-j`, `&` loops, `parallel`); `campaign
+  (CPUs over slots) for 2 minutes is charged the nearest whole number of slots, recorded in its
+  `charge`; `--cpus N` declares them. `job submit` warns of undeclared copies (`-j`, `&` loops, `parallel`); `campaign
   status` names who is over.
 - **Heavy disk work is load:** bulk deletes and large copies take a hold or wait.
 - **macOS has no CPU partitioning:** strict runs beside light holds at nice 19, which cost CPU-bound

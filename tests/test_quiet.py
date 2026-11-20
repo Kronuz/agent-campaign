@@ -13,6 +13,7 @@ import time
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 import harness  # noqa: F401  # first: it puts the tools' directory on sys.path
 import quiet
@@ -358,6 +359,45 @@ class Quiet(unittest.TestCase):
         p.communicate()
         done = self.quiet("light", "mem2", "1", "build", "--", "true", QUIET_MIN_MEM_GB="0")
         self.assertEqual(done.wait(timeout=30), 0)
+
+
+class ExclusiveIsolation(unittest.TestCase):
+    """An exclusive hold waits for every light hold and for the load to settle, and no light hold starts
+    while it runs, a long-waiting one included; while it only waits, a light request that waited
+    QUIET_STARVE_MIN goes first."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(dir=scratch())
+        self.addCleanup(tmp.cleanup)
+        env = {"QUIET_DISK_MIN_GB": "0", "QUIET_MIN_MEM_GB": "0", "QUIET_MAX_LOAD": "1000", "QUIET_LOAD_WAIT": "10"}
+        for patch in (
+            mock.patch.object(quiet, "DIR", Path(tmp.name)),
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(quiet, "load1", lambda: 0),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        os.environ.pop("QUIET_PAUSE", None)
+
+    def marker(self, name: str, level: str = "light") -> None:
+        quiet.put(quiet.DIR / name, [("pid", 0), ("until", int(time.time()) + 600), ("level", level)])
+
+    def test_an_exclusive_hold_waits_for_light_holds_and_the_load_and_keeps_them_out(self) -> None:
+        now = time.time()
+        quiet.write_hold("L", 10, "a build", 0, "light")
+        self.assertEqual(quiet.try_hold("X", "strict", True, now), (None, "behind 1 light hold"))
+        (quiet.DIR / "L").unlink()
+        with mock.patch.object(quiet, "load1", lambda: quiet.QUARTER):
+            self.assertEqual(quiet.try_hold("X", "strict", True, now), (None, f"load {quiet.QUARTER} settling"))
+        self.assertEqual(quiet.try_hold("X", "strict", True, now), (("", ""), ""))
+        quiet.write_hold("X", 10, "a measurement", 0, "strict")
+        self.marker("M.starving")
+        for name in ("N", "M"):  # a new light request, and one that waited QUIET_STARVE_MIN
+            self.assertEqual(quiet.try_hold(name, "light", False, now), (None, "a strict hold has the machine"))
+        (quiet.DIR / "X").unlink()
+        self.marker("X.pending", "strict")  # waiting, not held: only the long-waiting light request goes first
+        self.assertEqual(quiet.try_hold("N", "light", False, now), (None, "a strict hold has the machine"))
+        self.assertEqual(quiet.try_hold("M", "light", False, now), (("", ""), ""))
 
 
 class LightSlots(unittest.TestCase):

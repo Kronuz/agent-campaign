@@ -5371,7 +5371,9 @@ def read_job(d: Path) -> Json:
         except CampaignError:
             return {"state": "corrupt"}
 
-    job = {"id": d.name, "dir": d, "spec": tolerant(d / "spec.json"), "state": tolerant(d / "state.json")}
+    job: Json = {"id": d.name, "dir": d, "spec": tolerant(d / "spec.json"), "state": tolerant(d / "state.json")}
+    with contextlib.suppress(OSError, ValueError):
+        job["charge"] = float((d / "charge").read_text())  # slot-seconds charged over one slot (add_charge)
     if (d / "for.json").exists():
         job["tags"] = (read_json(d / "for.json") or {}).get("tags", [])
     return job
@@ -6724,7 +6726,7 @@ def cmd_window(a: argparse.Namespace) -> int:
     if a.minutes:
         until = time.time() + 60 * a.minutes
         atomic_write(path, json.dumps({"until": until, "for": a.purpose, "opened": time.time()}) + "\n")
-        print(f"window open until {stamp(until)}: queued drains run back to back, light jobs wait")
+        print(f"window open until {stamp(until)}: queued drains run in batches, light work between them")
         return 0
     until = window_until()
     print(f"window open until {stamp(until)}" if until else "no window open")
@@ -6782,6 +6784,21 @@ def light_weight(j: Json, charges: dict[str, int]) -> int:
     """The light slots a job takes: those its --cpus declares, or those its measured use was charged."""
     cpus = float(j["spec"].get("cpus") or 0)
     return max(slots_for(cpus) if cpus else 1, charges.get(j.get("job", j)["id"], 1))
+
+
+def add_charge(d: Path, slot_seconds: float) -> None:
+    """Adds SLOT_SECONDS, charged beyond a light job's one slot, to the record in its directory D."""
+    with contextlib.suppress(OSError, ValueError):
+        slot_seconds += float((d / "charge").read_text())
+    atomic_write(d / "charge", f"{slot_seconds:.1f}\n")
+
+
+def charged(j: Json, start: float, end: float) -> float:
+    """The light slots a job held from START to END on average: its --cpus, or one plus the slot-seconds
+    it was charged beyond it over its run, whichever is more."""
+    cpus = float(j["spec"].get("cpus") or 0)
+    declared = float(slots_for(cpus) if cpus else 1)
+    return max(declared, 1 + float(j.get("charge") or 0) / (end - start)) if end > start else declared
 
 
 def ps_seconds(text: str) -> float:
@@ -6958,17 +6975,21 @@ def waits(jobs: list[Json], now: float) -> list[tuple[Json, float, float]]:
     return out
 
 
-def idle_for(job: Json, live: list[Json], slots: int) -> bool:
-    """Whether a slot JOB could take was free beside the LIVE jobs: a light slot with no drain, a
-    heavy job's own cores, or, for a drain, the whole machine; never while its build slot is in use."""
+def idle_for(job: Json, live: dict[str, tuple[Json, float]], slots: int) -> bool:
+    """Whether the slots JOB could take were free beside the LIVE jobs (each with the light slots it was
+    charged): its light slots with no drain, a heavy job's own cores, or, for a drain, the whole machine;
+    never while its build slot is in use."""
     level, slot = job["spec"].get("level"), slot_of(job["spec"])
-    if level == "none" or (slot and any(slot_of(x["spec"]) == slot for x in live)):
+    if level == "none" or (slot and any(slot_of(x["spec"]) == slot for x, _ in live.values())):
         return False
     if drains(job):
         return not live
     if level in HEAVY:
-        return not any(x["spec"].get("level") in HEAVY for x in live)
-    return not any(drains(x) for x in live) and sum(x["spec"].get("level") not in HEAVY for x in live) < slots
+        return not any(x["spec"].get("level") in HEAVY for x, _ in live.values())
+    if any(drains(x) for x, _ in live.values()):
+        return False
+    taken = sum(w for x, w in live.values() if x["spec"].get("level") not in HEAVY)
+    return taken + min(charged(job, 0, 0), slots) <= slots
 
 
 def idle_minutes(
@@ -6981,11 +7002,12 @@ def idle_minutes(
     if only is not None:  # sample only from the first wait
         since = max(since, min((a for _, a, _ in waiting), default=now))
     slots = light_slots()
+    weights = {j["id"]: charged(j, a, b) for j, a, b in held}
     per_job: Counter[str] = Counter()
     idle = drained = 0
     for t in range(int(since) + 30, int(now), 60):
-        live = [j for j, a, b in held if a <= t < b]
-        drained += any(drains(j) for j in live)
+        live = {j["id"]: (j, weights[j["id"]]) for j, a, b in held if a <= t < b}
+        drained += any(drains(j) for j, _ in live.values())
         stuck = [j.get("job", j)["id"] for j, a, b in waiting if a <= t < b and idle_for(j, live, slots)]
         per_job.update(stuck)
         idle += bool(stuck)
@@ -6993,11 +7015,15 @@ def idle_minutes(
 
 
 def queue_health(jobs: list[Json], now: float) -> Json:
-    """The host's last hour from the job records: light slot-minutes used against the slots, minutes a
-    drain held it, minutes runnable work waited beside idle slots, and the jobs that ended, by result."""
+    """The host's last hour from the job records: light slot-minutes used (the slots each job was
+    charged) against the slots, minutes a drain held it, minutes runnable work waited beside idle
+    slots, and the jobs that ended, by result."""
     since = now - 3600
     held = [x for x in spans(jobs, now) if x[2] > since]
-    used = sum(min(b, now) - max(a, since) for j, a, b in held if j["spec"].get("level") not in HEAVY) / 60
+    used = (
+        sum((min(b, now) - max(a, since)) * charged(j, a, b) for j, a, b in held if j["spec"].get("level") not in HEAVY)
+        / 60
+    )
     _, idle, drained = idle_minutes(jobs, now, since)
     ended = [j for j in jobs if float(j["state"].get("ended") or 0) > since]
     return {
@@ -7140,6 +7166,9 @@ def plan(
     built = [j for j in queued if j["state"].get("phase") == "built"]
     busy = {slot_of(j["spec"]) for j in running + built} - {""}
     heavy = any(j["spec"].get("level") in HEAVY for j in running)
+    # an exclusive hold waiting or held keeps new light holds out until it ends: light work claimed
+    # beside it only waits, then cuts ahead of the drain after QUIET_STARVE_MIN or of the next one
+    draining = any(drains(j) for j in running)
     # a "none" job takes no hold: it never waits for a light slot, and has its own as many
     # a light job takes the slots it declares or is measured using
     lights = [j for j in running if j["spec"].get("level") not in (*HEAVY, "none")]
@@ -7163,7 +7192,7 @@ def plan(
     wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none") and not held(j)}
     sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
     slots = light_slots(heavy)
-    share = max(1, slots // sharing)
+    share = math.ceil(slots / sharing)  # no slot idles while every campaign has its share
     # shortest first, except that a job queued past `age` goes ahead in submit order, so a
     # stream of short jobs never starves a long one
     aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
@@ -7223,12 +7252,16 @@ def plan(
         # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
         turn = {"until": now + drain_turn, "for": "drain turn", "opened": now}
         window = True
-    # while the last heavy job's drain holds and its batch has room, the next heavy job goes first, so
-    # light work is not readmitted between them; a full batch lets light work go first once
+    # while the last heavy job's drain holds and its batch has room, the next heavy job goes first and a
+    # drain joins it at once, so light work is not readmitted between them; a full batch lets light work
+    # go first once, even past an overdue drain, and the drains behind it wait for their turn
     batch = batch_of(jobs)
     room = bool(batch) and batch["jobs"] < BATCH_JOBS and now - batch["since"] < 60 * BATCH_MINUTES
     if batch:
         queued.sort(key=lambda j: (j["spec"].get("level") in HEAVY) != room)
+    drained = bool(batch) and not heavy and not lights  # the drain holds: nothing of ours runs
+    joins, full = drained and room, drained and not room
+    yielded = False  # a full batch's light work started this tick
     start: list[Json] = []
     skip: list[Json] = []
     reserved = False  # an aged light job too wide for the free slots: the light work behind it waits
@@ -7247,11 +7280,15 @@ def plan(
             continue
         if waiting or (is_heavy and heavy) or (is_bare and bare >= slots) or (weight and reserved):
             continue
-        if drains(j) and j not in overdue and (not drain_ok or wanting):
+        if weight and draining:
+            continue  # a drain's hold waits or runs: light work would only lengthen it or split its batch
+        if drains(j) and j not in overdue and not joins and (not drain_ok or wanting):
             continue  # for a lull in light work, or its turn after an hour of it
         if drains(j) and not drain_ok:
             continue  # an overdue drain claims as the running light work ends: quiet would block the lull
-        if overdue and not is_heavy and not is_bare and now + expected_seconds(j["spec"], took) > lights_end:
+        if drains(j) and yielded:
+            continue  # light work goes first after a full batch
+        if overdue and weight and not full and now + expected_seconds(j["spec"], took) > lights_end:
             continue  # an overdue drain waits: only light work that ends before the running work starts
         if is_late and not is_heavy and late >= max(1, slots // 2):
             continue  # deferred work never takes every slot from the direct path
@@ -7259,10 +7296,12 @@ def plan(
             continue  # its campaign has its share while another campaign waits
         if held(j):
             continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
+        draining = draining or drains(j)
+        yielded = yielded or (full and bool(weight))
         if is_heavy:
             batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}
             slots = light_slots(True)  # light work beside it keeps to a heavy job's share from now on
-            share = max(1, slots // sharing)
+            share = math.ceil(slots / sharing)
         of = j.get("job", j)  # a phase starts the job it is of: its build, or its command's hold
         state = {**of["state"], **({"batch": batch} if is_heavy else {})}
         start.append({**of, "state": {**state, "phase": "run" if is_heavy else "build"} if of is not j else state})
@@ -7349,10 +7388,14 @@ def cmd_worker(a: argparse.Namespace) -> int:
                     continue  # whatever arrived while it pruned
                 return 0
             if time.time() - sampled >= CPU_SAMPLE:
-                sampled = time.time()
+                since, sampled = sampled, time.time()
                 running = {j["id"] for j in jobs if j["state"].get("state") == "running"}
-                use = {k: v for k, v in use.items() if k in running} | meter(jobs, seen, sampled)
+                measured = meter(jobs, seen, sampled)
+                use = {k: v for k, v in use.items() if k in running} | measured
                 atomic_write(home / "cpu.json", json.dumps({"share": slot_cores(), "jobs": use}) + "\n")
+                for jid, u in measured.items():  # what queue health counts after the job ends
+                    if u["slots"] > 1 and since:
+                        add_charge(jd / jid, (u["slots"] - 1) * (sampled - since))
             turn = window_info()
             start, skip, window = plan(jobs, time.time(), turn, {k: int(v["slots"]) for k, v in use.items()})
             if window != turn:
@@ -8945,8 +8988,8 @@ def parser() -> argparse.ArgumentParser:
         "window",
         "let queued drains run back to back for a while",
         "Opens a window in which every queued exclusive job, which drains the machine, "
-        "starts as soon as the last one ends, while new light jobs "
-        "wait; it closes after --minutes or with --close. Without a window, drains and light work take "
+        "is due, the drains running back to back in batches (light work goes first once after each full one); "
+        "it closes after --minutes or with --close. Without a window, drains and light work take "
         "turns. With no option it shows the open window.",
         parents=False,
     )
