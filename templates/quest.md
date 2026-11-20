@@ -11,8 +11,8 @@ Risk: {risk}. The lead writes this quest; contributors read it and never edit it
 
 Three to five, at outcome level: `- A1 <criterion>: <the test that shows it>`. An untagged one
 needs a job tagged `--for A1` passing at the landed code, often the suite; tag one `[artifact]`
-(a committed `path`), `[decision]` (a PLAN.md Decisions id) or `[manual]` (checked by hand) when no
-job can show it.
+(a committed `path`), `[decision]` (a PLAN.md Decisions id), `[manual]` (checked by hand) or `[ci]`
+(CI green at the landed commit) when no job can show it.
 
 - A1 <criterion>: <evidence>
 

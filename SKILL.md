@@ -104,9 +104,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   a quest building on a library names it (`--consumes http`, or `http:client` for one part), and its
   lead hears of every quest any campaign starts there.
 - **Tasks** are the steps of a quest (`campaign start ID --task T --files GLOBS`): one agent each,
-  its assignment, tier and effort chosen for that step, on a branch off the quest branch. A task
-  merges into the quest branch when its own tests pass, with no review, job gate or exclusive run;
-  the lead merges, and the quest branch takes `main` daily. Tasks with disjoint files run at once.
+  its assignment, tier and effort chosen for that step, on a branch off the quest branch. `campaign
+  task merge ID T` merges it once its own jobs (`--task T`) pass at its head; the quest branch takes
+  `main` daily. Disjoint tasks run at once.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work. Its journal stays in the home
@@ -123,7 +123,7 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 
 ## Direct path first
 
-A **task**'s gate is its own tests. A **quest**'s gate, once, when the feature is done: the suite
+A **task**'s gate is its own jobs, never a review. A **quest**'s gate, once, when the feature is done: the suite
 and CI, the review its risk needs, and the measurements its criteria name. Findings and slow rows
 become tasks on the quest branch; nothing reruns but what they change. Sanitizers and the platform
 matrix are CI's.
@@ -145,8 +145,8 @@ job passing at the exact commit; it queues no local job.
    contributor **in the background** per task with the "Contributor" prompt
    (`references/prompts.md`), critical path first, capped by what it can merge and the host's
    light slots.
-2. A contributor builds its task, runs its tests (locally under `quiet light`, or as jobs), commits
-   and ends its turn; the lead merges the task into the quest branch and starts what it unblocked.
+2. A contributor builds its task, runs its tests as jobs (`--quest ID --task T`), commits and ends
+   its turn; the lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits`, resumes a contributor by message
    while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
    prompt; at every wake it fills idle capacity: launchable tasks, then an exploration batch.
@@ -211,9 +211,9 @@ Each criterion names its test or other evidence, and landing reads it from the r
 | `- A2 [artifact] ...` | a journal row naming a path committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
 | `- A3 [decision] ...` | a journal row naming an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | a journal row saying who checked what; shown as manual, never as automated proof |
+| `- A5 [ci] ...` | the land gate's CI, green at the commit |
 
-`campaign brief` generates the journal's Evidence table; an untagged criterion of a journal written
-before tags is read from its row. The quality bar (`references/review.md`): tests check values; a
+`campaign brief` generates the journal's Evidence table. The quality bar (`references/review.md`): tests check values; a
 fix's test is shown failing without it once; a performance
 claim has one short before/after run (`references/measurement.md`).
 
@@ -228,23 +228,24 @@ claim has one short before/after run (`references/measurement.md`).
 
 Jobs run at their submitted commit, a quest's in its build slot, with the submitter's PATH;
 `--build CMD` builds there under light first. A result is reused for identical code
-(without `.campaign/`), command, directory, level, `--env`, host and toolchain, and across merges
-from `main`, docs-only commits, read sets and `--inputs`. Name a mutable input with
+(without `.campaign/`), command, directory, level, `--env`, host and toolchain, by read sets, and
+across docs-only commits and merges from `main` touching neither the quest's files nor the job's
+`--inputs GLOBS` (a measurement without them: only docs). Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
 minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).
 Declare the `--minutes` a job needs: drains plan by it until it has run once. `campaign job
 rerun [--minutes N]` resubmits, keeping the build, `--env` and order. Every process a job starts dies with it. The worker starts by itself and prunes
 daily (`campaign job prune`); `campaign sweep` removes clean worktrees of merged or finished work;
-`campaign check` warns when disk runs low. Mechanics: `references/host.md`.
+Mechanics: `references/host.md`.
 
 ## Integration
 
 `campaign land` refuses with each gap `campaign brief` lists: dependencies, a merge of `main` when it
-changed code, the file set, tasks, criteria, messages, the suite at its code, reviews, CI.
-It fast-forwards `main`, or merges when only campaign files differ, verifies that the landed code
-equals the tested code, records the landing, and pushes only with `--push`. Exceptions are explicit
-and recorded with the landing: `--no-ci REASON`, and
-`--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). A red
+changed code (`--merge-main` merges, pushes and lands when evidence carries), the file set, tasks,
+criteria, messages, the suite at its code, reviews, CI.
+It fast-forwards `main` (or merges when only campaign files differ), checks the landed code is the
+tested code, records the landing, and pushes only with `--push`. Recorded exceptions: `--no-ci
+REASON`, and `--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). A red
 milestone check is fixed or reverted before the next landing.
 
 Other campaigns on the machine share the job queue, `quiet` and the quota. `campaign check` reports
