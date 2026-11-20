@@ -60,21 +60,23 @@ class Policy:
     light_slots: int = 8
 
 
-def sim_jobs(w: World, drop: set[str]) -> list[SimJob]:
+def sim_jobs(w: World, drop: set[str], shift: dict[str, float]) -> list[SimJob]:
+    """The window's jobs less DROP, each submitted SHIFT[id] seconds earlier (a driver with no delay)."""
     out: list[SimJob] = []
     for j in w.jobs:
         if j.id in drop:
             continue
         if not (src.SINCE <= j.submitted < src.UNTIL):
             continue
-        gone = 0.0 if j.ran else (j.ended or src.UNTIL)
+        early = shift.get(j.id, 0.0)
+        gone = 0.0 if j.ran else (j.ended or src.UNTIL) - early
         out.append(
             SimJob(
                 id=j.id,
                 campaign=j.campaign,
                 quest=j.quest,
                 level=j.level,
-                arrival=j.submitted,
+                arrival=j.submitted - early,
                 run=j.run_s,
                 build=j.build_s,
                 slot=j.slot,
@@ -225,51 +227,91 @@ def last_evidence(w: World) -> dict[tuple[str, str], tuple[float, float]]:
     return out
 
 
+def idle_before(gaps: list[list[int]], t: float) -> float:
+    return sum(max(0.0, min(b, t) - a) for a, b in gaps if a < t)
+
+
 def run(w: World, out: Path, names: list[str]) -> Json:
+    """query simulate: calibration of the v2 model, then each policy alone and all together."""
     rows: list[Json] = (
         [json.loads(x) for x in (out / "reruns.jsonl").read_text().splitlines()]
         if (out / "reruns.jsonl").exists()
         else []
     )
-    episodes = src.read_json(out / "episodes.json") or []
-    quests = src.read_json(out / "quests.json") or []
+    episodes: list[Json] = src.read_json(out / "episodes.json") or []
+    quests: list[Json] = src.read_json(out / "quests.json") or []
+    calls: list[Json] = src.read_json(out / "calls.json") or []
     avoidable = {r["job"] for r in rows if r["verdict"] == "avoidable"}
-    idle: dict[tuple[str, str], float] = {}
-    for q in quests:
-        idle[(q["campaign"], q["quest"])] = sum(v for k, v in q.items() if k.startswith("nothing moving")) * H
-    main_eps: dict[tuple[str, str], float] = defaultdict(float)
+    rerun_ids = {r["job"] for r in rows}
+    gaps: dict[tuple[str, str], list[list[int]]] = {(q["campaign"], q["quest"]): q.get("idle", []) for q in quests}
+    main_eps: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
     for e in episodes:
-        if "main moved" in e["reasons"] and e["landed"]:
-            main_eps[(e["campaign"], e["quest"])] += e["wall_h"] * H
+        if "main moved" in e["reasons"]:
+            t0 = src.stamp(e["first"].replace("Z", ":00Z"))
+            main_eps[(e["campaign"], e["quest"])].append((t0, t0 + e["wall_h"] * H))
+    in_episode = {
+        j.id
+        for j in w.jobs
+        if j.id in rerun_ids and any(a <= j.submitted <= b for a, b in main_eps.get((j.campaign, j.quest), []))
+    }
+    shift = {j.id: idle_before(gaps.get((j.campaign, j.quest), []), j.submitted) for j in w.jobs}
     lands = last_evidence(w)
     rec_ends = {j.id: j.ended for j in w.jobs}
     rec_wait = [j.began - j.submitted for j in w.jobs if j.ran and src.SINCE <= j.submitted < src.UNTIL]
     rec_hourly = [h["queued"] for h in (src.read_json(out / "hourly.json") or [])]
 
+    # tokens: agent runs begun in the window; the lead's from its transcript
+    runs = [
+        (c, r)
+        for c, u in w.usage.items()
+        for r in u.get("runs", [])
+        if src.SINCE <= src.stamp(r.get("began", "")) < src.UNTIL
+    ]
+    agent_tokens = sum(int(r.get("tokens") or 0) for _, r in runs)
+    merge_saved = sum(
+        int(r.get("tokens") or 0)
+        for c, r in runs
+        if any(a <= src.stamp(r.get("began", "")) <= b for a, b in main_eps.get((c, r.get("quest", "")), []))
+    )
+    lead_tokens = 0
+    routine_tokens = 0.0
+    for c, lead in w.lead.items():
+        mine = sum(v for h, v in lead.tokens.items() if src.SINCE <= src.stamp(h + ":00Z") < src.UNTIL)
+        none: Json = {}
+        session = max(w.usage[c].get("lead", []), key=lambda r: float(r.get("tokens") or 0), default=none)
+        whole, requests = float(session.get("tokens") or 0), float(session.get("requests") or 0)
+        in_window = requests * mine / whole if whole else 0.0  # the session's requests, scaled to the window
+        lead_calls = sum(
+            1 for x in calls if x["campaign"] == c and x["role"] == "lead" and src.SINCE <= x["t"] < src.UNTIL
+        )
+        lead_tokens += mine
+        routine_tokens += mine * min(1.0, lead_calls / in_window) if in_window else 0.0
+
     def one(p: Policy) -> Json:
-        drop = avoidable if p.identity else set()
-        jobs = sim_jobs(w, drop)
+        drop = (avoidable if p.identity else set()) | (in_episode if p.merge_queue else set())
+        jobs = sim_jobs(w, drop, shift if p.driver else {})
         mach = run_machine(jobs, p)
-        end_of = {j.id: j.end for j in jobs}
         waits = [j.start - j.arrival for j in jobs if j.start]
         landed = 0
-        land_days: list[float] = []
         for (c, q), (lt, le) in lands.items():
             mine = [j for j in jobs if j.campaign == c and j.quest == q and j.end and rec_ends.get(j.id, 0) <= lt]
-            e_sim = max((j.end for j in mine), default=le)
+            e_sim = max((j.end for j in mine), default=0.0)
             delay = max(0.0, lt - le) if le else 0.0
+            g = gaps.get((c, q), [])
             if p.merge_queue:
-                delay = max(0.0, delay - main_eps.get((c, q), 0.0))
+                delay -= sum(min(b, lt) - max(a, le) for a, b in main_eps.get((c, q), []) if b > le and a < lt)
             if p.driver:
-                delay = max(15 * 60.0, delay - idle.get((c, q), 0.0))
-            when = (e_sim if le else lt) + delay
-            if when < src.UNTIL:
+                delay -= idle_before(g, lt) - idle_before(g, le) if le else 0.0
+                delay = max(15 * 60.0, delay)
+            delay = max(0.0, delay)
+            base = e_sim if e_sim else (lt - (idle_before(g, lt) if p.driver else 0.0))
+            if base + delay < src.UNTIL:
                 landed += 1
-                land_days.append((when - src.SINCE) / 86400)
-        del end_of
-        machine_h = sum(j.run + j.build for j in jobs if j.start or j.phase != "queued") / H
+        machine_h = sum(j.run + j.build for j in jobs if j.start) / H
         sim_h = mach["hourly_queue"][: len(rec_hourly)]
         err = sum(abs(a - b) for a, b in zip(sim_h, rec_hourly)) / max(1, sum(rec_hourly)) * 100 if rec_hourly else None
+        agents = agent_tokens - (merge_saved if p.merge_queue else 0)
+        lead = lead_tokens - (routine_tokens if p.driver else 0)
         return {
             "policy": p.name,
             "landings": landed,
@@ -277,15 +319,17 @@ def run(w: World, out: Path, names: list[str]) -> Json:
             "machine_h": round(machine_h, 1),
             "jobs": len(jobs),
             "median_wait_min": round(statistics.median(waits) / 60, 1) if waits else None,
-            "mean_queue": round(statistics.mean(mach["hourly_queue"]), 1) if mach["hourly_queue"] else None,
+            "mean_queue": round(statistics.mean(sim_h), 1) if sim_h else None,
             "queue_error_pct_vs_recorded": round(err, 1) if err is not None else None,
+            "agent_tokens_M": round(agents / 1e6),
+            "lead_tokens_M": round(lead / 1e6),
         }
 
-    # calibration: the light slots v2 effectively filled, fitted to the recorded median wait
+    # calibration: the light slots v2 effectively filled, fitted to the recorded hourly queue
     fits = []
     for slots in (2, 3, 4, 5, 6, 8):
         r = one(Policy(f"v2 model, {slots} light slots", light_slots=slots))
-        fits.append((abs((r["median_wait_min"] or 0) - statistics.median(rec_wait) / 60), slots, r))
+        fits.append((r["queue_error_pct_vs_recorded"] or 0.0, slots, r))
     fits.sort(key=lambda x: x[0])
     slots = fits[0][1]
     recorded = {
@@ -294,6 +338,10 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         "machine_h": round(sum(j.run_s + j.build_s for j in w.jobs if src.SINCE <= j.submitted < src.UNTIL) / H, 1),
         "median_wait_min": round(statistics.median(rec_wait) / 60, 1),
         "mean_queue": round(statistics.mean(rec_hourly), 1) if rec_hourly else None,
+        "agent_tokens_M": round(agent_tokens / 1e6),
+        "lead_tokens_M": round(lead_tokens / 1e6),
+        "lead_routine_tokens_M": round(routine_tokens / 1e6),
+        "merge_episode_agent_tokens_M": round(merge_saved / 1e6),
     }
     policies = [
         Policy("v2 as recorded (calibrated)", light_slots=slots),
@@ -302,7 +350,7 @@ def run(w: World, out: Path, names: list[str]) -> Json:
         Policy("exclusive batching", batching=True, light_slots=slots),
         Policy("deterministic driver", driver=True, light_slots=slots),
         Policy("all four", identity=True, merge_queue=True, batching=True, driver=True, light_slots=slots),
-        Policy("all four, 8 light slots used", identity=True, merge_queue=True, batching=True, driver=True),
+        Policy("all four, 8 light slots filled", identity=True, merge_queue=True, batching=True, driver=True),
     ]
     if names:
         policies = [p for p in policies if p.name in names] or policies

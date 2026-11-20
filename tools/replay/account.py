@@ -575,6 +575,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
                 labelled.append((j.began, end, 1))
             labelled.append((j.submitted, j.began or end, 2))
         mine: dict[str, float] = defaultdict(float)
+        gaps: list[list[int]] = []
         for a0, b0, status in ivs:
             iv = clip(a0, b0) if status in FLIGHT else None
             if not iv:
@@ -585,6 +586,8 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
                 mine[name] += b - a
                 if lab == 99:
                     split(a, b, f"{c} {status}", idle_days)
+                    if status != "blocked":
+                        gaps.append([round(a), round(b)])
         if mine:
             for k, v in mine.items():
                 totals[k] += v
@@ -594,6 +597,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
                     "quest": q,
                     "status_now": rec.get("status", ""),
                     **{k: hours(v) for k, v in mine.items()},
+                    "idle": gaps,
                 }
             )
     whole = sum(totals.values())
