@@ -1445,7 +1445,8 @@ def branches(c: Campaign, pid: str) -> list[tuple[str, str, str, str]]:
     if p.get("branch"):
         out.append((pid, p["branch"], p.get("worktree", ""), p.get("base", "")))
     for task, t in sorted(p.get("tasks", {}).items()):
-        out.append((f"{pid}--{task}", t["branch"], t.get("worktree", ""), t.get("base", "")))
+        if not t.get("merged"):  # a merged task's branch and worktree are gone; its journal is the quest's
+            out.append((f"{pid}--{task}", t["branch"], t.get("worktree", ""), t.get("base", "")))
     return out
 
 
@@ -2320,7 +2321,7 @@ def check_evidence(c: Campaign, p: Json, target: str, ci: bool = False) -> tuple
             else:
                 missing.append(f"{check['name']}: {state}")
             continue
-        job = job_for_check(repo, target, check, c.state.get("tested_docs", []), ci=ci)
+        job = job_for_check(repo, target, check, c.state.get("tested_docs", []), ci=ci, files=p["files"])
         if job is None:
             missing.append(f"{check['name']}: no job")
         elif job["state"].get("state") != "done":
@@ -2417,7 +2418,8 @@ def landing_gaps(
     moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
     if moved:
         gaps.append(
-            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} into it"
+            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} "
+            f"into it (`campaign land {pid} --merge-main`)"
         )
     paths = changed(repo, base, target)
     owned = [x for x in paths if lead_file(x)]
@@ -2442,7 +2444,7 @@ def landing_gaps(
                 f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)"
             )
     carried = (landing_journals(c, pid) if apart else journals_at(c, repo, target, pid)) if final else {}
-    rows = criteria_evidence(c, pid, [target], carried, jobs) if final else {}
+    rows = criteria_evidence(c, pid, [target], carried, jobs, ci=ci) if final else {}
     unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
     if unproven:
         gaps.append(
@@ -2656,6 +2658,160 @@ def push_main(where: Path) -> str:
     return (pushed.stderr or pushed.stdout).strip() or f"git push exited {pushed.returncode}"
 
 
+def merged_journals(c: Campaign, pid: str) -> dict[str, str]:
+    """The journals of the quest's merged tasks, on its branch (in the home, where its journal is)."""
+    p = c.quests[pid]
+    names = [f"{pid}--{t}" for t, x in sorted(p.get("tasks", {}).items()) if x.get("merged")]
+    return {x: file_at(c.home, p["branch"], f"{c.meta}/journal/{x}.md") for x in names}
+
+
+def task_jobs(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[Json]:
+    """A task's own jobs (`job submit --quest ID --task T`), oldest first."""
+    return [j for j in quest_jobs(jobs, c.ident, pid) if j["spec"].get("task") == task]
+
+
+def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
+    """What keeps a task from merging into its quest's branch: its own jobs, the newest run of each
+    passed at the task's head (across docs-only commits and merges from main); no review, no gate."""
+    p = c.quests[pid]
+    t, repo = p["tasks"][task], c.repo(p)
+    if not has_ref(repo, t["branch"]):
+        return [f"its branch {t['branch']} is missing"]
+    head = rev(repo, t["branch"])
+    newest = {evidence_shape(j["spec"]): j for j in task_jobs(c, pid, task, jobs)}
+    if not newest:
+        return [f"no jobs of its own: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"]
+    gaps: list[str] = []
+    for j in newest.values():
+        twin = None
+        with contextlib.suppress(CampaignError, KeyError):
+            twin = job_at(j["spec"], head, merged=True, files=p["files"])
+        state = twin["state"].get("state") if twin else None
+        if twin is None:
+            gaps.append(f"{j['id']} ran other code than {head[:12]}: `campaign job rerun {j['id']}`")
+        elif state != "done":
+            gaps.append(f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}")
+    return gaps
+
+
+def task_states(c: Campaign, pid: str, jobs: list[Json]) -> dict[str, str]:
+    """Each task's state as status and brief show it: merged, dropped, or its journal's State and
+    what its merge waits for."""
+    p = c.quests[pid]
+    out: dict[str, str] = {}
+    for task, t in sorted(p.get("tasks", {}).items()):
+        if t.get("merged"):
+            out[task] = f"merged at {t['merged'][:12]}"
+        elif t.get("status") == "dropped":
+            out[task] = f"dropped: {t.get('reason', '')}"
+        else:
+            gaps = task_gaps(c, pid, task, jobs)
+            merge = "; ".join(gaps) if gaps else f"ready to merge: `campaign task merge {pid} {task}`"
+            out[task] = f"{journal_state(c, f'{pid}--{task}', t['branch'])}; {merge}"
+    return out
+
+
+def cmd_task_merge(a: argparse.Namespace) -> int:
+    """Merges a task's branch into its quest's branch once its own jobs passed at its head, then
+    removes the task's worktree and branch (and, for a quest in another repository, its journal's)."""
+    with writing() as c:
+        p = c.quest(a.id)
+        t = p.get("tasks", {}).get(a.task)
+        if t is None:
+            die(f"{a.id} has no task {a.task}")
+        if t.get("merged"):
+            die(f"task {a.task} merged into {a.id} at {t['merged'][:12]} already")
+        if t.get("status") == "dropped":
+            die(f"task {a.task} is dropped (`campaign set {a.id} --task {a.task} status=active` undoes it)")
+        repo = c.repo(p)
+        if gaps := task_gaps(c, a.id, a.task, all_jobs()):
+            die(f"task {a.task} cannot merge yet:\n  " + "\n  ".join(gaps))
+        head = rev(repo, t["branch"])
+        places = [(repo, "worktree"), *([(c.home, "journal")] if not same_repo(repo, c.home) else [])]
+        for _, field in places:
+            mine = (c.home / t[field]).resolve() if t.get(field) else None
+            if mine and mine.exists():
+                if git(mine, "status", "--porcelain"):
+                    die(f"{mine} has uncommitted or untracked files: commit or remove them first")
+                if field == "worktree" and (readers := readers_of(mine)):
+                    die(f"job {', '.join(readers)} reads from {mine}: merge once it ends")
+            into = (c.home / p[field]).resolve() if p.get(field) else None
+            if into is None or not into.exists():
+                die(f"{a.id}'s {field} is missing: `campaign start {a.id}` recreates it")
+            if git(into, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) != p["branch"]:
+                die(f"{into} is not on {p['branch']}")
+            if git(into, "status", "--porcelain", "--untracked-files=no"):
+                die(f"{into} has uncommitted changes: commit them first")
+        for owner, field in places:
+            into = (c.home / p[field]).resolve()
+            if ancestor(owner, t["branch"], p["branch"]):
+                continue
+            message = f"campaign: merge task {a.task} into {a.id}"
+            done = subprocess.run(
+                ["git", "-C", str(into), "merge", "-q", "--no-ff", "-m", message, t["branch"]],
+                capture_output=True,
+                text=True,
+            )
+            if done.returncode != 0:
+                conflicts = git(into, "diff", "--name-only", "--diff-filter=U", check=False).split()
+                git(into, "merge", "--abort", check=False)
+                die(
+                    f"merging {t['branch']} into {p['branch']} conflicts in "
+                    f"{', '.join(conflicts) or done.stderr.strip()}: resolve it in a task; nothing merged here"
+                )
+        for owner, field in places:
+            mine = (c.home / t[field]).resolve() if t.get(field) else None
+            if mine and mine.exists():
+                git(owner, "worktree", "remove", str(mine))
+            if field in t:
+                t[field] = ""
+            if has_ref(owner, t["branch"]):
+                git(owner, "branch", "-q", "-D", t["branch"])  # merged into the quest's branch, not main
+        t["merged"] = head
+        p["updated"] = stamp()
+        c.save(f"campaign: merge task {a.task} into {a.id} at {head[:12]}")
+    print(f"{a.id}: merged task {a.task} at {head[:12]} into {p['branch']}; its worktree and branch are removed")
+    return 0
+
+
+def merge_main_into(c: Campaign, pid: str) -> str:
+    """Merges main into the quest's branch in its worktree (a merge, never a rebase), and pushes the
+    branch to origin when there is one, so CI runs at the merge. A conflict refuses, leaving the
+    branch as it was. Returns what happened, "" when main was in the branch already."""
+    p = c.quests[pid]
+    repo = c.repo(p)
+    main, branch = main_branch(repo), p["branch"]
+    if ancestor(repo, rev(repo, main), rev(repo, branch)):
+        return ""
+    wt = (c.home / p.get("worktree", "")).resolve() if p.get("worktree") else None
+    if wt is None or not wt.exists():
+        die(f"{pid} has no worktree to merge {main} in: `campaign start {pid}` recreates it")
+    if git(wt, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) != branch:
+        die(f"{wt} is not on {branch}")
+    if git(wt, "status", "--porcelain", "--untracked-files=no"):
+        die(f"{wt} has uncommitted changes: commit them, then merge {main}")
+    done = subprocess.run(
+        ["git", "-C", str(wt), "merge", "-q", "--no-edit", "-m", f"Merge {main} into {branch}", main],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        conflicts = git(wt, "diff", "--name-only", "--diff-filter=U", check=False).split()
+        git(wt, "merge", "--abort", check=False)
+        die(
+            f"merging {main} into {branch} conflicts in {', '.join(conflicts) or done.stderr.strip()}: "
+            "resolve it in the quest's worktree; nothing landed"
+        )
+    head = rev(wt, "HEAD")
+    said = f"merged {main} into {branch} at {head[:12]}"
+    if git_ok(wt, "remote", "get-url", "origin"):
+        pushed = subprocess.run(
+            ["git", "-C", str(wt), "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], capture_output=True, text=True
+        )
+        said += ", pushed" if pushed.returncode == 0 else f" (its push failed: {pushed.stderr.strip()})"
+    return said + "; "
+
+
 def cmd_land(a: argparse.Namespace) -> int:
     with writing() as c, contextlib.ExitStack() as held:
         p = c.quest(a.id)
@@ -2719,6 +2875,8 @@ def cmd_land(a: argparse.Namespace) -> int:
         final = a.upto is None
         if not final and not a.reason:
             die("an increment needs --reason (why this prefix is safe to land alone)")
+        if a.merge_main and not final:
+            die("--merge-main lands the whole quest: drop --upto")
         head = rev(repo, p["branch"])
         target = rev(repo, a.upto) if a.upto else head
         if not ancestor(repo, target, head):
@@ -2734,13 +2892,20 @@ def cmd_land(a: argparse.Namespace) -> int:
             die(f"{checkout} has uncommitted changes")
         for where in dict.fromkeys([checkout, c.home]) if a.push else ():
             sync_main(c, where)
+        merged = merge_main_into(c, a.id) if a.merge_main else ""
+        if merged:
+            target = rev(repo, p["branch"])
         with frozen():  # the gaps only read
             gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
-            die(f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
+            die(merged + f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
+        if merged:
+            print(merged.rstrip("; "))
         evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]
         carried = landing_journals(c, a.id) if not same_repo(repo, c.home) else journals_at(c, repo, target, a.id)
-        proven: dict[str, list[Json]] = criteria_evidence(c, a.id, [target], carried) if final else {}
+        proven: dict[str, list[Json]] = (
+            criteria_evidence(c, a.id, [target], carried, ci=a.no_ci is None) if final else {}
+        )
         met = {x: "; ".join(r["evidence"] for r in rows if r["met"]) for x, rows in proven.items()}
         main_head = rev(repo, main)
         base = merge_base(repo, main_head, target)
@@ -3052,7 +3217,7 @@ def section(text: str, title: str) -> str:
     return m.group(1) if m else ""
 
 
-PROOF = ("job", "artifact", "decision", "manual")  # what a criterion's evidence must be; job by default
+PROOF = ("job", "artifact", "decision", "manual", "ci")  # what a criterion's evidence must be; job by default
 
 
 def criteria(c: Campaign, pid: str) -> dict[str, Json]:
@@ -3278,7 +3443,7 @@ def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | N
             if ci_job(repo, k, check["cmd"][len(CI_CHECK) :].strip()) == "success":
                 return {"journal": "checks", "evidence": check["cmd"], "met": True, "why": []}
             continue
-        job = job_for_check(repo, k, check, c.state.get("tested_docs", []), ci=ci_covers(c))
+        job = job_for_check(repo, k, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
         if job and job["state"].get("state") == "done":
             return {"journal": "checks", "evidence": f"{job['id']} (the {names[0]} check)", "met": True, "why": []}
     at = f" at {commits[0][:12]}" if commits else ""
@@ -3333,12 +3498,38 @@ def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None =
     return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}
 
 
+def ci_row(c: Campaign, repo: Path, commits: list[str], ci: bool) -> Json:
+    """A [ci] criterion's evidence: the land gate's CI check, green at one of COMMITS, or waived by
+    `land --no-ci` (CI false)."""
+    if not ci:
+        return {"journal": "ci", "evidence": "CI waived by --no-ci", "met": True, "why": []}
+    if not ci_covers(c):
+        return {"journal": "ci", "evidence": "", "met": False, "why": ["the campaign runs no CI (`config ci=github`)"]}
+    why = ""
+    for k in commits:
+        why = ci_state(repo, k, c.state.get("ci_later", []))
+        if why == "success":
+            return {"journal": "ci", "evidence": f"CI green at {k[:12]}", "met": True, "why": []}
+    return {
+        "journal": "ci",
+        "evidence": "",
+        "met": False,
+        "why": [f"CI at {commits[0][:12]}: {why}" if commits else "no commit"],
+    }
+
+
 def criteria_evidence(
-    c: Campaign, pid: str, commits: list[str], journals: dict[str, str], jobs: list[Json] | None = None
+    c: Campaign,
+    pid: str,
+    commits: list[str],
+    journals: dict[str, str],
+    jobs: list[Json] | None = None,
+    *,
+    ci: bool = True,
 ) -> dict[str, list[Json]]:
     """Each criterion's evidence at one of COMMITS: the jobs tagged for it or the gate check its text
-    names, else its rows in the journals' Evidence tables (journals written before tags, and non-job
-    criteria)."""
+    names, CI for a [ci] one (waived when not CI), else its rows in the journals' Evidence tables
+    (journals written before tags, and the other kinds)."""
     wanted = criteria(c, pid)
     p = c.quests[pid]
     repo = c.repo(p)
@@ -3347,13 +3538,18 @@ def criteria_evidence(
         for x, t in tagged(c, pid, all_jobs() if jobs is None else jobs).items()
         if wanted.get(x, {}).get("kind") == "job"
     }
-    rows = evidence(journals, {x: w for x, w in wanted.items() if x not in tags}, proof(c, repo, commits))
+    rows = evidence(
+        journals, {x: w for x, w in wanted.items() if x not in tags and w["kind"] != "ci"}, proof(c, repo, commits)
+    )
     named = {x: named_check(c, p, w["whole"], commits) for x, w in wanted.items() if w["kind"] == "job"}
+    ran = ci_row(c, repo, commits, ci) if any(w["kind"] == "ci" for w in wanted.values()) else {}
     return {
         x: [tagged_row(repo, commits, tags[x], named.get(x))]
         if x in tags
+        else [ran]
+        if w["kind"] == "ci"
         else [n for n in [named.get(x)] if n] + rows[x]
-        for x in wanted
+        for x, w in wanted.items()
     }
 
 
@@ -3376,6 +3572,8 @@ def criteria_for(c: Campaign, pid: str, given: str) -> list[str]:
     for cid in ids:
         if cid not in wanted:
             die(f"--for {cid}: {pid}'s quest file has no criterion {cid} (it has {', '.join(wanted) or 'none'})")
+        if wanted[cid]["kind"] == "ci":
+            die(f"--for {cid}: a [ci] criterion is met by CI at the landed commit, not by a job")
         if wanted[cid]["kind"] != "job":
             die(f"--for {cid}: an [{wanted[cid]['kind']}] criterion is proven in the journal, not by a job")
     return ids
@@ -3645,12 +3843,14 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
             f"{x['name']}: {j['id']} {docs_note(j)}"
             for x in gates(p)
             if not x["cmd"].startswith(CI_CHECK)
-            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c)))
+            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"]))
             and docs_note(j)
         ]
+        view["tasks"] = task_states(c, pid, jobs)
         if brief:
             for name, branch, _, _ in branches(c, pid):
                 texts[name] = journal_text(c, name, branch)
+            texts.update(merged_journals(c, pid))
         if table:
             tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
             view["evidence"] = evidence_table(criteria_evidence(c, pid, tips, texts, jobs))
@@ -3660,7 +3860,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
         view["checks"] = checks
         view["later"] = [x["name"] for x in deferred(p)]
         for check in gates(p):
-            job = job_for_check(repo, head, check, c.state.get("tested_docs", []), ci=ci_covers(c))
+            job = job_for_check(repo, head, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
             note = f" ({docs_note(job)})" if job and docs_note(job) else ""
             checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
             if job:
@@ -3682,9 +3882,10 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
             task = p.get("tasks", {}).get(name.partition("--")[2], {})
             state = f"dropped: {task.get('reason', '')}" if task.get("status") == "dropped" else state_of(texts[name])
             work[name] = {"state": state, "dirty": dirty, "worktree": rel}
+        texts.update(merged_journals(c, pid))
         journal = texts.get(pid) or journal_text(c, pid, p["branch"])
         wanted = criteria(c, pid)
-        tasks = [w["state"] for name, w in work.items() if name != pid and not w["state"].startswith("dropped: ")]
+        tasks = [x for x in view["tasks"].values() if not x.startswith("dropped: ")]
         tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
         journals = {pid: journal, **{n: t for n, t in texts.items() if n != pid}}
         rows = criteria_evidence(c, pid, tips, journals, jobs)
@@ -3694,7 +3895,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
             "unlisted": [x for x, r in rows.items() if not r],
             "detail": [{"id": x, **wanted[x], "rows": r} for x, r in rows.items()],
             "tasks": len(tasks),
-            "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done)\b", t, re.I)),
+            "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done|merged)\b", t, re.I)),
             "next": next_step(journal),
         }
     view["replaced"] = replaced_citations(texts, mine)
@@ -4225,13 +4426,13 @@ def print_quest(v: Json, full: bool) -> None:
             checks.append("after landing: " + ", ".join(v["later"]))
         if checks:
             print(f"  {mark('🧪')}checks: " + "; ".join(checks))
-        tasks = {}
+        tasks = dict(v["tasks"])
         for name, w in v["journal"].items():
             dirty = " [worktree missing]" if w["dirty"] < 0 else f" [{w['dirty']} uncommitted]" if w["dirty"] else ""
             if name == v["id"]:
                 print(f"  {mark('📓')}journal: {w['state']}{dirty}")
             else:  # a task's id is QUEST--TASK
-                tasks[name.split("--", 1)[1]] = f"{w['state']}{dirty}"
+                tasks[name.split("--", 1)[1]] += dirty
         if tasks:
             print(f"  {mark('👥')}tasks:")
             for task, state in tasks.items():
@@ -4300,6 +4501,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
             else ""
         )
         q["to_land"] = v["missing"]
+        q["tasks"] = v.get("tasks", {})
         q["docs_only"] = v.get("docs_only", [])
         q["messages"] = [
             {k: m[k] for k in ("id", "by", "at", "text")} for m in v.get("messages", []) if not m["answered"]
@@ -4335,8 +4537,10 @@ def print_brief(b: Json) -> None:
             print(f"  ready to {q['next'].split()[1]}: `{q['next']}`")
         for gap in q["to_land"]:
             print(f"  - {gap}")
+        for task, state in q["tasks"].items():
+            print(f"  task {task}: {state}")
         for note in q["docs_only"]:
-            print(f"  evidence across docs-only commits: {note}")
+            print(f"  evidence at other code: {note}")
         for m in q["messages"]:
             print(f"  - {m['id']} from {m['by']}: {m['text']}")
         for f in q["failed"]:
@@ -5492,10 +5696,12 @@ def all_jobs(cache: dict[str, tuple[int, Json]] | None = None) -> list[Json]:
     return jobs
 
 
-def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = (), ci: bool = False) -> Json | None:
+def job_for_check(
+    repo: Path, commit: str, check: Json, tested: Sequence[str] = (), *, ci: bool = False, files: Sequence[str] = ()
+) -> Json | None:
     """The job of a quest check at COMMIT's code. The build-test needs the exact code, documentation
     aside, unless CI at the exact commit (CI) tests the merge with main; every other check counts
-    across merges from main."""
+    across merges from main that touch none of the quest's FILES."""
     nothing: Json = {}
     spec: Json = {
         "repo": str(repo),
@@ -5508,7 +5714,7 @@ def job_for_check(repo: Path, commit: str, check: Json, tested: Sequence[str] = 
         **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
     exact = build_test(check)
-    return job_at(spec, commit, tested, exact=exact, merged=ci or not exact)
+    return job_at(spec, commit, tested, exact=exact, merged=ci or not exact, files=files)
 
 
 def build_test(check: Json) -> bool:
@@ -5518,7 +5724,7 @@ def build_test(check: Json) -> bool:
 
 DOC_PATHS = ("docs/**", "website/**", "*.md")  # documentation: evidence outlives commits that change only these
 CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs, whatever its extension
-DOCS_DEPTH = 20  # how many commits back evidence is looked for across documentation-only commits
+CARRY_DEPTH = 40  # how many first-parent commits back evidence is looked for (docs-only commits, merges from main)
 
 
 def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
@@ -5558,82 +5764,119 @@ def tested_docs(spec: Json) -> list[str]:
     return list(state.get("tested_docs", [])) if isinstance(state, dict) else []
 
 
-def docs_only_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()) -> list[tuple[str, list[str]]]:
-    """COMMIT's first-parent ancestors whose code differs from COMMIT's only in documentation CMD does
-    not name and no TESTED glob matches, nearest first, each with the paths that differ."""
-    out: list[tuple[str, list[str]]] = []
-    ignored: set[str] = set()
-    newer = commit
+def quest_globs(spec: Json) -> list[str]:
+    """The file set of the quest that submitted SPEC, from its campaign's state; none for another job."""
+    folder, quest = spec.get("campaign"), spec.get("quest")
+    state = read_json_shared(Path(folder) / "state.json") if folder and quest else None
+    q = state.get("quests", {}).get(quest, {}) if isinstance(state, dict) else {}
+    return list(q.get("files", []))
+
+
+def from_main(repo: Path, commit: str, main_head: str) -> bool:
+    """Whether COMMIT brings main's changes: a merge whose other parents main holds, or main's own."""
+    parents: list[str] = on_commits(
+        ("parents", str(repo), commit), lambda: git(repo, "rev-parse", f"{commit}^@").split()
+    )
+    if len(parents) > 1:
+        return all(ancestor(repo, x, main_head) for x in parents[1:])
+    return ancestor(repo, commit, main_head)
+
+
+def carried_ancestors(
+    repo: Path, commit: str, spec: Json, tested: Sequence[str], *, merged: bool, files: Sequence[str]
+) -> list[tuple[str, list[str], int]]:
+    """COMMIT's nearest first-parent ancestors whose evidence counts at COMMIT, each with the docs it
+    ignores and the merges from main it crosses: every commit between changes only documentation the
+    command does not name, or, with MERGED, brings main's changes that touch none of the quest's
+    FILES (its file set and own changes) nor the job's inputs (as input_files reads them). A
+    measurement (strict, exclusive) without --inputs crosses only main's documentation."""
+    cmd, inputs = spec["cmd"], spec.get("inputs") or []
     line = on_commits(
         ("first-parents", str(repo), commit),
-        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={DOCS_DEPTH + 1}", commit).split(),
+        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={CARRY_DEPTH + 1}", commit).split(),
     )
+    main_head = rev(repo, main_branch(repo)) if merged else ""
+    own = set(own_code(repo, main_head, commit, cmd, tested)) if merged else set()
+    named = named_paths(cmd, spec.get("cwd", ""))
+    measured = spec.get("level") in HEAVY and not inputs
+
+    def touches(path: str) -> bool:
+        name = path.rsplit("/", 1)[-1]
+        return (
+            measured
+            or path in own
+            or any(fnmatch.fnmatch(path, g) for g in files)
+            or (
+                bool(inputs)
+                and (
+                    any(fnmatch.fnmatchcase(path, g) for g in inputs)
+                    or any(fnmatch.fnmatchcase(name, g) for g in BUILD_FILES)
+                    or any(path == x or path.startswith(x + "/") for x in named)
+                )
+            )
+        )
+
+    out: list[tuple[str, list[str], int]] = []
+    ignored: set[str] = set()
+    merges, newer = 0, commit
     for older in line[1:]:
         paths = [x for x in changed(repo, older, newer) if not is_meta(x)]
-        if not all(doc_path(x, cmd, tested) for x in paths):
+        code = [x for x in paths if not doc_path(x, cmd, tested)]
+        if merged and from_main(repo, newer, main_head):
+            if any(touches(x) for x in code):
+                break
+            merges += 1
+        elif code:
             break
-        ignored.update(paths)
-        out.append((older, sorted(ignored)))
+        else:
+            ignored.update(paths)
+        out.append((older, sorted(ignored), merges))
         newer = older
     return out
 
 
 def job_at(
-    spec: Json, commit: str, tested: Sequence[str] | None = None, exact: bool = False, merged: bool = False
+    spec: Json,
+    commit: str,
+    tested: Sequence[str] | None = None,
+    *,
+    exact: bool = False,
+    merged: bool = False,
+    files: Sequence[str] | None = None,
 ) -> Json | None:
     """The job with SPEC's identity at COMMIT's code; when none passed there, the one that passed at
-    the nearest ancestor whose code differs only in documentation the command does not name, with
-    "at" (that commit) and "docs" (the paths it ignores); with MERGED, at an ancestor that differs
-    only by merges from main, with "at" and "merged"; unless EXACT, then its read_twin."""
+    the nearest ancestor carried_ancestors finds (with MERGED, across merges from main), with "at"
+    (that commit), "docs" (the paths it ignores) and "merged" (the merges it crosses); unless EXACT,
+    then its read_twin. FILES is the quest's file set (default: the submitting quest's)."""
     found = job_with_key({**spec, "commit": commit})
     if found is not None and found["state"].get("state") == "done":
         return found
     globs = tested_docs(spec) if tested is None else tested
-    for older, paths in docs_only_ancestors(Path(spec["repo"]), commit, spec["cmd"], globs):
+    scope = quest_globs(spec) if files is None else files
+    for older, paths, merges in carried_ancestors(Path(spec["repo"]), commit, spec, globs, merged=merged, files=scope):
         twin = job_with_key({**spec, "commit": older})
         if twin is not None and twin["state"].get("state") == "done":
-            return {**twin, "at": older, "docs": paths}
-    for older in merged_ancestors(Path(spec["repo"]), commit, spec["cmd"], globs) if merged else []:
-        twin = job_with_key({**spec, "commit": older})
-        if twin is not None and twin["state"].get("state") == "done":
-            return {**twin, "at": older, "merged": True}
+            return {**twin, "at": older, **({"docs": paths} if paths else {}), **({"merged": merges} if merges else {})}
     return (None if exact else read_twin(spec, commit)) or found
 
 
-def own_code(repo: Path, commit: str, cmd: str, tested: Sequence[str]) -> dict[str, str]:
+def own_code(repo: Path, main_head: str, commit: str, cmd: str, tested: Sequence[str]) -> dict[str, str]:
     """The quest's own code at COMMIT: the paths it changes against its merge base with main, with
     their blobs, documentation CMD does not name aside."""
-    main_head = rev(repo, main_branch(repo))
     own: dict[str, str] = on_commits(("own", str(repo), main_head, commit), lambda: own_blobs(repo, main_head, commit))
     return {x: b for x, b in own.items() if not doc_path(x, cmd, tested)}
 
 
-def merged_ancestors(repo: Path, commit: str, cmd: str, tested: Sequence[str] = ()) -> list[str]:
-    """COMMIT's nearest first-parent ancestors whose own code (own_code) is COMMIT's: what lies between
-    them came from main. CI at COMMIT tests that integration; their evidence stands for COMMIT's."""
-    line = on_commits(
-        ("first-parents", str(repo), commit),
-        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={DOCS_DEPTH + 1}", commit).split(),
-    )
-    main_head = rev(repo, main_branch(repo))
-    own = own_code(repo, commit, cmd, tested)
-    out: list[str] = []
-    for older in line[1:]:
-        if ancestor(repo, older, main_head) or own_code(repo, older, cmd, tested) != own:
-            break  # main's own history, or the quest's code changed there
-        out.append(older)
-    return out
-
-
 def docs_note(job: Json) -> str:
     """How a job found at other code counts: "" for one at the exact code."""
-    if job.get("docs"):
-        return f"passed at {job['at'][:12]}; ignores docs-only {', '.join(job['docs'])}"
+    verb = "measured" if job["spec"].get("level") in HEAVY else "passed"
     if job.get("reads"):
-        return f"passed at {job['at'][:12]}; the {job['reads']} files it read are unchanged"
+        return f"{verb} at {job['at'][:12]}; the {job['reads']} files it read are unchanged"
+    docs = f"ignores docs-only {', '.join(job['docs'])}" if job.get("docs") else ""
     if job.get("merged"):
-        return f"passed at {job['at'][:12]}; only merges from main since"
-    return ""
+        merges = f"{plural(job['merged'], 'merge')} from main since, none touching its files"
+        return f"{verb} at {job['at'][:12]}; " + (f"{merges}; {docs}" if docs else f"only {merges}")
+    return f"{verb} at {job['at'][:12]}; {docs}" if docs else ""
 
 
 _keys: list[Any] = []  # [the keys folder's mtime, {key: the job ids its links name}]
@@ -7489,7 +7732,19 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
     return out
 
 
-SUBMIT_FLAGS = ("--ref", "--for", "--fails-without", "--quest", "--build", "--slot", "--commit", "--level", "--after")
+SUBMIT_FLAGS = (
+    "--ref",
+    "--for",
+    "--fails-without",
+    "--quest",
+    "--task",
+    "--inputs",
+    "--build",
+    "--slot",
+    "--commit",
+    "--level",
+    "--after",
+)
 
 
 def parsed_submit(spec: Json, a: argparse.Namespace, ids: list[str]) -> str:
@@ -7499,6 +7754,8 @@ def parsed_submit(spec: Json, a: argparse.Namespace, ids: list[str]) -> str:
         "level": f"{spec['level']} ({spec['minutes']} min)",
         "commit": (spec.get("commit") or "")[:12],
         "quest": spec.get("quest"),
+        "task": spec.get("task"),
+        "inputs": ",".join(spec.get("inputs", [])),
         "for": ",".join(ids),
         "fails-without": "the command must exit nonzero" if a.fails_without else "",
         "ref": refs,
@@ -7536,6 +7793,7 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         "keep": a.keep,
         "slot": a.slot or "",
         **({"build": a.build} if a.build else {}),
+        **({"inputs": csv(a.inputs)} if a.inputs and csv(a.inputs) else {}),
     }
     spec["env"] = dict(x.split("=", 1) for x in a.env)
     cwd = Path.cwd()
@@ -7543,8 +7801,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     repo = Path(a.repo).resolve() if a.repo else cwd
     c: Campaign | None = None
     p: Json = {}
-    if (a.criteria or a.fails_without) and not a.quest:
-        die("--for and --fails-without name a quest's criteria: add --quest ID")
+    if (a.criteria or a.fails_without or a.task) and not a.quest:
+        die("--for, --fails-without and --task name a quest's: add --quest ID")
     if a.fails_without and not a.criteria:
         die("--fails-without needs --for: the criteria whose test fails without the fix")
     if a.fails_without:
@@ -7557,6 +7815,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         ids = criteria_for(c, a.quest, a.criteria or "")
         repo = Path(a.repo).resolve() if a.repo else c.repo(p)
         default_ref = p.get("branch") or "HEAD"
+        if a.task:
+            task = p.get("tasks", {}).get(a.task)
+            if task is None:
+                die(f"{a.quest} has no task {a.task}")
+            spec["task"], default_ref = a.task, task["branch"]
         if a.priority is None and not a.long and a.level == "light" and p["status"] in ("active", "review"):
             spec["priority"] = 1  # direct-path evidence, as verify's gate checks; measurements keep 0
     if a.unversioned or not git_ok(repo, "rev-parse", "--git-dir"):
@@ -7578,6 +7841,10 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             print(
                 f"note: uncommitted changes in {top} are not in the job; it runs {spec['commit'][:12]}", file=sys.stderr
             )
+    if spec.get("inputs") and not (
+        spec.get("commit") and matches_inputs(Path(spec["repo"]), spec["commit"], spec["inputs"])
+    ):
+        die(f"--inputs {','.join(spec['inputs'])} match no file at the job's commit")
     outside = outside_inputs(command, spec.get("repo", ""))
     if outside:
         print(
@@ -7878,7 +8145,9 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         with contextlib.suppress(CampaignError):
             quest = c.quest(spec["quest"])
             home = c.repo(quest)
-            return quest.get("branch", ""), home, [b for _, b, _, _ in branches(c, spec["quest"])] + [main_branch(home)]
+            task = quest.get("tasks", {}).get(spec.get("task", ""), {})
+            branch = task["branch"] if task.get("branch") and has_ref(home, task["branch"]) else quest.get("branch", "")
+            return branch, home, [b for _, b, _, _ in branches(c, spec["quest"])] + [main_branch(home)]
         return "", None, []
 
     for jid in order:  # every job is checked before any is queued
@@ -8010,7 +8279,9 @@ def job_needs() -> Json:
                     whole.update(
                         j["id"]
                         for j in (
-                            job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c))
+                            job_for_check(
+                                repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"]
+                            )
                             for x in gates(p)
                         )
                         if j
@@ -8904,6 +9175,12 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--no-ci", metavar="REASON", help="land without green CI, saying why (recorded with the landing)")
     p.add_argument(
+        "--merge-main",
+        action="store_true",
+        help="merge main into the quest's branch first (never a rebase), push it, and land when the evidence "
+        "carries; a conflict or voided evidence refuses with the gap",
+    )
+    p.add_argument(
         "--record", metavar="REF", help="record a landing that already happened (with --reason; unchecked gates kept)"
     )
     p.add_argument(
@@ -8914,6 +9191,25 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--keep", action="store_true", help="keep the quest's worktrees, branches and build slot")
     p.set_defaults(fn=cmd_land)
+
+    tasks = command(
+        "task",
+        "merge a quest's task into its branch",
+        "Tasks are the steps of a quest (`campaign start ID --task T`), each on its own branch.",
+        parents=False,
+    )
+    task = tasks.add_subparsers(dest="task_command", metavar="COMMAND", title="commands", required=True)
+    p = task.add_parser(
+        "merge",
+        parents=[common],
+        help="merge a task into its quest's branch",
+        description="Merges task T's branch into quest ID's branch (no fast-forward) once the newest run of each "
+        "of the task's own jobs (`job submit --quest ID --task T`) passed at its head: no review and no gate "
+        "beyond them. Then removes the task's worktree and branch; its journal stays on the quest's branch.",
+    )
+    p.add_argument("id", metavar="ID", help="the quest")
+    p.add_argument("task", metavar="T", help="the task")
+    p.set_defaults(fn=cmd_task_merge)
 
     p = command(
         "pin",
@@ -9078,6 +9374,13 @@ def parser() -> argparse.ArgumentParser:
         help="the cores a light job keeps busy at once: it takes their light slots from its start",
     )
     p.add_argument("--env", action="append", default=[], metavar="K=V", help="part of the job's identity")
+    p.add_argument(
+        "--inputs",
+        metavar="GLOBS",
+        help="the files it depends on (comma-separated): its code is their bytes, the build files' and the paths "
+        "its command names, so its result counts at any commit where they are unchanged",
+    )
+    p.add_argument("--task", metavar="T", help="with --quest, a task's job: at the task's branch, its merge gate")
     p.add_argument("--slot", metavar="NAME", help="reuse a named checkout (default for a --quest job: its quest's)")
     p.add_argument("--fresh", action="store_true", help="a fresh checkout instead of the quest's build slot")
     p.add_argument("--keep", action="store_true", help="keep the source checkout")
