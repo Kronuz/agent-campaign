@@ -40,11 +40,11 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   first-parent commits, whatever jobs it ran after, each changing only documentation (`docs/**`,
   `website/**`, `*.md` outside `tests/` and `bench/`, never a build file) its command does not name
   and no `tested_docs` glob matches, or, for a quest, a merge from main whose changes touch none of
-  the quest's files or own changes, the paths its command names, nor its `--inputs` (with their build
-  files); a strict or exclusive job without `--inputs` crosses only main's documentation. The
-  build-test, a gate check without `--inputs`, counts by neither read set nor merges unless
-  `ci=github`, whose run at the exact head tests the merge. Upgrading `campaign` can change
-  keys: run `campaign verify` again. What the key does not see is the submitter's to name:
+  the quest's files or own changes nor its `--inputs` (with their build files and named paths); a
+  strict or exclusive job without `--inputs` crosses only main's documentation. The build-test, a
+  gate check without `--inputs`, counts by neither read set nor merges unless `ci=github`, whose
+  run at the exact head tests the merge. Upgrading `campaign` can change keys: run `campaign
+  verify` again. What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|

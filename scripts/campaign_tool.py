@@ -2893,7 +2893,8 @@ def cmd_land(a: argparse.Namespace) -> int:
         for where in dict.fromkeys([checkout, c.home]) if a.push else ():
             sync_main(c, where)
         merged = merge_main_into(c, a.id) if a.merge_main else ""
-        target = head = rev(repo, p["branch"]) if merged else target
+        if merged:
+            target = rev(repo, p["branch"])
         with frozen():  # the gaps only read
             gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
@@ -5787,7 +5788,7 @@ def carried_ancestors(
     """COMMIT's nearest first-parent ancestors whose evidence counts at COMMIT, each with the docs it
     ignores and the merges from main it crosses: every commit between changes only documentation the
     command does not name, or, with MERGED, brings main's changes that touch none of the quest's
-    FILES (its file set and own changes), the job's inputs or the paths its command names. A
+    FILES (its file set and own changes) nor the job's inputs (as input_files reads them). A
     measurement (strict, exclusive) without --inputs crosses only main's documentation."""
     cmd, inputs = spec["cmd"], spec.get("inputs") or []
     line = on_commits(
@@ -5805,12 +5806,12 @@ def carried_ancestors(
             measured
             or path in own
             or any(fnmatch.fnmatch(path, g) for g in files)
-            or any(path == x or path.startswith(x + "/") for x in named)
             or (
                 bool(inputs)
                 and (
                     any(fnmatch.fnmatchcase(path, g) for g in inputs)
                     or any(fnmatch.fnmatchcase(name, g) for g in BUILD_FILES)
+                    or any(path == x or path.startswith(x + "/") for x in named)
                 )
             )
         )

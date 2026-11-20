@@ -794,7 +794,7 @@ class Evidence(CampaignCase):
         jobs = len(list((self.root / "jobs").glob("2*")))
         out = self.ok(self.home, "verify", "b").out
         self.assertIn("(reused: passed at ", out)
-        self.assertIn("only merges from main since", out)
+        self.assertIn("only 1 merge from main since, none touching its files", out)
         self.assertEqual(self.submit(b, "--quest", "b", "--", check), probe)
         self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs, "a merge from main reran evidence")
         brief_out = self.ok(self.home, "brief", "b").out
@@ -1051,6 +1051,153 @@ class Evidence(CampaignCase):
         calls.write_text("")
         self.assertNotIn("check asan", self.run_cli(self.home, "brief", "san").out)
         self.assertNotIn("view", calls.read_text().split(), "a passed run's jobs were fetched again")
+
+
+class FeatureModel(CampaignCase):
+    """Evidence across merges from main, `land --merge-main`, [ci] criteria and task merges."""
+
+    def criteria(self, pid: str, text: str) -> None:
+        brief = self.home / f".campaign/demo/quests/{pid}.md"
+        brief.write_text(brief.read_text().replace("None in this test.", text))
+        self.git(self.home, "commit", "-qam", f"{pid} criteria")
+
+    def ci_green(self) -> None:
+        state = self.state()
+        state["ci"] = "github"
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-q", "-am", "require CI")
+        gh = self.root / "bin" / "gh"
+        gh.write_text('#!/bin/sh\necho \'[{"name": "build", "status": "completed", "conclusion": "success"}]\'\n')
+        gh.chmod(0o755)
+
+    def test_evidence_carries_across_merges_from_main_that_touch_none_of_its_files(self) -> None:
+        self.env["COLUMNS"] = "400"
+        self.commit(self.home, {"other/o.txt": "0\n"})
+        b = self.started("b", files="lib/**,docs/**")
+        self.criteria("b", "- A1 the probe passes: a probe")
+        tested = self.commit(b, {"lib/util.py": "X = 2\n"})
+        check = "grep -q 2 lib/util.py"
+        probe = self.submit(b, "--quest", "b", "--for", "A1", "--", check)
+        self.ok(self.home, "wait", probe)
+        for n in range(3):  # docs-only commits and merges from main, interleaved
+            self.commit(b, {f"docs/b{n}.md": "notes\n"})
+            self.commit(self.home, {"other/o.txt": f"{n + 1}\n"})
+            self.git(b, "merge", "-q", "--no-edit", "main")
+        out = self.ok(self.home, "status", "b").out
+        self.assertIn("A1  met", out)
+        self.assertIn(
+            f"{probe} (passed at {tested[:12]}; 3 merges from main since, none touching its files; "
+            "ignores docs-only docs/b0.md, docs/b1.md, docs/b2.md)",
+            out,
+        )
+        jobs = len(list((self.root / "jobs").glob("2*")))
+        self.assertEqual(self.submit(b, "--quest", "b", "--for", "A1", "--", check), probe)
+        self.assertEqual(len(list((self.root / "jobs").glob("2*"))), jobs, "a merge from main reran evidence")
+        self.commit(self.home, {"lib/new.py": "Y = 1\n"})  # main adds a file in b's set
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        out = self.ok(self.home, "status", "b").out
+        self.assertIn("A1  pending", out)
+        self.assertIn(f"{probe} ran other code", out)
+
+    def test_a_measurement_carries_across_main_only_through_its_inputs(self) -> None:
+        self.env["COLUMNS"] = "400"
+        self.commit(self.home, {"src/core.py": "1\n", "lib/util.py": "X = 1\n"})
+        b = self.started("b", files="bench/**,docs/**")
+        self.criteria("b", "- A1 the whole tree holds: a timing\n- A2 the library holds: a timing")
+        self.commit(b, {"bench/run.sh": "cat lib/util.py src/core.py > /dev/null\n"})
+        heavy = ("--quest", "b", "--level", "strict", "--minutes", "1")
+        self.fails(b, "job", "submit", *heavy, "--inputs", "none/**", "--", "sh bench/run.sh", match="match no file")
+        whole = self.submit(b, *heavy, "--for", "A1", "--", "sh bench/run.sh")
+        scoped = self.submit(b, *heavy, "--for", "A2", "--inputs", "lib/**", "--", "sh bench/run.sh")
+        self.ok(self.home, "wait", whole, scoped)
+        self.commit(b, {"docs/notes.md": "the numbers\n"})
+        out = self.ok(self.home, "status", "b").out
+        self.assertIn("A1  met", out)
+        self.assertIn(f"{whole} (measured at {self.git(b, 'rev-parse', 'HEAD~1')[:12]}; ignores docs-only", out)
+        self.commit(self.home, {"src/core.py": "2\n"})  # main's source outside the quest's files
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        out = self.ok(self.home, "status", "b").out
+        self.assertIn(f"{whole} ran other code", out)  # a measurement without inputs: main's code voids it
+        self.assertIn("A2  met", out)  # its inputs are unchanged
+        self.commit(self.home, {"lib/util.py": "X = 2\n"})  # an input changes on main
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        out = self.ok(self.home, "status", "b").out
+        self.assertIn(f"{scoped} ran other code", out)
+
+    def test_land_merge_main_merges_and_lands_when_the_evidence_carries(self) -> None:
+        self.ci_green()
+        self.commit(self.home, {"notes/c.txt": "1\n2\n3\n", "notes/d.txt": "1\n2\n3\n"})
+        a = self.started("a", files="app.py")
+        b = self.started("b", files="lib/**")
+        c = self.started("c", files="notes/c.txt")
+        d = self.started("d", files="notes/d.txt")
+        self.commit(a, {"app.py": "print('a')\n"})
+        self.commit(b, {"lib/util.py": "X = 2\n"})
+        c_head = self.commit(c, {"notes/c.txt": "1 c\n2\n3\n"})
+        self.commit(d, {"notes/d.txt": "1\n2\n3 d\n"})
+        for pid in "abcd":
+            self.verified(pid)
+        self.ok(self.home, "land", "a")
+        self.fails(self.home, "land", "b", match="merge main into it (`campaign land b --merge-main`)")
+        out = self.ok(self.home, "land", "b", "--merge-main").out
+        self.assertIn("merged main into quest/demo/b at ", out)
+        (landing,) = self.quest("b")["landed"]
+        self.assertEqual(len(self.git(self.home, "rev-list", "--parents", "-n1", landing["tested"]).split()), 3)
+        self.commit(self.home, {"notes/c.txt": "1 main\n2\n3\n", "notes/d.txt": "1 main\n2\n3\n"})
+        self.fails(self.home, "land", "c", "--merge-main", match="conflicts in notes/c.txt")
+        self.assertEqual(self.git(c, "rev-parse", "HEAD"), c_head)  # a conflict leaves the branch as it was
+        refused = self.fails(self.home, "land", "d", "--merge-main", match="merged main into quest/demo/d at ")
+        self.assertIn("d cannot land yet", refused.text)
+        self.assertIn("check unit is not green", refused.text)  # main changed d's own file: evidence voided
+        self.assertEqual(self.git(d, "show", "HEAD:notes/d.txt"), "1 main\n2\n3 d")  # the merge is kept
+        self.verified("d")
+        self.ok(self.home, "land", "d", "--merge-main")
+
+    def test_a_ci_criterion_is_met_by_the_land_gates_ci(self) -> None:
+        self.env["COLUMNS"] = "400"
+        one = self.started("one", files="app.py")
+        self.criteria("one", "- A1 [ci] CI is green at the landed commit")
+        self.commit(one, {"app.py": "print(11)\n"})
+        self.verified("one")
+        self.fails(one, "job", "submit", "--quest", "one", "--for", "A1", "--", "true", match="met by CI")
+        out = self.ok(self.home, "status", "one").out
+        self.assertIn("A1  pending  [ci] CI is green", out)
+        self.assertIn("the campaign runs no CI", out)
+        self.fails(self.home, "land", "one", match="criteria without evidence")
+        self.ok(self.home, "land", "one", "--no-ci", "this test has no CI")  # the waiver covers the criterion
+        self.assertEqual(self.quest("one")["landed"][0]["criteria"]["A1"], "CI waived by --no-ci")
+        self.ci_green()
+        two = self.started("two", files="app.py")
+        self.criteria("two", "- A1 [ci] CI is green at the landed commit")
+        head = self.commit(two, {"app.py": "print(22)\n"})
+        self.verified("two")
+        self.assertIn("A1  met      [ci] CI is green", self.ok(self.home, "status", "two").out)
+        self.ok(self.home, "land", "two")
+        self.assertEqual(self.quest("two")["landed"][0]["criteria"]["A1"], f"CI green at {head[:12]}")
+
+    def test_a_task_merges_into_its_quest_once_its_own_jobs_pass_at_its_head(self) -> None:
+        wt = self.started("fix", files="app.py,lib/**")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        self.fails(self.home, "task", "merge", "fix", "lib", match="no jobs of its own")
+        self.assertIn("task lib: working; no jobs of its own", self.ok(wt, "brief").out)
+        probe = self.submit(task, "--quest", "fix", "--task", "lib", "--", "test -f lib/ok")
+        self.run_cli(self.home, "wait", probe, "--timeout", "60")
+        self.fails(self.home, "task", "merge", "fix", "lib", match=f"{probe} failed at")
+        head = self.commit(task, {"lib/ok": "\n"})
+        rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
+        self.assertEqual(json.loads((self.root / "jobs" / rerun / "spec.json").read_text())["commit"], head)
+        self.ok(self.home, "wait", rerun)
+        self.assertIn("ready to merge: `campaign task merge fix lib`", self.ok(self.home, "brief", "fix").out)
+        self.ok(self.home, "task", "merge", "fix", "lib")
+        self.git(wt, "merge-base", "--is-ancestor", head, "HEAD")
+        self.assertFalse(task.exists())
+        self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/fix--lib"), "")
+        self.assertIn(f"lib: merged at {head[:12]}", self.ok(self.home, "status", "fix").out)
+        self.assertIn(f"task lib: merged at {head[:12]}", self.ok(self.home, "brief", "fix").out)
+        self.fails(self.home, "task", "merge", "fix", "lib", match="already")
+        self.ok(self.home, "check")
 
 
 class Reviews(CampaignCase):
