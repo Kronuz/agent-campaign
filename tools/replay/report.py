@@ -206,12 +206,13 @@ def account(out: Path) -> str:
             ],
         )
     )
-    parts.append(
-        "quest_hours\n\n"
-        + table(
-            ["what moved an in-flight quest", "h", "%"], [[k, v["h"], v["pct"]] for k, v in a["quest_hours"].items()]
-        )
-    )
+    qh = a["quest_hours"]
+    rows = [[k, v["h"], v["pct"]] for k, v in qh.items() if "pct" in v]
+    parts.append("quest_hours\n\n" + table(["what moved an in-flight quest", "h", "%"], rows))
+    days = qh.get("nothing_moving_by_day_h", {})
+    cols = sorted({d for v in days.values() for d in v})
+    head = ["nothing moving, by day (h)", *[d[5:] for d in cols]]
+    parts.append(table(head, [[k, *[v.get(d, 0) for d in cols]] for k, v in days.items()]))
     at = a["agent_tokens"]
     keys: list[str] = list(next(iter(at.values())).keys()) if at else []
     parts.append("agent_tokens\n\n" + table(["measure", *at.keys()], [[k, *[at[c][k] for c in at]] for k in keys]))

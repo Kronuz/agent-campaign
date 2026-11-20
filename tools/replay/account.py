@@ -561,6 +561,7 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
             if a and b > a:
                 runs_of[(c, r.get("quest", ""))].append((a, b))
     totals: dict[str, float] = defaultdict(float)
+    idle_days: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     per: list[Json] = []
     for (c, q), ivs in sorted(status_intervals(w).items()):
         if "--" in q:
@@ -582,6 +583,8 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
             for a, b, lab in segments(iv, labelled + extra):
                 name = LABELS[lab] if lab < len(LABELS) else f"nothing moving it ({status})"
                 mine[name] += b - a
+                if lab == 99:
+                    split(a, b, f"{c} {status}", idle_days)
         if mine:
             for k, v in mine.items():
                 totals[k] += v
@@ -596,7 +599,18 @@ def quest_hours(w: World) -> tuple[Json, list[Json]]:
     whole = sum(totals.values())
     table: Json = {k: {"h": hours(v), "pct": share(v, whole)} for k, v in sorted(totals.items(), key=lambda kv: -kv[1])}
     table["total"] = {"h": hours(whole), "pct": 100.0, "quests": len(per)}
+    table["nothing_moving_by_day_h"] = {
+        k: {d: hours(v) for d, v in sorted(days.items())} for k, days in sorted(idle_days.items())
+    }
     return table, per
+
+
+def split(a: float, b: float, key: str, into: dict[str, dict[str, float]]) -> None:
+    """Adds A..B to INTO[KEY], split by UTC day."""
+    while a < b:
+        day_end = a - (a % 86400) + 86400
+        into[key][src.iso(a)[:10]] += min(b, day_end) - a
+        a = day_end
 
 
 def segments(iv: Interval, labelled: list[tuple[float, float, int]]) -> list[tuple[float, float, int]]:
