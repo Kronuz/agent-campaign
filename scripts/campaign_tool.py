@@ -874,6 +874,21 @@ def leads() -> Path:
     return jobs_dir().parent / "leads"
 
 
+def recorded_lead(name: str) -> str:
+    """The cmux surface recorded as campaign NAME's lead, or ""."""
+    try:
+        return str(json.loads((leads() / name).read_text()).get("surface", ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def campaigns_led_by(surface: str, but: str = "") -> list[str]:
+    """The campaigns (but BUT) whose recorded lead is SURFACE."""
+    folder = leads()
+    names = sorted(x.name for x in folder.iterdir()) if folder.is_dir() else []
+    return [n for n in names if n != but and recorded_lead(n) == surface]
+
+
 def note_lead() -> None:
     """Records the cmux surface of whoever runs `campaign` in a campaign's checkouts, so a message
     can wake that lead (`wake_lead`). Jobs and workers run detached and are not leads."""
@@ -886,24 +901,24 @@ def note_lead() -> None:
         return
     entry = leads() / c.name
     seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}
-    with contextlib.suppress(OSError, ValueError):
-        if json.loads(entry.read_text()) == seen:
-            return
+    if recorded_lead(c.name) == surface or (recorded_lead(c.name) and campaigns_led_by(surface, but=c.name)):
+        return  # another campaign's lead looking in keeps this campaign's lead where it is
     with contextlib.suppress(OSError):
         leads().mkdir(parents=True, exist_ok=True)
         entry.write_text(json.dumps(seen) + "\n")
+    redeliver(c.name, now=True)
 
 
 def wake_lead(c: Campaign, whom: str, nid: str, text: str, by: str) -> str:
     """Wakes the campaign's lead in cmux with the message (an idle session reads it at once; a busy
-    one at its next step); "" when the lead is unknown, is the sender, or cmux is unreachable."""
-    try:
-        seen = json.loads((leads() / c.name).read_text())
-    except (OSError, ValueError):
-        return ""
-    surface = str(seen.get("surface", ""))
-    if not surface or surface == os.environ.get("CMUX_SURFACE_ID") or not shutil.which("cmux"):
-        return ""
+    one at its next step); "" once woken, else why it was not."""
+    surface = recorded_lead(c.name)
+    if not shutil.which("cmux"):
+        return "no cmux here"
+    if not surface:
+        return f"no lead of {c.name} recorded in cmux"
+    if surface == os.environ.get("CMUX_SURFACE_ID"):
+        return ""  # the lead itself: its own commands show the message
     body = f"campaign {c.name}: {nid} for {whom}, from {by}: {text} (close or answer it by that id)"
     try:
         done = subprocess.run(
@@ -912,9 +927,9 @@ def wake_lead(c: Campaign, whom: str, nid: str, text: str, by: str) -> str:
             text=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return surface if done.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"cmux failed: {e}"
+    return "" if done.returncode == 0 else f"cmux failed: {(done.stderr or done.stdout).strip()[:120]}"
 
 
 def notify(title: str, body: str) -> None:
@@ -924,6 +939,51 @@ def notify(title: str, body: str) -> None:
 
 
 INBOX_STALE = 15 * 60  # seconds a message to a lead waits undelivered before the owner is told
+REANNOUNCE = float(os.environ.get("CAMPAIGN_REANNOUNCE", "300"))  # seconds between tries to wake a lead
+
+
+def announce(c: Campaign, path: Path, message: Json, whom: str) -> str:
+    """Wakes the lead with the message at PATH and records the try in it; "" once woken, else why not."""
+    why = wake_lead(c, whom, str(message["id"]), str(message["text"]), str(message["by"]))
+    if why == "no cmux here":
+        return why  # nothing to retry outside cmux
+    record = {k: v for k, v in message.items() if k not in ("announced", "unannounced")}
+    record["unannounced" if why else "announced"] = {"surface": recorded_lead(c.name), "at": stamp(), "why": why}
+    with contextlib.suppress(OSError):
+        if path.exists():
+            atomic_write(path, json.dumps(record, indent=2) + "\n")
+    return why
+
+
+def redeliver(only: str = "", now: bool = False) -> list[Json]:
+    """Wakes, again, each campaign's lead for its open messages that never woke it, or woke a surface
+    it has since left (at most every REANNOUNCE, or at once with NOW); returns those still unannounced
+    past INBOX_STALE. Messages from before delivery was recorded are left alone."""
+    out: list[Json] = []
+    for name, info in campaigns().items():
+        if only and name != only:
+            continue
+        with contextlib.suppress(CampaignError, OSError, KeyError):
+            c = Campaign(Path(info["home"]), name)
+            lead = recorded_lead(name)
+            root = mailbox(c, "").parent
+            for folder in sorted(root.iterdir()) if root.is_dir() else []:
+                pid = "" if folder.name == "@" else folder.name
+                for m in inbox(c, pid):
+                    tried = m.get("announced") or m.get("unannounced")
+                    if not tried or (m.get("announced") and tried.get("surface") == lead):
+                        continue
+                    if not now and time.time() - stamp_time(tried["at"]) < REANNOUNCE:
+                        continue
+                    why = announce(c, folder / f"{m['id']}.json", m, pid or "the lead")
+                    if why and time.time() - stamp_time(m["at"]) > INBOX_STALE:
+                        out.append({**m, "campaign": name, "why": why})
+    return out
+
+
+def stamp_time(at: str) -> float:
+    """The epoch time of a stamp()."""
+    return time.mktime(time.strptime(at, "%Y-%m-%dT%H:%M:%S"))
 
 
 def stuck_leads() -> list[Json]:
@@ -973,6 +1033,14 @@ def stuck_warnings() -> list[tuple[str, bool]]:
     except (OSError, ValueError, TypeError):
         told = []
     out: list[tuple[str, bool]] = []
+    for m in redeliver():
+        text = f"{m['campaign']}'s {m['id']} from {m['by']} has not reached its lead in {span(time.time() - stamp_time(m['at']))}: {m['why']}"
+        key = f"{m['campaign']}:{m['id']}:unannounced"
+        fresh = key not in told
+        if fresh:
+            notify(f"campaign: a message to {m['campaign']} is not delivered", text)
+            told.append(key)
+        out.append((text, fresh))
     for lead in stuck_leads():
         text = (
             f"{plural(len(lead['ids']), 'message')} to {lead['campaign']}'s lead (cmux surface {lead['surface']}) "
@@ -1460,7 +1528,9 @@ def mailbox(c: Campaign, pid: str) -> Path:
     return Path(common) / "campaign-mail" / c.state["campaign"] / (pid or "@")
 
 
-def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "", **extra: Any) -> str:
+def leave_message(
+    c: Campaign, pid: str, text: str, by: str, origin: str = "", *, wake: bool = True, **extra: Any
+) -> str:
     """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies. EXTRA holds what
     closes a message the tool leaves by itself (`settled`)."""
     folder = mailbox(c, pid)
@@ -1481,7 +1551,8 @@ def leave_message(c: Campaign, pid: str, text: str, by: str, origin: str = "", *
         finally:
             tmp.unlink(missing_ok=True)
     notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
-    wake_lead(c, pid or "the lead", f"msg-{n}", text, by)
+    if wake:
+        announce(c, folder / f"msg-{n}.json", message, pid or "the lead")
     return f"msg-{n}"
 
 
@@ -8098,9 +8169,13 @@ def cmd_message(a: argparse.Namespace) -> int:
             die(
                 f"{pid} is {p['status']}: a finding about it is a new quest; tell the lead (`campaign message {c.name}: ...`)"
             )
-    nid = leave_message(c, pid, a.text, a.by)
+    nid = leave_message(c, pid, a.text, a.by, wake=False)
     then = "its journal answers it by that id, or the lead closes it" if pid else "the lead closes it"
     print(f"{nid} for {whom}: {then}")
+    message = read_json(mailbox(c, pid) / f"{nid}.json") or {}
+    why = announce(c, mailbox(c, pid) / f"{nid}.json", message, whom) if message else "the message is gone"
+    if why and name and name != (here.name if here else ""):
+        print(f"campaign: {nid} waits in {c.name}'s mailbox unannounced ({why}); it is retried", file=sys.stderr)
     return 0
 
 

@@ -1896,6 +1896,7 @@ class Campaigns(CampaignCase):
         self.ok(self.other, "status")  # other's lead is seen in its surface
         self.env["CMUX_SURFACE_ID"] = "surface-demo"
         self.ok(self.home, "status")
+        self.ok(self.other, "status")  # demo's lead looking in leaves other's lead where it is
         sent = self.ok(self.home, "message", "other:", "journal pins moved", "--from", "demo-lead").out
         self.assertIn("msg-1 for the lead", sent)
         self.assertIn(
@@ -1910,7 +1911,17 @@ class Campaigns(CampaignCase):
         self.ok(self.home, "message", "other:", "from outside cmux", "--from", "owner")
         self.assertIn("agent|message|surface-other|", calls.read_text(), "the recorded lead is woken from anywhere")
         fake.write_text("#!/bin/sh\nexit 1\n")
-        self.assertIn("msg-3 for the lead", self.ok(self.home, "message", "other:", "cmux down", "--from", "x").out)
+        down = self.ok(self.home, "message", "other:", "cmux down", "--from", "x")
+        self.assertIn("msg-3 for the lead", down.out)
+        self.assertIn("msg-3 waits in other's mailbox unannounced (cmux failed", down.err)
+        fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
+        calls.write_text("")
+        self.env["CAMPAIGN_REANNOUNCE"] = "0"
+        self.ok(self.home, "check")  # any later command retries it
+        self.assertIn("agent|message|surface-other|--from|x|--|campaign other: msg-3 for the lead", calls.read_text())
+        calls.write_text("")
+        self.ok(self.home, "check")
+        self.assertNotIn("agent|message", calls.read_text(), "a message that woke its lead is not sent again")
 
     def test_a_library_quest_works_from_its_own_repository(self) -> None:
         api = self.lib_quest(self.home, "api", "--files", "lib.py")
