@@ -1215,6 +1215,10 @@ class FeatureModel(CampaignCase):
         self.fails(self.home, "task", "merge", "fix", "lib", match="no jobs of its own at its head")
         probe = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")
         self.ok(self.home, "wait", probe, "--timeout", "60")
+        later = self.submit(
+            task, "--quest", "fix", "--task", "lib", "--commit", mutant, "--", "grep -q 'X = 2' lib/util.py"
+        )
+        self.run_cli(self.home, "wait", later, "--timeout", "60")  # the same test fails at the mutant, later
         self.ok(self.home, "task", "merge", "fix", "lib")
 
     def test_a_dropped_task_holds_no_files(self) -> None:
@@ -2156,22 +2160,19 @@ class Campaigns(CampaignCase):
             "unit=true",
         )
         started = self.ok(self.other, "start", "use")
-        self.assertIn("may overlap demo:api", started.err)
+        self.assertNotIn("may overlap", started.err)  # ordered after it: landing enforces the order
         self.assertIn("told campaign demo's lead that use overlaps its work", started.out)
         told = self.ok(self.home, "status").out  # demo's lead hears it from the tool
-        self.assertIn("msg-1 for the lead, from campaign other: other:use started and may change files", told)
-        self.assertIn("; builds against contract lib-api, which your api is changing", told)  # one message, not two
+        self.assertIn("msg-1 for the lead, from campaign other: other:use started", told)
+        self.assertNotIn("may change files", told)
+        self.assertIn(" started and builds against contract lib-api, which your api is changing", told)
         self.assertNotIn("msg-2", told)
         mine, theirs = self.run_cli(self.home, "check").out, self.run_cli(self.other, "check").out
-        grouped = (
-            "api and other:use: files may overlap: order them (--after other:use) or narrow files; "
-            "other:use consumes contract lib-api, which api changes: tell its lead\n"
-        )
+        grouped = "api and other:use: other:use consumes contract lib-api, which api changes: tell its lead\n"
         self.assertIn(grouped, mine)
         self.assertEqual(mine.count("other:use"), grouped.count("other:use"), "one warning per peer quest")
         self.assertIn(
-            "use and demo:api: files may overlap: order them (--after demo:api) or narrow files; "
-            "contract lib-api changing in demo:api: build against its brief\n",
+            "use and demo:api: contract lib-api changing in demo:api: build against its brief\n",
             theirs,
         )
         machine = self.ok(self.other, "status", "--all").out

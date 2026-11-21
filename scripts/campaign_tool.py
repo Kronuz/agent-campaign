@@ -743,15 +743,19 @@ def clashes(c: Campaign, pid: str) -> list[str]:
 
 
 def cross_overlaps(c: Campaign, pid: str) -> list[str]:
-    """Quests of other campaigns whose files may overlap this one's in the same repository."""
+    """Quests of other campaigns whose files may overlap this one's in the same repository, unless
+    either orders the other (--after or needs): landing then enforces the order."""
     p = c.quests[pid]
+    mine = {*p["needs"], *p["after"]}
     found: list[str] = []
     for name, o in campaigns().items():
         if name == c.name:
             continue
         for qid, q in o["state"].get("quests", {}).items():
+            ordered = f"{name}:{qid}" in mine or f"{c.name}:{pid}" in {*q.get("needs", []), *q.get("after", [])}
             if (
-                q.get("status") in ("active", "review")
+                not ordered
+                and q.get("status") in ("active", "review")
                 and (o["home"] / q.get("repo", ".")).resolve() == c.repo(p)
                 and overlap(p["files"], q.get("files", []))
             ):
@@ -2757,16 +2761,22 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
     if not has_ref(repo, t["branch"]):
         return [f"its branch {t['branch']} is missing"]
     head = rev(repo, t["branch"])
-    newest = {evidence_shape(j["spec"]): j for j in task_jobs(c, pid, task, jobs)}
-    if not newest:
+    own = task_jobs(c, pid, task, jobs)
+    if not own:
         return [f"no jobs of its own: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"]
-    gaps: list[str] = []
-    counted = 0
-    for j in newest.values():
+
+    def counts(j: Json) -> bool:
+        """Not withdrawn, nor run at other code on purpose (a mutant or revert commit)."""
         commit = str(j["spec"].get("commit", ""))
-        if j["state"].get("state") == "cancelled" or (commit and not ancestor(repo, commit, head)):
-            continue  # withdrawn, or run at other code on purpose (a mutant or revert commit)
-        counted += 1
+        return j["state"].get("state") != "cancelled" and (not commit or ancestor(repo, commit, head))
+
+    newest = {evidence_shape(j["spec"]): j for j in own if counts(j)}  # a later mutant run hides nothing
+    if not newest:
+        return [
+            f"no jobs of its own at its head: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"
+        ]
+    gaps: list[str] = []
+    for j in newest.values():
         twin = None
         with contextlib.suppress(CampaignError, KeyError):
             twin = job_at(j["spec"], head, merged=True, files=p["files"])
@@ -2775,10 +2785,6 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
             gaps.append(f"{j['id']} ran other code than {head[:12]}: `campaign job rerun {j['id']}`")
         elif state != "done":
             gaps.append(f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}")
-    if not counted:
-        return [
-            f"no jobs of its own at its head: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"
-        ]
     return gaps
 
 
