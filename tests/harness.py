@@ -107,6 +107,7 @@ class CampaignCase(unittest.TestCase):
             "CMAKE_BUILD_PARALLEL_LEVEL",  # a job's own light-hold settings
             "CTEST_PARALLEL_LEVEL",
             "CTEST_OUTPUT_ON_FAILURE",
+            "CMAKE_GENERATOR",
         ):
             self.env.pop(key, None)
         for key in [k for k in self.env if re.match(r"GIT_CONFIG_(COUNT|KEY_|VALUE_)", k)]:

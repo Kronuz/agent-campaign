@@ -1776,7 +1776,7 @@ def cmd_init(a: argparse.Namespace) -> int:
     return 0
 
 
-CONFIG = ("ci", "ci_later", "suite", "peers", "outbox", "disk_warn", "tested_docs", "pin_check")
+CONFIG = ("ci", "ci_later", "suite", "peers", "outbox", "disk_warn", "tested_docs", "pin_check", "env")
 
 
 def cmd_config(a: argparse.Namespace) -> int:
@@ -1806,6 +1806,8 @@ def cmd_config(a: argparse.Namespace) -> int:
                     c.state["suites"] = {k: v for k, v in c.state["suites"].items() if v}
                 elif key == "tested_docs" and sep:
                     c.state["tested_docs"] = csv(value)
+                elif key == "env" and sep and all(re.fullmatch(r"[A-Za-z_]\w*=\S*", x) for x in csv(value)):
+                    c.state["env"] = csv(value)  # every job's environment, read when it runs
                 elif key == "disk_warn" and sep and re.fullmatch(r"\d+(\.\d+)?|", value):
                     c.state.pop("disk_warn", None)
                     if value:
@@ -1813,7 +1815,7 @@ def cmd_config(a: argparse.Namespace) -> int:
                 else:
                     die(
                         "campaign config takes ci=github|'', ci_later=WORKFLOW,..., suite[.REPO]=CMD, peers=NAME=URL,..., "
-                        f"outbox=REMOTE, disk_warn=GIB|'', tested_docs=GLOB,... and pin_check=CMD, not {item!r}"
+                        f"outbox=REMOTE, disk_warn=GIB|'', tested_docs=GLOB,..., pin_check=CMD and env=NAME=VALUE,..., not {item!r}"
                     )
             c.save("campaign: config " + " ".join(a.assignments))
     suites = {f"suite.{k}": v for k, v in c.state.get("suites", {}).items()}
@@ -5901,6 +5903,12 @@ def read_job(d: Path) -> Json:
     return job
 
 
+def campaign_env(spec: Json) -> dict[str, str]:
+    """The submitting campaign's `config env=` settings, read when the job runs, so queued jobs follow them."""
+    state = read_json(Path(spec["campaign"]) / "state.json") if spec.get("campaign") else None
+    return {k: v for k, _, v in (x.partition("=") for x in (state or {}).get("env", []))}
+
+
 def tag(jid: str, campaign: str, quest: str, ids: list[str], fails_without: bool) -> None:
     """Records that job JID is evidence for criteria IDS of a quest: passing at its code, or, with
     FAILS_WITHOUT, exiting 0 because the test fails without the fix (a mutant or a revert)."""
@@ -7089,6 +7097,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         env["CMUX_WORKSPACE_ID"] = spec["cmux"]  # quiet's pill and notice go to the submitter's
     if spec.get("path"):
         env["PATH"] = spec["path"]  # the toolchain its fingerprint was taken with, whoever started the worker
+    env.update(campaign_env(spec))  # over whatever the worker inherited; the job's own --env wins
     env.update(spec["env"])
     env.update(
         JOB_ID=d.name,

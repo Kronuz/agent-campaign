@@ -33,6 +33,10 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   checkout under `$CAMPAIGN_JOBS/<id>/src` (default `~/.scratch/campaign/jobs`), never in the
   agent's worktree. Extra commits, of this or another repository, are checked out at
   `$JOB_REF_<NAME>`. `$JOB_OUT` is the attempt's output directory; `$JOB_SRC` the working directory.
+- **Environment.** A job inherits the worker's environment, then the campaign's `campaign config
+  env=NAME=VALUE,...` (read when it runs, so queued jobs follow a change; e.g.
+  `CMAKE_GENERATOR=Ninja` where a project builds only with Ninja), then its own `--env`. Campaign
+  settings stay out of the key.
 - **Reuse.** A job's key is the host, the toolchain fingerprint (`uname`, compiler and interpreter
   versions on the submitter's PATH, plus the output of `$CAMPAIGN_FINGERPRINT`), the repository, the
   code (each commit's tree without `.campaign/`), refs, command, directory, level and `--env`. An

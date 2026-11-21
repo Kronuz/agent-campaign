@@ -618,6 +618,18 @@ class Identity(CampaignCase):
         self.assertEqual(seen, "first")
         self.assertEqual(json.loads((self.root / "jobs" / jid / "spec.json").read_text())["commit"], first)
 
+    def test_a_job_runs_with_its_campaigns_env_and_its_own_env_wins(self) -> None:
+        self.env["CMAKE_GENERATOR"] = "Unix Makefiles"  # what the worker happened to inherit
+        show = 'echo "$CMAKE_GENERATOR ${DEMO:-unset}" > "$JOB_OUT/env"'
+        queued = self.submit(self.home, "--after", self.submit(self.home, "--", "sleep 1"), "--", show)
+        self.ok(self.home, "config", "env=CMAKE_GENERATOR=Ninja,DEMO=1")
+        mine = self.submit(self.home, "--env", "DEMO=2", "--", show)
+        self.ok(self.home, "wait", queued, mine, "--timeout", "60")
+        seen = {j: (self.root / "jobs" / j / "a1" / "out" / "env").read_text().split() for j in (queued, mine)}
+        self.assertEqual(seen[queued], ["Ninja", "1"], "a job queued before the setting runs with it")
+        self.assertEqual(seen[mine], ["Ninja", "2"], "a job's own --env wins")
+        self.assertEqual(self.ok(self.home, "config", "env").out.strip(), "CMAKE_GENERATOR=Ninja,DEMO=1")
+
     def test_a_light_job_builds_with_a_light_holds_parallelism(self) -> None:
         self.env["CMUX_SURFACE_ID"] = "surface-lead"
         show = 'echo "${CMAKE_BUILD_PARALLEL_LEVEL:-unset} ${CMUX_SURFACE_ID:-none}" > "$JOB_OUT/env"'
