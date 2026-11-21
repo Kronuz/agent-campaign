@@ -213,12 +213,16 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
 
 
 def ci_covers(c: Campaign) -> bool:
-    """Whether landing needs CI green at the exact commit, which tests the merge with main."""
+    """Whether a gate check's job at an ancestor counts across merges from main, the one rule every
+    command shares (`verify`, `job rerun`, `brief`, `status`, `land`, `land --record`): landing needs
+    CI green at the exact commit, and CI tests the merge with main. The build-test (a gate check
+    without inputs) otherwise needs the exact code. `land --no-ci` waives the CI gate, not this."""
     return c.state.get("ci") == "github"
 
 
-def check_evidence(c: Campaign, p: Json, target: str, ci: bool = False) -> tuple[list[str], list[Json]]:
-    """Each gate check's job at TARGET's code, or why there is none; with CI, across merges from main."""
+def check_evidence(c: Campaign, p: Json, target: str, ci: bool | None = None) -> tuple[list[str], list[Json]]:
+    """Each gate check's job at TARGET's code, or why there is none, by `ci_covers`' rule. CI is
+    ignored: callers that still pass it get that rule."""
     repo = c.repo(p)
     missing: list[str] = []
     evidence: list[Json] = []
@@ -232,7 +236,7 @@ def check_evidence(c: Campaign, p: Json, target: str, ci: bool = False) -> tuple
             else:
                 missing.append(f"{check['name']}: {state}")
             continue
-        job = job_for_check(repo, target, check, c.state.get("tested_docs", []), ci=ci, files=p["files"])
+        job = job_for_check(repo, target, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
         if job is None:
             missing.append(f"{check['name']}: no job")
         elif job["state"].get("state") != "done":
