@@ -105,21 +105,21 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   lead hears of every quest any campaign starts there.
 - **Tasks** are the steps of a quest (`campaign start ID --task T --files GLOBS`): one agent each,
   its assignment, tier and effort chosen for that step, on a branch off the quest branch. `campaign
-  task merge ID T` merges it once its own jobs (`--task T`) pass at its head; the quest branch takes
+  task merge ID T` merges it once its own tests (light `--task T` jobs) pass at its head; the quest branch takes
   `main` daily. Disjoint tasks run at once.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work. Its journal stays in the home
   (`campaign get ID journal`), so the other repository holds only code and docs.
-- **Messages:** an agent with a finding for a quest it is not working on, in any campaign on the
-  machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
-  its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
-  msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing (more in
-  `references/host.md`).
+- **Messages:** a finding for another quest, in any campaign here, goes as `campaign message
+  NAME:ID "text" --from WHO`; that quest cannot land until a journal answers its `msg-N` or the
+  lead closes it (`--close msg-N --reason R`). `NAME:` writes to that lead and blocks nothing
+  (`references/host.md`).
 - **Docs areas** under `tested_docs` are separate quests from the start, chained with `--after`;
   docs of an in-flight format change stay in its quest.
 - **Scope changes:** a new ask goes into the quest file first, then to the contributor; superseded
-  work is `campaign set ID status=dropped reason=...`.
+  work is `campaign set ID status=dropped reason=R into=SUCCESSOR`; what waits on it, in any
+  campaign, then waits on the successor.
 
 ## Direct path first
 
@@ -147,9 +147,9 @@ job passing at the exact commit; it queues no local job.
    light slots.
 2. A contributor builds its task, runs its tests as jobs (`--quest ID --task T`), commits and ends
    its turn; the lead merges it and starts what it unblocked.
-3. The lead waits with one background `campaign wait --commits`, resumes a contributor by message
-   while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
-   prompt; at every wake it fills idle capacity: launchable tasks, then an exploration batch.
+3. The lead waits with one background `campaign wait --commits`, never a loop retrying `land`
+   (it hides refusals); it resumes a contributor by message under about 150k tokens of context,
+   else starts a fresh one ("Resume" prompt), and at every wake fills idle capacity.
 4. When every task is in, the quest is the feature: the lead sets `status=review`, runs the suite,
    launches the review its risk needs and the measurements its criteria name, all at once. Their
    findings become tasks; then `campaign accept ID LENS` and `campaign land ID` on a green suite
@@ -157,16 +157,16 @@ job passing at the exact commit; it queues no local job.
 
 ## Exploration batches
 
-For a list worth hunting (a benchmark's losing rows, a profile's hotspots, thinly proven code,
-small bugs), send several economical contributors at once, one target each, confirmed on `main`
-first: `references/assignments/exploration.md`. Size the batch
-by its targets and by what the lead can review and land.
+A list worth hunting (losing benchmark rows, hotspots, thinly proven code, small bugs) gets
+several economical contributors at once, one target each, confirmed on `main` first
+(`references/assignments/exploration.md`).
 
 The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead's, committed;
 `campaign init` writes it): one row per target with its evidence and the files to start in;
 `campaign status` counts the open rows.
 
-- When fewer quests are launchable than the lead can review, launch a batch from the hunt list.
+- When fewer quests are launchable than the lead can review, first act on what most quests wait
+  on (`campaign status` names it), then launch a batch it can review and land.
 - After a milestone closes or performance-relevant code lands, run a short benchmark on `main`
   and add its losing rows.
 - Non-blocking findings, follow-ups and small bugs go to the hunt list.

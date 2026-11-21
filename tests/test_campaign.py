@@ -205,6 +205,8 @@ class Quests(CampaignCase):
         self.commit(self.wt("late"), {"README.md": "late\n"})
         self.verified("late")
         self.fails(self.home, "land", "late", match="land lib first")
+        self.ok(self.home, "set", "late", "status=review")
+        self.assertIn("late is reviewed and waits to land after lib", self.ok(self.home, "check").out)
 
     def test_dependency_cycles_are_rejected(self) -> None:
         self.ok(self.home, "new", "a", "--title", "a", "--risk", "low")
@@ -247,8 +249,14 @@ class Ownership(CampaignCase):
         self.ok(self.home, "new", "parked", *new, "parked.py")
         self.ok(self.home, "set", "parked", "status=blocked", "until=owner", "reason=owner")
         out = self.ok(self.home, "status").out
-        idle = "  no job queued and nothing to wait for: one (resume, review or land each)\n"
-        self.assertIn(f"  launchable now: root, leaf\n{idle}  held by file sets: one holds clash\n", out)
+        idle = "  nothing moves without the lead: one (resume, review or land each)\n"
+        heads = "  most waited on: root (1 waiting)\n"
+        self.assertIn(f"  launchable now: root, leaf\n{heads}{idle}  held by file sets: one holds clash\n", out)
+        self.submit(self.home, "--quest", "one", "--", "true")  # queued: the worker is down
+        self.assertNotIn("without the lead: one", self.ok(self.home, "status").out)
+        journal = self.wt("one") / ".campaign/demo/journal/one.md"
+        journal.write_text(journal.read_text().replace("State:", "State: blocked on lead: launch task T2;", 1))
+        self.assertIn(idle, self.ok(self.home, "status").out, "a journal waiting on the lead shows, jobs or not")
         self.assertIn("  hunt list: 0 open (.campaign/demo/hunt.md)\n", out)  # init wrote it
         o = json.loads(self.ok(self.home, "status", "--json").out)["overview"]
         self.assertEqual((o["launchable"], o["held"]), (["root", "leaf"], {"clash": ["one"]}))
@@ -1193,6 +1201,9 @@ class FeatureModel(CampaignCase):
         rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
         self.assertEqual(json.loads((self.root / "jobs" / rerun / "spec.json").read_text())["commit"], head)
         self.ok(self.home, "wait", rerun)
+        timing = ("--level", "exclusive", "--minutes", "1", "--", "false")
+        trial = self.submit(task, "--quest", "fix", "--task", "lib", *timing)
+        self.run_cli(self.home, "wait", trial, "--timeout", "60")  # a measurement is the quest's evidence
         self.assertIn("ready to merge: `campaign task merge fix lib`", self.ok(self.home, "brief", "fix").out)
         self.ok(self.home, "task", "merge", "fix", "lib")
         self.git(wt, "merge-base", "--is-ancestor", head, "HEAD")
@@ -1966,6 +1977,36 @@ class Campaigns(CampaignCase):
         self.assertLess(self.job(second)["started"], self.job(theirs)["started"], "light work cut into the window")
         self.assertIn("window closed", self.ok(self.home, "window", "--close").out)
         self.assertIn("no window open", self.ok(self.home, "window").out)
+
+    def test_a_dependency_follows_a_drop_to_its_successor_and_a_dead_one_is_an_error(self) -> None:
+        """A drop names its successor (into=): another campaign's quest waiting on it waits on that, and
+        its lead is told; a dependency on no quest, or on a drop with no successor, is refused or an error."""
+        for pid in ("hello", "lane"):
+            self.ok(
+                self.home, "new", pid, "--title", pid, "--risk", "low", "--files", f"{pid}.py", "--check", "unit=true"
+            )
+        new = ("new", "transport", "--title", "t", "--risk", "low", "--files", "o.py", "--check", "unit=true")
+        self.fails(self.other, *new, "--after", "demo:nope", match="demo:nope names no quest")
+        self.ok(self.other, *new, "--after", "demo:hello")
+        self.assertIn("most waited on: demo:hello (1 waiting)\n", self.ok(self.other, "status").out)
+        self.fails(self.other, "set", "transport", "after=demo:gone", match="demo:gone names no quest")
+        self.fails(self.home, "set", "hello", "into=lane", match="with status=dropped")
+        dropped = self.ok(self.home, "set", "hello", "status=dropped", "reason=folded into lane", "into=lane").out
+        self.assertIn("told other's lead: transport wait on hello", dropped)
+        mail = (self.other / ".git" / "campaign-mail" / "other" / "@" / "msg-1.json").read_text()
+        self.assertIn("demo:hello was dropped (folded into lane): your transport wait on it; it folds into lane", mail)
+        self.assertNotIn("transport", self.ok(self.home, "check").out, "a drop with a successor is no dead end")
+        self.assertIn("launchable now: transport\n", self.ok(self.other, "status").out)
+        self.ok(self.home, "set", "lane", "status=dropped", "reason=gone")
+        ours = self.fails(self.home, "check").out
+        self.assertIn("other:transport waits on our lane was dropped (gone) and names no successor", ours)
+        theirs = self.fails(self.other, "check").out
+        self.assertIn("transport waits on demo:lane was dropped (gone) and names no successor (into=)", theirs)
+        status = self.ok(self.other, "status", "transport").out
+        self.assertIn("launchable now: none", status)
+        self.assertIn(
+            "land demo:hello first (demo:lane was dropped (gone) and names no successor (into=): rewire it)", status
+        )
 
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"
