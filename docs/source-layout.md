@@ -58,6 +58,10 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `leads.py` (258 lines): Lead notices across campaigns: noting a lead, redelivering stuck messages,
   telling peers and dependents. Boundary: notices that open other campaigns on the machine. Opened
   alone when a lead is not told about another campaign's work or a dropped dependency.
+- `broadcast.py` (282 lines): Broadcasts to every other campaign's lead: the skill's own changes (a
+  commit landing on its main, its install moving), each announced once per receiving campaign, and
+  `message --all`. Boundary: what every campaign on the machine must hear, and the record that
+  makes it exactly once. Opened alone when a lead misses or doubles a change notice.
 - `disk.py` (526 lines): Disk: pruning the job store, sweeping merged worktrees, and warning before
   the disk fills. Boundary: reclaiming space, with the plans that decide what is safe to delete.
   Opened alone when prune or sweep deletes too much or too little.

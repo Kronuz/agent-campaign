@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 
 from style import add_help, show_help
 
+from .broadcast import announce_skill, cmd_broadcast
 from .checks import cmd_check, cmd_verify
 from .core import LENSES, LEVELS, LIGHT_RUN, RISKS, SHORT_RUN, CampaignError
 from .disk import BUILD_DAYS, cmd_job_prune, cmd_sweep
@@ -39,6 +41,10 @@ EXAMPLES = """examples:
   campaign verify cart && campaign wait --quest cart
   campaign accept cart correctness && campaign land cart
   campaign message shop:cart "totals round half-even" --from explorer   # from anywhere on the machine"""
+
+
+def message_or_all(a: argparse.Namespace) -> int:
+    return cmd_broadcast(a) if a.all else cmd_message(a)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -362,7 +368,9 @@ def parser() -> argparse.ArgumentParser:
         "lead closes it; a lead's message until it is closed (--close MSG --reason R, from the "
         "home). For a campaign on another machine named in `campaign config peers`, the message goes to this "
         "campaign's outbox, which `campaign wait` there fetches. Starting a quest sends a message to the "
-        "leads of the other campaigns on this machine whose work it overlaps.",
+        "leads of the other campaigns on this machine whose work it overlaps. --all sends TEXT to the lead of "
+        "every other campaign, on this machine and among the peers; the tool itself tells them of each "
+        "change to the campaign skill, landed and installed.",
     )
     p.add_argument("quest", metavar="TARGET", help="ID, NAME:ID, NAME: or :")
     p.add_argument("text", metavar="TEXT", nargs="?", default="", help="what was found")
@@ -375,7 +383,12 @@ def parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--close", metavar="MSG", help="close an open message (the lead)")
     p.add_argument("--reason", metavar="TEXT", help="why it is closed")
-    p.set_defaults(fn=cmd_message)
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="send TEXT, the one argument, to every other campaign's lead (here and the peers), none twice",
+    )
+    p.set_defaults(fn=message_or_all)
 
     p = command(
         "clean",
@@ -620,6 +633,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"{flag} needs a reason")
     if args.command not in ("job", "_run", "worker"):
         note_lead()
+    if args.command != "_run":
+        try:
+            announce_skill()
+        except (CampaignError, OSError, subprocess.SubprocessError) as e:
+            print(f"campaign: the campaign skill's changes were not announced: {e}", file=sys.stderr)
     try:
         return int(args.fn(args))
     except CampaignError as e:
