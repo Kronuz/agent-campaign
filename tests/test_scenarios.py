@@ -1,7 +1,7 @@
 """Scenarios A-I, driven end to end with scripted agent actions.
 
 Each scenario asserts the orchestration footprint (reviews required, handoffs, waits) as well as
-the outcome. Scenario G (shared-host contention) is test_jobs.Contention.
+the outcome. Scenario G (shared-host contention) is test_job_scheduling.Contention.
 """
 
 from __future__ import annotations

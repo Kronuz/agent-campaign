@@ -4,7 +4,7 @@ marked `alone` (they load the whole machine or time it) one at a time with nothi
 
   python3 run.py [-j JOBS] [--durations N] [TEST ...]
 
-TEST narrows the run to ids starting with it (`test_quiet`, `test_jobs.Crashes`). Every test
+TEST narrows the run to ids starting with it (`test_quiet`, `test_job_lifecycle.Crashes`). Every test
 isolates its own repositories, job queue and quiet directory, so the order does not matter;
 `python3 -m unittest` runs the same tests one by one.
 """
