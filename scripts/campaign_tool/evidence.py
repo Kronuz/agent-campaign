@@ -31,7 +31,7 @@ def criteria(c: Campaign, pid: str) -> dict[str, Json]:
     text = section(brief.read_text() if brief.exists() else "", CRITERIA_HEADING)
     found: dict[str, Json] = {}
     tags = "|".join(PROOF)
-    shape = rf"^\s*[-*]\s*\**(A\d+[a-z]?)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$((?:\n[ \t]+\S.*)*)"
+    shape = rf"^\s*[-*]\s*\**(A\d+)\b\**[:.]?\**\s*(?:\[({tags})\]\s*)?(.*)$((?:\n[ \t]+\S.*)*)"
     for cid, kind, line, wrapped in re.findall(shape, text, re.M):
         if not line.startswith("<"):  # the template's unfilled placeholder
             whole = " ".join(f"{line}{wrapped}".split())
@@ -55,7 +55,7 @@ def unparsed_criteria(c: Campaign, pid: str, *, filled: bool = True) -> str:
     if (
         filled
         and not criteria(c, pid)
-        and re.search(r"^\s*[-*]\s*\**A\d+[a-z]?\b[^\n]*<", section(text, CRITERIA_HEADING), re.M)
+        and re.search(r"^\s*[-*]\s*\**A\d+\b[^\n]*<", section(text, CRITERIA_HEADING), re.M)
     ):
         return f"{pid}'s `## {CRITERIA_HEADING}` still holds the template's placeholder: write its criteria (or `None`)"
     return ""
@@ -158,7 +158,7 @@ def evidence(
                 continue
             rest = [x for x in cells[1:] if x]
             met = bool(rest) and not any(UNMET.match(x) or set(x) <= set("-: ") for x in rest)
-            for cid in re.findall(r"\bA\d+[a-z]?\b", cells[0]):
+            for cid in re.findall(r"\bA\d+\b", cells[0]):
                 if cid in rows:
                     why = check(wanted[cid]["kind"], " ".join(rest)) if met and check else []
                     rows[cid].append(
@@ -177,7 +177,7 @@ def stray_rows(journals: dict[str, str], wanted: Collection[str]) -> list[str]:
             if line.startswith("## "):
                 heading = line[3:].strip()
             elif heading != "Evidence" and line.lstrip().startswith("|"):
-                ids = [x for x in re.findall(r"\bA\d+[a-z]?\b", table_cells(line)[0]) if x in wanted]
+                ids = [x for x in re.findall(r"\bA\d+\b", table_cells(line)[0]) if x in wanted]
                 if ids:
                     where = f"under `## {heading}`" if heading else "above every heading"
                     found.append(

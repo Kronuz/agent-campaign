@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from harness import CAMPAIGN, CampaignCase, campaign_module
+from harness import CAMPAIGN, CampaignCase
 
 
 def ago(seconds: float) -> str:
@@ -204,7 +204,7 @@ class LeadDriver(CampaignCase):
         self.assertIn("- start next: launchable", out)
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "2").code, 3)
 
-    # A3b: waiting on jobs, CI or a drain never empties the list
+    # A5: waiting on jobs, CI or a drain never empties the list
 
     def test_quests_waiting_on_ci_or_a_queued_job_never_hide_other_work(self) -> None:
         self.env["CAMPAIGN_IDLE"] = "0"  # no contributor at work anywhere
@@ -234,7 +234,7 @@ class LeadDriver(CampaignCase):
         self.assertFalse([x for x in items if "oncl" in x or "drain" in x], "a quest with a live waiter is moving")
         self.assertIn("in flight: 0 worked on, 2 waiting on jobs, CI or a landing, 1 needing the lead", out)
 
-    # A3c: a landing waiting on live CI is not the lead's to move
+    # A6: a landing waiting on live CI is not the lead's to move
 
     def test_a_landing_waiting_on_queued_ci_is_not_listed_as_needing_the_lead(self) -> None:
         self.env["CAMPAIGN_IDLE"] = "0"
@@ -315,27 +315,3 @@ class LeadDriver(CampaignCase):
         r = self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
         self.assertEqual(r.code, 3, r.text)
         self.assertNotIn("stuck", r.err + (calls.read_text() if calls.exists() else ""))
-
-
-class SuffixedCriteria(CampaignCase):
-    """A criterion added between two (A3b) is a criterion like any other: evidence, ranges, the hash."""
-
-    def test_a_suffixed_criterion_takes_evidence_and_its_text_binds_acceptance(self) -> None:
-        brief = ".campaign/demo/quests/feat.md"
-        self.started("feat", files="feat.py", risk="normal", lenses="correctness", check="unit=true")
-        criteria = "## Acceptance criteria\n\n- A1 one: a test\n- A3b between: a test\n"
-        self.commit(self.home, {brief: criteria})
-        job = self.submit(self.wt("feat"), "--quest", "feat", "--for", "A3b", "--", "true")
-        self.ok(self.home, "wait", job)
-        status = self.ok(self.home, "status", "feat").out
-        self.assertIn("1 of 2 criteria with evidence (A3b)", status)
-        self.assertIn("no evidence yet: A1", status)
-        self.review("feat", "correctness", "APPROVE")
-        self.ok(self.home, "accept", "feat", "correctness")
-        self.commit(self.home, {brief: criteria.replace("between: a test", "between: another test")})
-        self.assertIn("a criterion changed after correctness was accepted", self.ok(self.home, "status", "feat").out)
-
-    def test_id_ranges_keep_suffixed_ids_alone(self) -> None:
-        tool = campaign_module()
-        self.assertEqual(tool.id_ranges(["A5", "A3b", "A1", "A3", "A2", "A3c", "A4"]), "A1-A3, A3b, A3c, A4-A5")
-        self.assertEqual(tool.id_ranges(["A1", "A2", "A4"]), "A1-A2, A4")
