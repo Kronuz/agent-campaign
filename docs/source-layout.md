@@ -44,7 +44,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   permission prompt nobody sees), read from Claude Code's transcript. Boundary: reading a lead's
   transcript and telling the owner once per call. Opened alone when a harness changes its transcript
   or the alarm fires wrongly.
-- `journals.py` (181 lines): Journals and the lead's Markdown records: where each journal lives, its
+- `journals.py` (187 lines): Journals and the lead's Markdown records: where each journal lives, its
   sections, and PLAN.md. Boundary: reading the Markdown files agents and the lead write. Opened
   alone to change where a journal lives or how a section or table is parsed.
 - `ci.py` (262 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
@@ -82,7 +82,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `usage.py` (608 lines): Usage: agents' token use and cost, read from what the harnesses and jobs
   already record. Boundary: the usage command and its per-harness readers (Claude Code, Codex,
   Copilot). Opened alone when a harness changes its log format or a cost is wrong.
-- `wait.py` (276 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
+- `wait.py` (285 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
   arrives, or the lead's to-do list has an item it has not been shown. Boundary: the wait command and what wakes it. Opened alone when a wait wakes too late or
   not at all.
 - `jobcmds.py` (546 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
