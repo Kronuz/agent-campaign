@@ -2340,9 +2340,13 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     bad = [
         f"{r['name']} ({r.get('conclusion')})"
         for r in runs
-        if r.get("conclusion") not in ("success", "skipped", "neutral")
+        if r.get("conclusion") not in ("success", "skipped", "neutral", "cancelled")
     ]
-    return "failed: " + ", ".join(bad) if bad else "success"
+    if bad:
+        return "failed: " + ", ".join(bad)
+    if gone := [r["name"] for r in runs if r.get("conclusion") == "cancelled"]:
+        return f"cancelled, not failed: {', '.join(gone)} (a newer push supersedes it; rerun it if none will)"
+    return "success"
 
 
 CI_CHECK = "ci:"  # a check whose command is ci:JOB is met by that GitHub CI job, not by a local one
@@ -2375,8 +2379,15 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
         return f"no CI job named {name!r} at {commit[:12]} (push the branch)"
     if any(j.get("status") != "completed" for j in mine):
         return f"CI job {name!r} is running"
-    bad = [str(j.get("name")) for j in mine if j.get("conclusion") not in ("success", "skipped", "neutral")]
-    return f"CI job {', '.join(bad)} failed" if bad else "success"
+    failed = [
+        str(j.get("name")) for j in mine if j.get("conclusion") not in ("success", "skipped", "neutral", "cancelled")
+    ]
+    gone = [str(j.get("name")) for j in mine if j.get("conclusion") == "cancelled"]
+    if failed:
+        return f"CI job {', '.join(failed)} failed"
+    if gone:
+        return f"CI job {', '.join(gone)} was cancelled, not failed (a newer push supersedes it; rerun it if none will)"
+    return "success"
 
 
 def ci_covers(c: Campaign) -> bool:

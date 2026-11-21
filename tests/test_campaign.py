@@ -1011,6 +1011,10 @@ class Evidence(CampaignCase):
         refused = self.run_cli(self.home, "land", "san")
         self.assertIn("check asan is not green", refused.out + refused.err)
         self.assertIn("AddressSanitizer + UBSan failed", refused.out + refused.err)
+        conclusion.write_text("cancelled")  # superseded by a newer push: not a failure
+        superseded = self.run_cli(self.home, "land", "san")
+        self.assertIn("AddressSanitizer + UBSan was cancelled, not failed", superseded.out + superseded.err)
+        self.assertNotIn("UBSan failed", superseded.out + superseded.err)
         conclusion.write_text("success")
         later = self.run_cli(self.home, "land", "san")
         self.assertNotIn("check asan", later.out + later.err)
