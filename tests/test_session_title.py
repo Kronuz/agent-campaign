@@ -14,7 +14,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
-from harness import CampaignCase, campaign_module
+from harness import SKILL, CampaignCase, campaign_module
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 
@@ -133,6 +133,35 @@ class SessionTitle(CampaignCase):
         with self.session():
             why = self.title.set_workspace_title(self.tool.find_campaign(self.home))
         self.assertEqual(why, "cmux failed: boom")
+
+
+class Documented(unittest.TestCase):
+    def read(self, rel: str) -> str:
+        return (SKILL / rel).read_text()
+
+    def test_the_skill_gives_the_launch_that_names_the_session(self) -> None:
+        text = " ".join(self.read("SKILL.md").split())
+        self.assertIn("claude -n '<campaign> · lead'", text)
+        self.assertIn("cmux new-workspace --name '<campaign> · lead'", text)
+
+    def test_each_harness_has_its_name_mechanism_or_what_to_look_for(self) -> None:
+        rows = [
+            r for r in self.read("references/harness.md").splitlines() if r.startswith("| The owner sees the campaign")
+        ]
+        self.assertEqual(len(rows), 1)
+        _, claude, copilot, codex = (cell.strip() for cell in rows[0].strip("|").split(" | ", 3))
+        self.assertIn("claude -n", claude)
+        self.assertIn("/rename", claude)
+        self.assertIn("copilot --name", copilot)
+        self.assertIn("/rename [NAME]", copilot)
+        self.assertIn("/rename <name>", codex)
+        self.assertIn("session_index.jsonl", codex)  # where an unbuilt check would look
+        self.assertNotIn("| unknown |", rows[0])
+
+    def test_the_agent_definitions_say_it_in_one_line_each(self) -> None:
+        for name, role in (("contributor", "contributor <quest>"), ("reviewer", "reviewer <quest> <lens>")):
+            lines = " ".join(self.read(f"agents/campaign-{name}.md").split("\n- "))
+            self.assertEqual(lines.count(f"is titled `<campaign> · {role}`"), 1, name)
 
 
 if __name__ == "__main__":
