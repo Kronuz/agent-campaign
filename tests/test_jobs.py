@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 from unittest import mock
 
-from harness import CAMPAIGN, CAMPAIGN_CODE, CampaignCase, alive, alone, campaign_module, session_members
+from harness import CAMPAIGN, CampaignCase, alive, alone, campaign_module, session_members
 
 
 def recording(reads: list[str], real: Callable[[Path], Any]) -> Callable[[Path], Any]:
@@ -165,7 +165,7 @@ class Batches(unittest.TestCase):
         """The host's queue (12 h to 2026-11-18 07:38, 719 jobs, 81 strict or exclusive), replayed with
         each job's recorded length: 5.33 drains an hour with no batches, 2.83 with them (BATCH_JOBS 6,
         BATCH_MINUTES 30); a drain is a heavy job started after light work was readmitted."""
-        with mock.patch.object(self.module, "BATCH_JOBS", 1):
+        with mock.patch.object(self.module.worker, "BATCH_JOBS", 1):
             before = self.replay()["drains"]
         after = self.replay()["drains"]
         self.assertLess(after, 0.7 * before, f"{before:.2f} drains an hour before, {after:.2f} after")
@@ -347,8 +347,8 @@ class CpuUse(unittest.TestCase):
             return {r: used[r] for r in roots}
 
         with (
-            mock.patch.object(self.module, "tree_cpu", tree_cpu),
-            mock.patch.object(self.module, "CPU_WINDOW", 60),
+            mock.patch.object(self.module.worker, "tree_cpu", tree_cpu),
+            mock.patch.object(self.module.worker, "CPU_WINDOW", 60),
         ):
             for t in range(0, 190, 10):
                 used[4242] += 70.0 if t <= 120 else 15.0  # 7 cores, then 1.5
@@ -1379,7 +1379,7 @@ class WorkerCache(CampaignCase):
         real = module.read_json
         with (
             mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
-            mock.patch.object(module, "read_json", recording(reads, real)),
+            mock.patch.object(module.jobs, "read_json", recording(reads, real)),
         ):
             first = module.all_jobs(seen)
             for _ in range(3):
@@ -1413,14 +1413,15 @@ class WorkerCache(CampaignCase):
 
         with (
             mock.patch.dict(os.environ, {"CAMPAIGN_JOBS": str(self.root / "jobs")}),
-            mock.patch.object(module, "read_json", recording(reads, real)),
-            mock.patch.object(module, "ensure_worker", lambda: None),
-            mock.patch.object(module, "watch_leads", lambda: None),
-            mock.patch.object(module.time, "sleep", sleep),
+            mock.patch.object(module.jobs, "read_json", recording(reads, real)),
+            mock.patch.object(module.wait, "ensure_worker", lambda: None),
+            mock.patch.object(module.wait, "watch_leads", lambda: None),
+            mock.patch.object(module.wait.time, "sleep", sleep),
         ):
             module.wait_for(["b-queued"], False, 0)
         self.assertEqual(len(ticks), 4)
         self.assertLessEqual(sum(r.startswith(str(done)) for r in reads), 2, "a waiter re-read a finished job")
+        self.assertTrue(any("b-queued" in r for r in reads), "the read_json patch reached no read")
 
 
 class JobIndex(CampaignCase):
@@ -1662,12 +1663,10 @@ class Slots(CampaignCase):
         (stale / "pid").write_text(str(dead.pid))  # a runner that died holding it
         helper = self.root / "contend.py"
         helper.write_text(
-            "import importlib.util, os, sys, time\n"
+            "import os, sys, time\n"
             "from pathlib import Path\n"
             f"sys.path.insert(0, {str(CAMPAIGN.parent)!r})\n"
-            f"spec = importlib.util.spec_from_file_location('campaign', {str(CAMPAIGN_CODE)!r})\n"
-            "m = importlib.util.module_from_spec(spec)\n"
-            "spec.loader.exec_module(m)\n"
+            "from campaign_tool import procs as m\n"
             f"while not os.path.exists({str(go)!r}):\n"
             "    time.sleep(0.01)\n"
             f"m.slot_lock(Path({str(slot)!r}), Path(sys.argv[2] + '.beat'))\n"
