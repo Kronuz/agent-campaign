@@ -27,7 +27,7 @@ class MergeMainWhenNeeded(CampaignCase):
 
     def test_main_gaining_only_campaign_records_leaves_the_branch_alone(self) -> None:
         remote = self.origin()
-        for pid, extra in (("a", []), ("b", ["--push"])):
+        for pid, extra in (("a", ()), ("b", ("--push",))):
             wt = self.ready(pid, f"{pid}.py", {f"{pid}.py": "1\n"})
             head = self.git(wt, "rev-parse", "HEAD")
             self.commit(self.home, {f".campaign/demo/notes/{pid}.md": "a record\n"}, "campaign: a record")
