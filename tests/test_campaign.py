@@ -1231,6 +1231,24 @@ class FeatureModel(CampaignCase):
         self.fails(self.home, "task", "merge", "fix", "lib", match="already")
         self.ok(self.home, "check")
 
+    def test_a_fails_without_job_never_holds_a_task_merge(self) -> None:
+        self.started("fix", files="app.py,lib/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 the value is two: a test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        before = self.commit(task, {"lib/util.py": "X = 0\n"})
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        head = self.git(task, "rev-parse", "HEAD")
+        test = ("--", "grep -q 'X = 2' lib/util.py")
+        tags = ("--quest", "fix", "--task", "lib", "--for", "A1")
+        probe = self.submit(task, *tags, *test)
+        old = self.submit(task, *tags, "--fails-without", "--commit", before, *test)
+        moved = self.ok(self.home, "job", "rerun", old, "--commit", head).out.split(":")[0]  # it passes there
+        self.run_cli(self.home, "wait", probe, old, moved, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")  # the head passed its test; must-fail runs are not its own
+
     def test_a_task_merge_skips_withdrawn_jobs_and_runs_at_other_code(self) -> None:
         self.started("fix", files="app.py,lib/**")
         self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")

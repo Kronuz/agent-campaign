@@ -2921,9 +2921,10 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
         return [f"no jobs of its own: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"]
 
     def counts(j: Json) -> bool:
-        """A test, not withdrawn, nor run at other code on purpose (a mutant or revert commit)."""
+        """A test, not withdrawn, nor run at other code on purpose (a mutant or revert commit), nor one
+        that must fail without the fix (`--fails-without`: the landing's evidence, never the head's)."""
         commit = str(j["spec"].get("commit", ""))
-        test = j["spec"].get("level", "light") in ("none", "light")
+        test = j["spec"].get("level", "light") in ("none", "light") and not j["spec"].get("fails_without")
         return test and j["state"].get("state") != "cancelled" and (not commit or ancestor(repo, commit, head))
 
     newest = {evidence_shape(j["spec"]): j for j in own if counts(j)}  # a later mutant run hides nothing
