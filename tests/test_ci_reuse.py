@@ -114,7 +114,7 @@ class CiReuse(CampaignCase):
         self.assertEqual(self.quest("b")["landed"][0]["ci"]["commit"], head)
         error = (
             f"b: CI on main at {landed[:12]}, where it landed on CI carried from {head[:12]} across a merge "
-            "from main, failed: build (failure): fix main forward "
+            "from main (main's side landed no quest), failed: build (failure): fix main forward "
             "(`campaign new b-fix --title \"Fix main's CI after b\" --files 'lib/**'`)"
         )
         self.assertNotIn("b: CI on main", self.problems()[0])  # main's CI has not run yet
@@ -126,6 +126,21 @@ class CiReuse(CampaignCase):
         fix = self.commit(self.home, {"app.py": "print(2)\n"}, "fix main forward")
         self.ci({fix: "success"})
         self.assertNotIn("b: CI on main", self.problems()[0])  # main is green again
+
+    def test_red_main_names_the_quests_on_mains_side_of_the_merge(self) -> None:
+        _, head = self.quest_green_at_head("10")
+        a = self.started("a", files="app.py", check="unit=true")
+        self.commit(a, {"app.py": "print('a')\n"})
+        self.verified("a")
+        self.ci({self.git(a, "rev-parse", "HEAD"): "success"})
+        self.ok(self.home, "land", "a")  # lands on main after b's green head
+        self.ok(self.home, "land", "b", "--merge-main")
+        landed = self.quest("b")["landed"][0]["commit"]
+        self.assertEqual(self.quest("b")["landed"][0]["ci"]["commit"], head)
+        self.ci({landed: "failure"})
+        self.assertIn(
+            f"carried from {head[:12]} across a merge from main (main's side brought a), failed", self.problems()[0]
+        )
 
     def test_a_ci_criterion_counts_the_heads_ci_across_a_clean_merge(self) -> None:
         b, head = self.quest_green_at_head("10")

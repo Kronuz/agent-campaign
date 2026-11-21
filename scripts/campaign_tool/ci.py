@@ -272,8 +272,9 @@ def ci_landing(c: Campaign, p: Json, target: str) -> Json:
 
 def main_ci_problems(c: Campaign) -> list[tuple[str, str]]:
     """An error for each landing that relied on CI carried across a clean merge from main (`ci_gate`) whose
-    landed commit's CI then failed, naming it and its fix-forward command, until CI is green at
-    main's head or at a later such landing. `check` and `status` list them with `problems`."""
+    landed commit's CI then failed, naming both sides of the merge (it, and the quests that landed on
+    main after its green head) and its fix-forward command, until CI is green at main's head or at a
+    later such landing. `check` and `status` list them with `problems`."""
     if c.state.get("ci") != "github" or not shutil.which("gh"):
         return []
     later = c.state.get("ci_later", [])
@@ -298,11 +299,22 @@ def main_ci_problems(c: Campaign) -> list[tuple[str, str]]:
                 break  # main was green after the older ones
             if state.startswith("failed"):
                 files = ",".join(c.quests[pid]["files"])
+                green = record["ci"]["commit"]
+                theirs = sorted(
+                    {
+                        qid
+                        for qid, q in c.quests.items()
+                        if qid != pid and c.repo(q) == repo
+                        for r in q.get("landed", [])
+                        if ancestor(repo, r["commit"], landed) and not ancestor(repo, r["commit"], green)
+                    }
+                )
+                side = f"main's side brought {', '.join(theirs)}" if theirs else "main's side landed no quest"
                 out.append(
                     (
                         "error",
                         f"{pid}: CI on {main} at {landed[:12]}, where it landed on CI carried from "
-                        f"{record['ci']['commit'][:12]} across a merge from {main}, {state}: fix {main} forward "
+                        f"{green[:12]} across a merge from {main} ({side}), {state}: fix {main} forward "
                         f"(`campaign new {pid}-fix --title \"Fix {main}'s CI after {pid}\" --files '{files}'`)",
                     )
                 )
