@@ -330,5 +330,5 @@ permission system denied an agent stays undone until the owner authorizes it.
 | `references/review.md` | before writing tests for a claim, reviewing, or judging proof |
 | `references/measurement.md` | before planning or judging any benchmark |
 | `references/host.md` | for jobs, `quiet`, build slots, remote hosts and failure behavior |
-| `references/harness.md` | for launching, resuming and model tiers in Claude Code, Copilot CLI and Codex |
+| `references/harness.md` | for launching, resuming and model tiers in Claude Code, Copilot CLI and Codex, and every harness-specific mechanism the campaign relies on (hooks, status line, scheduler, session names), listed so another harness can build it |
 | `references/lessons.md` | before changing a rule: the incidents behind them |

@@ -18,6 +18,30 @@ exercised on this machine.
 | Quota (`pace`) | the snapshot a status line writes to `~/.scratch/quota/claude.json` | session events' `quotaSnapshots` (verified 2026-11-05) | rollout `rate_limits` (verified 2026-11-05) |
 | Skills location | `~/.claude/skills` (linked to `~/.agents/skills`) | `~/.agents/skills` | `~/.agents/skills`, symlink and loaded skill verified 2026-11-05 |
 
+## Harness-specific mechanisms
+
+Everything the campaign relies on that one harness provides and the methodology does not: hooks,
+status lines, schedulers, session names, message delivery. Each row states the need in
+harness-neutral words, so an agent on another harness can build the equivalent from it. A change
+to the skill that starts relying on a harness feature adds its row here in the same commit.
+
+| Need | Claude Code (how, where it lives) | Copilot CLI | Codex |
+|---|---|---|---|
+| A peer's message reaches the lead between tool calls, not only when it stops | PostToolUse hook `~/.claude/hooks/cmux-inbox-drain.sh` (dotfiles:98a72d4): drains the surface's cmux inbox as `additionalContext`, skipped in subagents (`agent_id` set) | unbuilt: `cmux hooks copilot install` exists | unbuilt: `cmux hooks codex install` exists |
+| A peer's message reaches a lead that ended its turn | cmux's Claude wrapper injects a Stop hook that blocks the stop with the message | unbuilt (cmux hooks, as above) | unbuilt (cmux hooks, as above) |
+| Messages name their sender's campaign | the cmux workspace title is the sender name (`cmux workspace-action --action rename --title '<campaign> · lead'`); a tab rename is not (verified 2026-11-21) | the same through cmux | the same through cmux |
+| The owner sees the campaign in the session's own name (desktop, web, mobile list) | set at launch only: `claude -n '<campaign> · lead'` (`--remote-control '<name>'` for a Remote Control session), or by the owner (`/rename`, or renaming it in the Claude app); an explicit name is never replaced by the generated title. No hook field, setting, environment variable or agent command sets it (code.claude.com/docs/en/sessions.md, remote-control.md, hooks.md; checked 2026-11-21); a hook's `terminalSequence` sets only the terminal title | unknown | unknown |
+| Quota for `pace` | status line `~/.claude/statusline.sh` (dotfiles) writes `~/.scratch/quota/claude.json` on each render | session events' `quotaSnapshots` | rollout `rate_limits` |
+| Sidebar progress (`report`) | cmux status pills and bar; a terminal bar elsewhere | the same | the same (verified 2026-11-05) |
+| Periodic report to the owner | a session-only cron job (CronCreate), recreated each session, expiring after 7 days | `manage_schedule` | none: report at turn boundaries |
+| Lead woken when a job or agent ends | background Bash command; agent completion notices | async shell notices | see "Lead waits without tokens" above |
+| Leads of different campaigns message each other directly | Claude Code cross-session messages: SendMessage to a peer session's `uds:/tmp/cc-socks/<pid>.sock` (ListAgents names them); they arrive as a `cross-session-message`. Used for urgent coordination: it lands mid-turn, while `campaign message` (the durable, harness-neutral record) reaches a lead only at its next wake | unknown | unknown |
+| A background contributor reports and is resumed | the subagent's final report arrives through SubagentHandback; an agent that stops with its own background command still running sends an interim "waiting on its own background work" notice and notifies again when it ends; SendMessage resumes it with its context | see "Resume an agent" above | see "Resume an agent" above |
+| A file sent to the owner's other devices | SendUserFile | unknown | unknown |
+
+"unbuilt" means the harness has the hook point and the campaign has not used it yet; "unknown"
+means nobody has checked.
+
 ## Agent types
 
 `agents/campaign-contributor.md` and `campaign-reviewer.md` are the source, linked into
