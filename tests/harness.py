@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -21,7 +22,7 @@ from typing import Any
 
 SKILL = Path(__file__).resolve().parent.parent
 CAMPAIGN = SKILL / "scripts" / "campaign.py"
-CAMPAIGN_CODE = SKILL / "scripts" / "campaign_tool.py"  # the module the command imports
+CAMPAIGN_CODE = SKILL / "scripts" / "campaign_tool"  # the package the command imports
 QUIET = SKILL / "scripts" / "quiet.py"
 sys.path.insert(0, str(SKILL / "scripts"))  # the tools import report, so loading one in a test needs it
 
@@ -43,9 +44,59 @@ def script_module(path: Path) -> ModuleType:
     return module
 
 
+_loads = itertools.count()
+
+
+class Tool(ModuleType):
+    """The campaign tool as tests read it: any of its modules' names (`tool.all_jobs`), or a module
+    (`tool.jobs`). Setting a name here reaches no code, so it raises: a patch names the module whose
+    code reads it (`mock.patch.object(tool.jobs, "read_json", ...)`)."""
+
+    def __init__(self, package: ModuleType) -> None:
+        super().__init__(package.__name__, package.__doc__)
+        prefix = package.__name__ + "."
+        found = [m for n, m in sys.modules.items() if n.startswith(prefix)]
+        object.__setattr__(self, "_package", package)
+        object.__setattr__(self, "_modules", sorted(found, key=lambda m: m.__name__))
+
+    def _binding(self, name: str) -> list[ModuleType]:
+        modules: list[ModuleType] = object.__getattribute__(self, "_modules")
+        return [m for m in modules if name in vars(m)]
+
+    def __getattr__(self, name: str) -> Any:
+        package: ModuleType = object.__getattribute__(self, "_package")
+        if name in vars(package):
+            return vars(package)[name]
+        values = {id(vars(m)[name]): vars(m)[name] for m in self._binding(name)}
+        if len(values) != 1:
+            raise AttributeError(f"{package.__name__} has {'no' if not values else 'more than one'} {name}")
+        return next(iter(values.values()))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        readers = ", ".join(m.__name__.rpartition(".")[2] for m in self._binding(name))
+        raise AttributeError(f"set {name} in the module whose code reads it ({readers}), not in the package")
+
+    def __delattr__(self, name: str) -> None:
+        self.__setattr__(name, None)
+
+
+def tool_module(path: Path) -> ModuleType:
+    """The campaign tool at PATH loaded afresh, its modules under a name of their own: the package, or
+    an older revision's single campaign_tool.py."""
+    if path.is_file():
+        return script_module(path)
+    name = f"{path.name}_{next(_loads)}"
+    spec = importlib.util.spec_from_file_location(name, path / "__init__.py", submodule_search_locations=[str(path)])
+    assert spec is not None and spec.loader is not None
+    package = importlib.util.module_from_spec(spec)
+    sys.modules[name] = package
+    spec.loader.exec_module(package)
+    return Tool(package)
+
+
 def campaign_module() -> ModuleType:
-    """campaign.py loaded as a module, for tests of its functions."""
-    return script_module(CAMPAIGN_CODE)
+    """The campaign tool loaded afresh, for tests of its functions."""
+    return tool_module(CAMPAIGN_CODE)
 
 
 def alone(test: Callable[..., None]) -> Callable[..., None]:
