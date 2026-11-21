@@ -167,8 +167,9 @@ job passing at the exact commit; it queues no local job.
    quests to land or review, quests nothing moves without (a journal waiting on the lead or on jobs
    that ended, or untouched for an hour with no job queued or running and no CI running), quests
    to park (a journal waiting on the owner) and idle light slots beside open hunt rows; a wait and
-   `brief` show ten items and count the rest, `status` all. CI answers are shared by every
-   process for 5 minutes (`CAMPAIGN_CI_SECONDS`). Waiting on a job, CI or a drain is never a reason for the
+   `brief` show ten items and count the rest, `status` all. Every process on the host shares
+   CI answers: a commit's runs for 2 minutes while live (`CAMPAIGN_CI_SECONDS`), 10 once
+   completed, and a run's jobs for good once green. Waiting on a job, CI or a drain is never a reason for the
    list to be empty. The lead acts on every item at every wake: it resumes a contributor by message
    while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
    prompt; "wait again" is printed only when the list is empty.

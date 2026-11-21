@@ -34,23 +34,40 @@ _gh_lock = threading.Lock()
 
 
 def ci_seconds() -> float:
-    """How long an answer GitHub may still change (a run queued, running or red, or none yet) is
-    kept for every process on the host before one asks again."""
-    return float(os.environ.get("CAMPAIGN_CI_SECONDS", "300"))
+    """How long an answer GitHub may still change (a run queued or running, or none yet) is kept for
+    every process on the host; a completed one is kept five times as long (a newer run may come)."""
+    return float(os.environ.get("CAMPAIGN_CI_SECONDS", "120"))
+
+
+FOREVER = 1e18
+
+
+def runs_kept(runs: Any) -> float:
+    """Seconds a commit's run list is kept: a newer run can follow even a completed set."""
+    done = bool(runs) and all(isinstance(x, dict) and x.get("status") == "completed" for x in runs)
+    return 5 * ci_seconds() if done else ci_seconds()
+
+
+def view_kept(view: Any) -> float:
+    """Seconds a run's jobs are kept: for good once they all passed; a red run can be re-run."""
+    jobs = (view or {}).get("jobs") if isinstance(view, dict) else None
+    if all_passed(jobs):
+        return FOREVER
+    return 5 * ci_seconds() if jobs and all(x.get("status") == "completed" for x in jobs) else ci_seconds()
 
 
 def gh_cached(path: Path) -> Json:
-    """The answer on disk at PATH while it counts: final, or younger than ci_seconds(); else {}."""
+    """The answer on disk at PATH while it counts, else {}."""
     hit: Json = {}
     with contextlib.suppress(OSError, ValueError):
         hit = json.loads(path.read_text())
-    return hit if hit.get("final") or time.time() - float(hit.get("at", 0)) < ci_seconds() else {}
+    return hit if time.time() < float(hit.get("until", 0)) else {}
 
 
-def gh_start(repo: Path, args: list[str], final: Callable[[Any], bool]) -> Future[tuple[int, Any]]:
+def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Future[tuple[int, Any]]:
     """`gh ARGS` (JSON out) in REPO, started in the background, or found started or answered:
-    (returncode, data or stderr). Answers are kept on disk for the host: one FINAL says cannot
-    change (a run that passed) for good, any other for ci_seconds()."""
+    (returncode, data or stderr). An answer is kept on disk for every process on the host for the
+    seconds KEPT gives it; a failed call is not kept."""
     key = hashlib.sha256(json.dumps([str(repo), args]).encode()).hexdigest()[:32]
     with _gh_lock:
         if key not in _gh:
@@ -61,11 +78,11 @@ def gh_start(repo: Path, args: list[str], final: Callable[[Any], bool]) -> Futur
                 _gh[key] = Future()
                 _gh[key].set_result((0, hit["data"]))
             else:
-                _gh[key] = pool().submit(gh_ask, repo, args, final, path)
+                _gh[key] = pool().submit(gh_ask, repo, args, kept, path)
         return _gh[key]
 
 
-def gh_ask(repo: Path, args: list[str], final: Callable[[Any], bool], path: Path) -> tuple[int, Any]:
+def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path) -> tuple[int, Any]:
     """Asks GitHub unless another process answered while this one waited for the key's lock."""
     path.parent.mkdir(exist_ok=True)
     with open(path.with_suffix(".lock"), "w") as lock:
@@ -77,13 +94,13 @@ def gh_ask(repo: Path, args: list[str], final: Callable[[Any], bool], path: Path
             return p.returncode, p.stderr.strip()
         data = json.loads(p.stdout or "null")
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"final": final(data), "at": time.time(), "data": data}))
+        tmp.write_text(json.dumps({"until": time.time() + kept(data), "data": data}))
         tmp.replace(path)
         return 0, data
 
 
-def gh_json(repo: Path, args: list[str], final: Callable[[Any], bool]) -> tuple[int, Any]:
-    return gh_start(repo, args, final).result()
+def gh_json(repo: Path, args: list[str], kept: Callable[[Any], float]) -> tuple[int, Any]:
+    return gh_start(repo, args, kept).result()
 
 
 def ci_runs(commit: str) -> list[str]:
@@ -92,7 +109,7 @@ def ci_runs(commit: str) -> list[str]:
 
 
 def all_passed(items: Any) -> bool:
-    """Finished and green: final, while a failure can still be re-run."""
+    """Finished and green."""
     ok = ("success", "skipped", "neutral")
     return bool(items) and all(x.get("status") == "completed" and x.get("conclusion") in ok for x in items)
 
@@ -101,7 +118,7 @@ def ci_commit(repo: Path, commit: str) -> str:
     """The commit whose CI speaks for COMMIT: itself, or, when it has no runs, its nearest
     first-parent ancestor that differs only in campaign files or documentation, which CI workflows
     skip (`paths-ignore`). Their runs are asked for all at once."""
-    asked = [(k, gh_start(repo, ci_runs(k), all_passed)) for k in ci_candidates(repo, commit)]
+    asked = [(k, gh_start(repo, ci_runs(k), runs_kept)) for k in ci_candidates(repo, commit)]
     for k, runs in asked:
         code, listed = runs.result()
         if code == 0 and listed:
@@ -134,10 +151,10 @@ def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
             code, runs = asked.result()
             for run in runs if code == 0 and isinstance(runs, list) else []:
                 if isinstance(run, dict) and "databaseId" in run:
-                    gh_start(repo, run_view(run), jobs_passed)
+                    gh_start(repo, run_view(run), view_kept)
 
     for k in ci_candidates(repo, commit):
-        asked = gh_start(repo, ci_runs(k), all_passed)
+        asked = gh_start(repo, ci_runs(k), runs_kept)
         if jobs:
             asked.add_done_callback(views)
 
@@ -163,15 +180,11 @@ def run_view(run: Json) -> list[str]:
     return ["run", "view", str(run["databaseId"]), "--json", "jobs"]
 
 
-def jobs_passed(view: Any) -> bool:
-    return all_passed((view or {}).get("jobs"))
-
-
 def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    code, listed = gh_json(repo, ci_runs(commit), all_passed)
+    code, listed = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {listed}"
     runs = [r for r in listed or [] if r.get("name") not in later]
@@ -197,11 +210,11 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    code, runs = gh_json(repo, ci_runs(commit), all_passed)
+    code, runs = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {runs}"
     found: list[Json] = []
-    for code, view in [x.result() for x in [gh_start(repo, run_view(run), jobs_passed) for run in runs or []]]:
+    for code, view in [x.result() for x in [gh_start(repo, run_view(run), view_kept) for run in runs or []]]:
         if code != 0:
             return f"gh failed: {view}"
         found += (view or {}).get("jobs", [])

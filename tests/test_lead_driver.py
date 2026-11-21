@@ -341,10 +341,10 @@ class LeadDriver(CampaignCase):
         self.assertEqual(r.code, 3, r.text)
         self.assertNotIn("stuck", r.err + (calls.read_text() if calls.exists() else ""))
 
-    # A6: the wait's CI answers cost one GitHub call per quest head per interval, across processes
+    # A6: CI answers cost one GitHub call per quest head per interval, across processes
 
     def test_ci_is_asked_once_per_head_per_interval_across_processes(self) -> None:
-        self.env.update(CAMPAIGN_IDLE="0", CAMPAIGN_CI_SECONDS="300")
+        self.env.update(CAMPAIGN_IDLE="0", CAMPAIGN_CI_SECONDS="120")
         state = self.state()
         state["ci"] = "github"
         (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
@@ -353,19 +353,21 @@ class LeadDriver(CampaignCase):
         queued = '[{"name": "build", "status": "queued", "conclusion": ""}]'
         gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\necho '{queued}'\n")
         gh.chmod(0o755)
-        for k in ("one", "two", "three"):
+        names = [f"q{i:02}" for i in range(20)]
+        for k in names:
             self.commit(self.started(k, files=f"{k}.py"), {f"{k}.py": "done\n"})
             self.journal(k, "waiting on CI")
         status = subprocess.Popen(
             [sys.executable, str(CAMPAIGN), "status"], cwd=self.home, env=self.env, stdout=subprocess.PIPE, text=True
         )
         self.run_cli(self.home, "wait", "--commits", "--timeout", "3")
-        status.communicate(timeout=60)
+        status.communicate(timeout=120)
+        self.ok(self.home, "status")
         self.ok(self.home, "status")
         self.ok(self.home, "brief")
         calls = asked.read_text().splitlines()
-        self.assertTrue([x for x in calls if x.startswith("run list --commit")], calls)
-        self.assertEqual(sorted(calls), sorted(set(calls)), "a head's CI was asked twice in one interval")
+        self.assertEqual(len([x for x in calls if x.startswith("run list --commit")]), 20, calls)
+        self.assertLessEqual(len(calls), 20, "a head's CI was asked twice in one interval")
 
     # A5: a quest that waits on the owner is the lead's to park, never to resume
 
