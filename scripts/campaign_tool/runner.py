@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import TextIO
 
@@ -47,6 +48,8 @@ from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, attempt_dir, campaign_env, fi
 from .mirrors import mirror_env, mirror_pins
 from .repo import _listed, rev
 from .reuse import STRACE_ARGS, record_reads, save_reads, tracer
+
+TREE_DEPTH = 3  # slot/ref-x/.deps/y-subbuild: how far down a slot's build trees are looked for
 
 
 def drop_slot(slot: Path) -> bool:
@@ -280,6 +283,85 @@ def ref_path(spec: Json, d: Path, name: str) -> Path:
     return (jobs_dir() / "slots" / slot if slot else d) / f"ref-{name}"
 
 
+def cache_entries(tree: Path) -> dict[str, str]:
+    """The generator, source and location CMake recorded in TREE's CMakeCache.txt (what it has of them)."""
+    found: dict[str, str] = {}
+    with open(tree / "CMakeCache.txt", errors="replace") as fh:
+        for line in fh:
+            key, _, value = line.rstrip("\n").partition("=")
+            name = key.partition(":")[0]
+            if name in ("CMAKE_GENERATOR", "CMAKE_HOME_DIRECTORY", "CMAKE_CACHEFILE_DIR"):
+                found[name] = value
+    return found
+
+
+def cmake_trees(slot: Path) -> Iterator[Path]:
+    """The CMake build trees in SLOT, at most TREE_DEPTH levels down (a build directory, `.deps`
+    sub-builds, a ref's own): one directory listing each, no file read. A tree is not entered, its
+    `-src` and `.git` directories are skipped, and a symlink is not followed."""
+    todo = [(slot, 0)]
+    while todo:
+        here, depth = todo.pop()
+        try:
+            with os.scandir(here) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        if depth and any(e.name == "CMakeCache.txt" and e.is_file(follow_symlinks=False) for e in entries):
+            yield here
+            continue
+        if depth < TREE_DEPTH:
+            todo += [
+                (Path(e.path), depth + 1)
+                for e in entries
+                if e.is_dir(follow_symlinks=False) and e.name != ".git" and not e.name.endswith("-src")
+            ]
+
+
+def stale_tree(slot: Path, tree: Path, generator: str, sources: Iterable[Path]) -> str:
+    """Why a job that configures with GENERATOR (empty when its environment names none) from one of
+    SOURCES cannot reuse TREE, or "": another generator configured it, or a source that is none of the
+    job's (a tree's own directory, as a sub-build's, and the directories between it and SLOT are its own), or it
+    was configured at another path."""
+    try:
+        have = cache_entries(tree)
+    except OSError:
+        return ""
+    here = tree.resolve()
+    if generator and have.get("CMAKE_GENERATOR", generator) != generator:
+        return f"configured by {have['CMAKE_GENERATOR']}, this job uses {generator}"
+    home = have.get("CMAKE_HOME_DIRECTORY")
+    if home:
+        known = {here, *(p for p in here.parents if p.is_relative_to(slot.resolve())), *(s.resolve() for s in sources)}
+        if not Path(home).is_dir() or Path(home).resolve() not in known:
+            return f"configured from {home}, not this job's source"
+    where = have.get("CMAKE_CACHEFILE_DIR")
+    if where and Path(where).resolve() != here:
+        return f"configured at {where}"
+    return ""
+
+
+def remove_tree(slot: Path, tree: Path) -> bool:
+    """Removes TREE only when it is a real directory strictly inside SLOT and SLOT is one of the
+    runner's own slots; False (nothing removed) for anything else."""
+    owned = (jobs_dir() / "slots").resolve()
+    inside = tree.resolve().is_relative_to(slot.resolve()) and tree.resolve() != slot.resolve()
+    if tree.is_symlink() or not tree.is_dir() or slot.resolve().parent != owned or not inside or tree.name == ".git":
+        return False
+    shutil.rmtree(tree)
+    return True
+
+
+def clear_stale_trees(slot: Path, generator: str, sources: Iterable[Path], say: Callable[[str], None]) -> None:
+    """Before a job runs in SLOT: removes each build tree there that another generator or source
+    configured (CMake fails on it) and says why, one line a tree."""
+    sources = list(sources)
+    for tree in cmake_trees(slot):
+        why = stale_tree(slot, tree, generator, sources)
+        if why and remove_tree(slot, tree):
+            say(f"campaign: removed {tree.relative_to(slot)}: {why}")
+
+
 def release(spec: Json, d: Path) -> None:
     """Drops this runner's slot lock, if it holds one, and the job's own checkouts unless it keeps them
     (a slot's checkouts stay for the next job there)."""
@@ -460,6 +542,14 @@ def cmd_run(a: argparse.Namespace) -> int:
             mirror_pins(env["CAMPAIGN_GIT"], jobs_dir() / "slots" / spec["slot"] if spec.get("slot") else d / "src")
         except (OSError, CampaignError) as e:  # the job still runs: its own git reaches GitHub
             print(f"campaign: filling git mirrors failed: {e}", file=sys.stderr)
+    if slot_of(spec):  # a shared slot's build tree another generator configured fails the configure
+        slot = jobs_dir() / "slots" / spec["slot"]
+        sources = [slot, cwd, *(ref_path(spec, d, name) for name in spec["refs"])]
+        try:
+            with open(ad / "log", "a") as note:
+                clear_stale_trees(slot, env.get("CMAKE_GENERATOR", ""), sources, lambda x: print(x, file=note))
+        except OSError as e:  # the job still runs, and fails on its own if the tree was the cause
+            print(f"campaign: clearing stale build trees failed: {e}", file=sys.stderr)
     if spec.get("build"):  # built under light in this checkout, then run at the job's level
         what = f"build for {spec.get('what') or spec['cmd'][:60]}"
         built = [*quiet_argv(), "light", f"job-{d.name}-build", str(LIGHT_RUN), what, "--", "bash", "-c", spec["build"]]
