@@ -1822,7 +1822,7 @@ def cmd_set(a: argparse.Namespace) -> int:
                 clash = [
                     t
                     for t, x in p["tasks"].items()
-                    if t != a.task and x.get("worktree") and overlap(files, x.get("files", []))
+                    if t != a.task and live_task(x) and overlap(files, x.get("files", []))
                 ]
                 if clash:
                     die(f"task {a.task}'s files overlap tasks {', '.join(clash)}")
@@ -1945,9 +1945,7 @@ def cmd_start(a: argparse.Namespace) -> int:
             if a.task in p.get("tasks", {}):
                 die(f"{a.id} already has task {a.task}")
             files = csv(a.files) or p["files"]
-            clash = [
-                t for t, x in p.get("tasks", {}).items() if x.get("worktree") and overlap(files, x.get("files", []))
-            ]
+            clash = [t for t, x in p.get("tasks", {}).items() if live_task(x) and overlap(files, x.get("files", []))]
             if clash and not a.force:
                 die(f"task {a.task}'s files overlap tasks {', '.join(clash)}: give --files, or --force REASON")
             recorded = p.get("tasks", {}).get(a.task, {}).get("branch")
@@ -2741,6 +2739,11 @@ def merged_journals(c: Campaign, pid: str) -> dict[str, str]:
     return {x: file_at(c.home, p["branch"], f"{c.meta}/journal/{x}.md") for x in names}
 
 
+def live_task(t: Json) -> bool:
+    """Whether a task still holds its files: started, and neither merged nor dropped."""
+    return bool(t.get("worktree")) and not t.get("merged") and t.get("status") != "dropped"
+
+
 def task_jobs(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[Json]:
     """A task's own jobs (`job submit --quest ID --task T`), oldest first."""
     return [j for j in quest_jobs(jobs, c.ident, pid) if j["spec"].get("task") == task]
@@ -2809,10 +2812,11 @@ def cmd_task_merge(a: argparse.Namespace) -> int:
         if t.get("status") == "dropped":
             die(f"task {a.task} is dropped (`campaign set {a.id} --task {a.task} status=active` undoes it)")
         repo = c.repo(p)
-        if gaps := task_gaps(c, a.id, a.task, all_jobs()):
+        places = [(repo, "worktree"), *([(c.home, "journal")] if not same_repo(repo, c.home) else [])]
+        merged = all(ancestor(owner, t["branch"], p["branch"]) for owner, _ in places)  # nothing left to merge
+        if not merged and (gaps := task_gaps(c, a.id, a.task, all_jobs())):
             die(f"task {a.task} cannot merge yet:\n  " + "\n  ".join(gaps))
         head = rev(repo, t["branch"])
-        places = [(repo, "worktree"), *([(c.home, "journal")] if not same_repo(repo, c.home) else [])]
         for _, field in places:
             mine = (c.home / t[field]).resolve() if t.get(field) else None
             if mine and mine.exists():

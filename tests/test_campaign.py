@@ -1217,6 +1217,24 @@ class FeatureModel(CampaignCase):
         self.ok(self.home, "wait", probe, "--timeout", "60")
         self.ok(self.home, "task", "merge", "fix", "lib")
 
+    def test_a_dropped_task_holds_no_files(self) -> None:
+        self.started("fix", files="app.py,lib/**")
+        self.ok(self.home, "start", "fix", "--task", "a", "--files", "lib/a*")
+        self.ok(self.home, "start", "fix", "--task", "b", "--files", "lib/b*")
+        self.fails(self.home, "set", "fix", "--task", "b", "files=lib/**", match="overlap tasks a")
+        self.ok(self.home, "set", "fix", "--task", "a", "status=dropped", "reason=superseded by b")
+        self.ok(self.home, "set", "fix", "--task", "b", "files=lib/**")
+
+    def test_a_task_already_in_its_quest_branch_merges_without_jobs(self) -> None:
+        wt = self.started("fix", files="app.py,lib/**")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        head = self.commit(task, {"lib/util.py": "X = 2\n"})
+        self.fails(self.home, "task", "merge", "fix", "lib", match="no jobs of its own")
+        self.git(wt, "merge", "-q", "--no-ff", "-m", "merge lib by hand", "quest/demo/fix--lib")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+        self.assertIn(f"lib: merged at {head[:12]}", self.ok(self.home, "status", "fix").out)
+
 
 class Reviews(CampaignCase):
     def normal(self) -> str:
