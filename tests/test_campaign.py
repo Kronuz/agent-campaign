@@ -1519,7 +1519,7 @@ class ReviewBinding(CampaignCase):
             os.chdir(self.home)
             with (
                 mock.patch.dict(os.environ, self.env, clear=True),
-                mock.patch.object(campaign, "read_review", read_then_rewrite),
+                mock.patch.object(campaign.quests, "read_review", read_then_rewrite),
             ):
                 self.assertEqual(campaign.main(["accept", "feat", "correctness"]), 0)
         finally:

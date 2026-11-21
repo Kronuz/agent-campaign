@@ -4,14 +4,15 @@ plan, each claimed job taking its hold as quiet grants it (light holds up to the
 running or waiting exclusive hold unless the light request waited QUIET_STARVE_MIN; an exclusive hold
 once no light hold runs and no starving light request waits; one heavy hold at a time).
 
-  python3 queue_sim.py BEFORE.py AFTER.py   # today's queue shape through two modules, as a table
+  python3 queue_sim.py BEFORE AFTER   # today's queue shape through two revisions of the tool, as a table
+
+BEFORE and AFTER are scripts/campaign_tool (the package) or an older revision's campaign_tool.py.
 
 A job's "started" is its claim, as the runner records it; the hold may come later.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import random
@@ -22,19 +23,18 @@ from types import ModuleType
 from typing import Any
 from unittest import mock
 
+from harness import tool_module
+
 STARVE = 600.0  # quiet's QUIET_STARVE_MIN, in seconds
 HEAVY = ("strict", "exclusive")
 BASE = 1_800_000_000.0
 
 
 def load(path: Path) -> ModuleType:
-    """A campaign_tool module from PATH, on a 16-CPU host (8 light slots, 4 beside a heavy job)."""
+    """The campaign tool at PATH (its package, or an older revision's campaign_tool.py), on a 16-CPU host
+    (8 light slots, 4 beside a heavy job)."""
     sys.path.insert(0, str(path.parent))  # it imports report and style from its own scripts folder
-    spec = importlib.util.spec_from_file_location(f"campaign_tool_{abs(hash(str(path)))}", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return tool_module(path)
 
 
 def todays_queue(seed: int = 1119, gap: float = 10.0) -> list[dict[str, Any]]:
