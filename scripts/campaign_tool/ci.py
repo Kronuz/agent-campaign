@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -31,18 +33,29 @@ _gh: dict[str, Future[tuple[int, Any]]] = {}
 _gh_lock = threading.Lock()
 
 
+def ci_seconds() -> float:
+    """How long an answer GitHub may still change (a run queued, running or red, or none yet) is
+    kept for every process on the host before one asks again."""
+    return float(os.environ.get("CAMPAIGN_CI_SECONDS", "300"))
+
+
+def gh_cached(path: Path) -> Json:
+    """The answer on disk at PATH while it counts: final, or younger than ci_seconds(); else {}."""
+    hit: Json = {}
+    with contextlib.suppress(OSError, ValueError):
+        hit = json.loads(path.read_text())
+    return hit if hit.get("final") or time.time() - float(hit.get("at", 0)) < ci_seconds() else {}
+
+
 def gh_start(repo: Path, args: list[str], final: Callable[[Any], bool]) -> Future[tuple[int, Any]]:
     """`gh ARGS` (JSON out) in REPO, started in the background, or found started or answered:
-    (returncode, data or stderr). An answer FINAL says cannot change (a run that passed) is kept on
-    disk for the host; any other is asked once per command."""
+    (returncode, data or stderr). Answers are kept on disk for the host: one FINAL says cannot
+    change (a run that passed) for good, any other for ci_seconds()."""
     key = hashlib.sha256(json.dumps([str(repo), args]).encode()).hexdigest()[:32]
     with _gh_lock:
         if key not in _gh:
             path = jobs_dir() / ".gh" / f"{key}.json"
-            hit: Json = {}
-            with contextlib.suppress(OSError, ValueError):
-                hit = json.loads(path.read_text())
-            if hit.get("final"):
+            if hit := gh_cached(path):
                 from concurrent.futures import Future  # noqa: PLC0415
 
                 _gh[key] = Future()
@@ -53,16 +66,20 @@ def gh_start(repo: Path, args: list[str], final: Callable[[Any], bool]) -> Futur
 
 
 def gh_ask(repo: Path, args: list[str], final: Callable[[Any], bool], path: Path) -> tuple[int, Any]:
-    p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True)
-    if p.returncode != 0:
-        return p.returncode, p.stderr.strip()
-    data = json.loads(p.stdout or "null")
-    if final(data):
-        path.parent.mkdir(exist_ok=True)
+    """Asks GitHub unless another process answered while this one waited for the key's lock."""
+    path.parent.mkdir(exist_ok=True)
+    with open(path.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if hit := gh_cached(path):
+            return 0, hit["data"]
+        p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True)
+        if p.returncode != 0:
+            return p.returncode, p.stderr.strip()
+        data = json.loads(p.stdout or "null")
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"final": True, "data": data}))
+        tmp.write_text(json.dumps({"final": final(data), "at": time.time(), "data": data}))
         tmp.replace(path)
-    return 0, data
+        return 0, data
 
 
 def gh_json(repo: Path, args: list[str], final: Callable[[Any], bool]) -> tuple[int, Any]:
@@ -226,7 +243,7 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
 
 
 def forget_ci() -> None:
-    """Drops the answers GitHub may still change, so a long wait asks again."""
+    """Drops this process's answers, so a long wait reads them again: from disk while they count."""
     with _gh_lock:
         for key in [k for k, f in _gh.items() if f.done()]:
             del _gh[key]

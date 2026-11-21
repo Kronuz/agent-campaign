@@ -129,8 +129,8 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
     "waiting" (only a live waiter moves it: a job of its queued or running, or CI running at its
     head; or it says ready and only a dependency not yet landed holds it, since `after` orders the
     landing, never the work) or "lead" (nothing moves it unless the lead does: a journal that says
-    it waits on the lead, whatever runs; else, with no waiter, one that says it waits on jobs (they
-    ended) or one untouched), each with why."""
+    it waits on the lead, whatever runs; else, with no waiter, one that waits on the owner (the lead
+    parks it), one that says it waits on jobs (they ended) or one untouched), each with why."""
     live = [
         j for j in jobs if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
     ]
@@ -150,6 +150,8 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
             moving = name in busy or (name == k and any(b.startswith(f"{k}--") for b in busy))
             if moving or (name == k and ci_waiting(c, p)):
                 out[name] = ("working" if age < quiet_for else "waiting", state)
+            elif OWNER_WAIT.search(state):
+                out[name] = ("lead", f"its journal waits on the owner: {state}")
             elif JOB_WAIT.match(state):
                 out[name] = ("lead", f"its jobs ended: {state}")
             elif age < quiet_for:
@@ -183,6 +185,7 @@ def journal_age(c: Campaign, name: str) -> float:
 
 
 READY = re.compile(r"(?:ready|done)\b", re.I)
+OWNER_WAIT = re.compile(r"\b(?:blocked on|waiting on|waits on|waiting for|waits for) (?:the )?owner\b", re.I)
 LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?lead\b", re.I)
 JOB_WAIT = re.compile(r"(?:waiting on|waits on) (?:the )?(?:jobs?|ci|queue)\b", re.I)
 

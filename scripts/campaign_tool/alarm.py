@@ -7,7 +7,6 @@ import contextlib
 import fcntl
 import json
 import os
-import re
 import sys
 import time
 from datetime import datetime
@@ -19,23 +18,46 @@ from .state import campaigns
 
 TAIL = 4 << 20  # bytes of a transcript read from its end: a stuck call is among its last lines
 _looked = [0.0]
+_cwds: dict[Path, str] = {}  # a session's start directory never changes
 
 
 def stuck_after() -> float:
     """Seconds a lead's tool call may go unanswered before the owner is told: past any foreground
-    command's limit (Claude Code's is 10 minutes)."""
-    return float(os.environ.get("CAMPAIGN_STUCK_CALL", "600"))
+    command's limit (Claude Code's is 10 minutes, and its answer can come seconds after)."""
+    return float(os.environ.get("CAMPAIGN_STUCK_CALL", "900"))
 
 
-def lead_transcript(home: Path) -> Path | None:
-    """The newest Claude Code session transcript started in HOME: the lead's, or None."""
+def started_in(log: Path) -> str:
+    """The directory LOG's session records as its `cwd`, from its first lines, or ""."""
+    try:
+        with log.open("rb") as f:
+            head = f.read(64 << 10).decode(errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in head:
+        with contextlib.suppress(ValueError):
+            e = json.loads(line)
+            if isinstance(e, dict) and isinstance(e.get("cwd"), str):
+                return e["cwd"]
+    return ""
+
+
+def lead_transcripts() -> dict[str, Path]:
+    """By resolved directory, the newest top-level Claude Code transcript touched in the last day
+    whose session started there: found by the `cwd` it records, since a lead may start through a
+    symlink (its folder is named after the link)."""
     root = Path(os.environ.get("CAMPAIGN_CLAUDE_LOGS") or Path.home() / ".claude" / "projects")
-    folder = root / re.sub(r"[^A-Za-z0-9]", "-", str(home))
     logs: list[tuple[float, Path]] = []
-    for log in folder.glob("*.jsonl") if folder.is_dir() else []:
+    for log in root.glob("*/*.jsonl"):
         with contextlib.suppress(OSError):
-            logs.append((log.stat().st_mtime, log))
-    return max(logs)[1] if logs else None
+            if time.time() - (at := log.stat().st_mtime) < 86400:
+                logs.append((at, log))
+    found: dict[str, Path] = {}
+    for _, log in sorted(logs):  # oldest first: the newest of a directory wins
+        if cwd := _cwds.get(log) or started_in(log):  # a session just begun may not record it yet
+            _cwds[log] = cwd
+            found[str(Path(cwd).resolve())] = log
+    return found
 
 
 def unanswered(log: Path, now: float) -> list[Json]:
@@ -79,8 +101,9 @@ def stuck_calls(now: float) -> list[Json]:
     homes: dict[str, str] = {}
     for name, o in campaigns().items():
         homes.setdefault(str(o["home"]), name)
+    logs = lead_transcripts()
     for home, name in homes.items():
-        log = lead_transcript(Path(home))
+        log = logs.get(str(Path(home).resolve()))
         found += [{**x, "campaign": name, "log": str(log)} for x in unanswered(log, now)] if log else []
     return found
 

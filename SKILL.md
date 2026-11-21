@@ -165,8 +165,10 @@ job passing at the exact commit; it queues no local job.
    an item left undone 30 minutes (`CAMPAIGN_TODO_REPEAT`). The list ends every wait, `status` and
    `brief`, critical path first, each item with its command: quests to start, tasks to merge,
    quests to land or review, quests nothing moves without (a journal waiting on the lead or on jobs
-   that ended, or untouched for an hour with no job queued or running and no CI running), and idle
-   light slots beside open hunt rows. Waiting on a job, CI or a drain is never a reason for the
+   that ended, or untouched for an hour with no job queued or running and no CI running), quests
+   to park (a journal waiting on the owner) and idle light slots beside open hunt rows; a wait and
+   `brief` show ten items and count the rest, `status` all. CI answers are shared by every
+   process for 5 minutes (`CAMPAIGN_CI_SECONDS`). Waiting on a job, CI or a drain is never a reason for the
    list to be empty. The lead acts on every item at every wake: it resumes a contributor by message
    while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
    prompt; "wait again" is printed only when the list is empty.

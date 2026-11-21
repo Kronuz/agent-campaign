@@ -115,7 +115,6 @@ def wait_events(c: Campaign, timeout: float) -> int:
     start = time.time()
     repeat = repeat_seconds()
     loaded = [state_stamp(c)]
-    asked = [time.time()]
 
     mine: list[Json] = []
 
@@ -146,9 +145,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
         of = (loaded[0], sorted(heads.items()), sorted((j["id"], j["state"].get("state")) for j in mine))
         if not fresh and of == last["of"] and time.time() - last["at"] < every:
             return dict(last["list"])
-        if time.time() - asked[0] >= float(os.environ.get("CAMPAIGN_CI_SECONDS", "60")):
-            forget_ci()  # CI that was running may have finished
-            asked[0] = time.time()
+        forget_ci()  # CI that was running may have finished: asked again once its answer on disk expires
         with frozen():
             made[0] = {"at": time.time(), "of": of, "list": todo(c, all_jobs())}
         return dict(made[0]["list"])

@@ -159,15 +159,16 @@ class LeadDriver(CampaignCase):
         self.assertTrue(all(re.search(r": `campaign [^`]+`$", x) for x in items), "each item ends with its command")
         self.assertEqual(out.rstrip().splitlines()[-1], items[-1], "status ends with the list")
         self.assertNotIn("wait again", out)
+        shown = [*items[:10], f"- and {len(items) - 10} more: `campaign status`"]  # a brief or wait's ten
         brief = self.ok(self.home, "brief").out
-        self.assertEqual(self.todo(brief), items)
-        self.assertEqual(brief.rstrip().splitlines()[-1], items[-1], "brief ends with the list")
+        self.assertEqual(self.todo(brief), shown)
+        self.assertEqual(brief.rstrip().splitlines()[-1], shown[-1], "brief ends with the list")
         self.assertEqual(
             json.loads(self.ok(self.home, "status", "--json").out)["todo"]["items"][0]["cmd"], "campaign start root"
         )
         waited = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertEqual(self.todo(waited), items)
-        self.assertEqual(waited.rstrip().splitlines()[-1], items[-1], "the wait ends with the list")
+        self.assertEqual(self.todo(waited), shown)
+        self.assertEqual(waited.rstrip().splitlines()[-1], shown[-1], "the wait ends with the list")
         self.assertNotIn("wait again", waited)
 
     def test_wait_again_is_printed_only_when_the_list_is_empty(self) -> None:
@@ -262,27 +263,37 @@ class LeadDriver(CampaignCase):
 
     # A4: a lead stuck on one tool call (a permission prompt) is the owner's to see
 
-    def transcript(self, lines: list[dict[str, object]]) -> Path:
-        folder = self.root / "claude" / re.sub(r"[^A-Za-z0-9]", "-", str(self.home))
+    def transcript(self, lines: list[dict[str, object]], started: Path | None = None) -> Path:
+        """A Claude Code session started in STARTED (the home): its folder is named after that path,
+        and its entries record it as their `cwd`."""
+        where = started or self.home
+        folder = self.root / "claude" / re.sub(r"[^A-Za-z0-9]", "-", str(where))
         folder.mkdir(parents=True, exist_ok=True)
         log = folder / "lead-session.jsonl"
-        log.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        log.write_text("".join(json.dumps({"cwd": str(where), **x}) + "\n" for x in lines))
         return log
 
-    def test_a_lead_stuck_on_a_tool_call_alarms_the_owner_once(self) -> None:
+    def alarms(self) -> Path:
+        """The file a fake cmux writes each notice to, with the alarm looking at every wait."""
         calls, fake = self.root / "cmux-calls", self.root / "bin" / "cmux"
         fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
         fake.chmod(0o755)
         self.env.update(CMUX_WORKSPACE_ID="ws-demo", CAMPAIGN_ALARM_SECONDS="0")
+        return calls
 
-        def use(tid: str, name: str, seconds: float, sidechain: bool = False) -> dict[str, object]:
-            content = [{"type": "tool_use", "id": tid, "name": name, "input": {"command": "make"}}]
-            return {
-                "type": "assistant",
-                "timestamp": ago(seconds),
-                "isSidechain": sidechain,
-                "message": {"content": content},
-            }
+    @staticmethod
+    def use(tid: str, name: str, seconds: float, sidechain: bool = False) -> dict[str, object]:
+        content = [{"type": "tool_use", "id": tid, "name": name, "input": {"command": "make"}}]
+        return {
+            "type": "assistant",
+            "timestamp": ago(seconds),
+            "isSidechain": sidechain,
+            "message": {"content": content},
+        }
+
+    def test_a_lead_stuck_on_a_tool_call_alarms_the_owner_once(self) -> None:
+        calls = self.alarms()
+        use = self.use
 
         def result(tid: str) -> dict[str, object]:
             content = [{"type": "tool_result", "tool_use_id": tid, "content": "ok"}]
@@ -299,19 +310,83 @@ class LeadDriver(CampaignCase):
         )
         self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
         self.assertNotIn("stuck", calls.read_text() if calls.exists() else "", "answered, a subagent's or fresh")
-        self.transcript([use("t-answered", "Bash", 3000), result("t-answered"), use("t-stuck", "Bash", 900)])
+        self.transcript([use("t-answered", "Bash", 3000), result("t-answered"), use("t-stuck", "Bash", 1000)])
         r = self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
-        self.assertIn("campaign: demo's lead is stuck on a Bash call, unanswered for 15 min", r.err)
+        self.assertIn("campaign: demo's lead is stuck on a Bash call, unanswered for 17 min", r.err)
         self.assertEqual(calls.read_text().count("notify|--title|campaign: demo's lead is stuck on a Bash call|"), 1)
         self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
         self.assertEqual(calls.read_text().count("lead is stuck"), 1, "the owner was told twice of one call")
 
+    def test_a_lead_started_through_a_symlink_is_watched(self) -> None:
+        calls = self.alarms()
+        self.started("fix", files="app.py")
+        link = self.root / "link-home"
+        link.symlink_to(self.home)
+        self.transcript([self.use("t-stuck", "Bash", 1000)], started=link)
+        r = self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
+        self.assertIn("campaign: demo's lead is stuck on a Bash call", r.err)
+        self.assertEqual(calls.read_text().count("lead is stuck"), 1)
+
+    def test_a_ten_minute_foreground_call_raises_no_alarm(self) -> None:
+        calls = self.alarms()
+        self.started("fix", files="app.py")
+        self.transcript([self.use("t-build", "Bash", 660)])  # a foreground call at its limit, answered late
+        r = self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
+        self.assertNotIn("stuck", r.err + (calls.read_text() if calls.exists() else ""))
+
     def test_no_transcript_raises_no_alarm(self) -> None:
-        calls, fake = self.root / "cmux-calls", self.root / "bin" / "cmux"
-        fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
-        fake.chmod(0o755)
-        self.env.update(CMUX_WORKSPACE_ID="ws-demo", CAMPAIGN_ALARM_SECONDS="0")
+        calls = self.alarms()
         self.started("fix", files="app.py")
         r = self.run_cli(self.home, "wait", "--commits", "--timeout", "1")
         self.assertEqual(r.code, 3, r.text)
         self.assertNotIn("stuck", r.err + (calls.read_text() if calls.exists() else ""))
+
+    # A6: the wait's CI answers cost one GitHub call per quest head per interval, across processes
+
+    def test_ci_is_asked_once_per_head_per_interval_across_processes(self) -> None:
+        self.env.update(CAMPAIGN_IDLE="0", CAMPAIGN_CI_SECONDS="300")
+        state = self.state()
+        state["ci"] = "github"
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-q", "-am", "require CI")
+        asked, gh = self.root / "gh-calls", self.root / "bin" / "gh"
+        queued = '[{"name": "build", "status": "queued", "conclusion": ""}]'
+        gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\necho '{queued}'\n")
+        gh.chmod(0o755)
+        for k in ("one", "two", "three"):
+            self.commit(self.started(k, files=f"{k}.py"), {f"{k}.py": "done\n"})
+            self.journal(k, "waiting on CI")
+        status = subprocess.Popen(
+            [sys.executable, str(CAMPAIGN), "status"], cwd=self.home, env=self.env, stdout=subprocess.PIPE, text=True
+        )
+        self.run_cli(self.home, "wait", "--commits", "--timeout", "3")
+        status.communicate(timeout=60)
+        self.ok(self.home, "status")
+        self.ok(self.home, "brief")
+        calls = asked.read_text().splitlines()
+        self.assertTrue([x for x in calls if x.startswith("run list --commit")], calls)
+        self.assertEqual(sorted(calls), sorted(set(calls)), "a head's CI was asked twice in one interval")
+
+    # A5: a quest that waits on the owner is the lead's to park, never to resume
+
+    def test_a_quest_waiting_on_the_owner_is_parked_not_resumed(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"
+        self.started("fix", files="app.py")
+        self.journal("fix", "blocked on the owner: A6's decision")
+        park = "campaign set fix status=blocked until=owner reason=owner"
+        want = f"- park fix: its journal waits on the owner: blocked on the owner: A6's decision: `{park}`"
+        self.assertEqual(self.todo(self.ok(self.home, "status").out), [want])
+        self.ok(self.home, *park.split()[1:])
+        self.assertEqual(self.todo(self.ok(self.home, "status").out), [])
+
+    # A2: a wait or brief prints ten items and counts the rest; status prints them all
+
+    def test_the_list_shows_ten_items_and_counts_the_rest(self) -> None:
+        names = [f"q{i:02}" for i in range(12)]
+        for k in names:
+            self.ok(self.home, "new", k, "--title", "t", "--risk", "low", "--files", f"{k}.py")
+        out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
+        items = self.todo(out)
+        self.assertEqual(items[:10], [f"- start {k}: launchable: `campaign start {k}`" for k in names[:10]], out)
+        self.assertEqual(items[10:], ["- and 2 more: `campaign status`"])
+        self.assertEqual(len(self.todo(self.ok(self.home, "status").out)), 12)

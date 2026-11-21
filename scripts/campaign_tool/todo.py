@@ -13,7 +13,7 @@ from .repo import has_ref, rev
 from .reviews import landing_gaps, task_gaps
 from .worker import light_slots, light_weight
 
-KINDS = ("merge", "land", "review", "finish", "answer", "resume", "start", "unpark", "slots")  # within a quest
+KINDS = ("merge", "land", "review", "finish", "answer", "park", "resume", "start", "unpark", "slots")  # within a quest
 
 
 def repeat_seconds() -> float:
@@ -82,6 +82,9 @@ def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None
                 )
             elif why.startswith("its journal waits on the lead"):
                 items.append(item("answer", k, f"answer {k}: {why}", f"campaign status {k}"))
+            elif why.startswith("its journal waits on the owner"):
+                park = f"campaign set {k} status=blocked until=owner reason=owner"
+                items.append(item("park", k, f"park {k}: {why}", park))
             else:
                 items.append(item("resume", k, f"resume {k}: {why}", f"campaign status {k}"))
     if slots := idle_slots(jobs):
@@ -113,8 +116,12 @@ def idle_slots(jobs: list[Json]) -> tuple[int, int] | None:
     return (free, total) if free >= max(1, total // 2) else None
 
 
-def todo_lines(t: Json) -> list[str]:
-    """The list as status, brief and wait print it; "wait again after this" only when it is empty."""
+SHOWN = 10  # items a wait or brief prints; status prints them all
+
+
+def todo_lines(t: Json, shown: int | None = SHOWN) -> list[str]:
+    """The list as status, brief and wait print it, its first SHOWN items (all with None); "wait
+    again after this" only when it is empty."""
     f = t["flight"]
     counts = [f"{len(f['working'])} worked on", f"{len(f['waiting'])} waiting on jobs, CI or a landing"]
     counts.append(f"{len(f['lead'])} needing the lead")
@@ -122,5 +129,7 @@ def todo_lines(t: Json) -> list[str]:
     if not t["items"]:
         return [f"{head}; the lead has nothing to do: wait again after this"]
     lines = [f"to do, critical path first ({head}):"]
-    lines += [f"- {x['text']}: `{x['cmd']}`" for x in t["items"]]
+    lines += [f"- {x['text']}: `{x['cmd']}`" for x in t["items"][:shown]]
+    if shown is not None and len(t["items"]) > shown:
+        lines.append(f"- and {len(t['items']) - shown} more: `campaign status`")
     return lines

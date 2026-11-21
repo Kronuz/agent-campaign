@@ -728,7 +728,7 @@ def show_status(a: argparse.Namespace) -> int:
         print_problem(severity, message)
     if listed is not None:
         print()
-        for line in todo_lines(listed):
+        for line in todo_lines(listed, None):
             print(line)
     return 0
 
