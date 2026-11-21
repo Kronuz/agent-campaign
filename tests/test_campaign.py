@@ -1199,6 +1199,24 @@ class FeatureModel(CampaignCase):
         self.fails(self.home, "task", "merge", "fix", "lib", match="already")
         self.ok(self.home, "check")
 
+    def test_a_task_merge_skips_withdrawn_jobs_and_runs_at_other_code(self) -> None:
+        self.started("fix", files="app.py,lib/**")
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        mutant = self.commit(task, {"lib/util.py": "X = 0\n"})
+        self.git(task, "reset", "--hard", "HEAD~1")
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        side = self.submit(
+            task, "--quest", "fix", "--task", "lib", "--commit", mutant, "--", "grep -q 'X = 0' lib/util.py"
+        )
+        slow = self.submit(task, "--quest", "fix", "--task", "lib", "--", "sleep 60")
+        self.ok(self.home, "job", "cancel", slow)
+        self.run_cli(self.home, "wait", side, slow, "--timeout", "60")  # a cancelled job ends it nonzero
+        self.fails(self.home, "task", "merge", "fix", "lib", match="no jobs of its own at its head")
+        probe = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")
+        self.ok(self.home, "wait", probe, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+
 
 class Reviews(CampaignCase):
     def normal(self) -> str:

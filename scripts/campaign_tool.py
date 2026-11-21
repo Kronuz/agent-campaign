@@ -2758,7 +2758,12 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
     if not newest:
         return [f"no jobs of its own: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"]
     gaps: list[str] = []
+    counted = 0
     for j in newest.values():
+        commit = str(j["spec"].get("commit", ""))
+        if j["state"].get("state") == "cancelled" or (commit and not ancestor(repo, commit, head)):
+            continue  # withdrawn, or run at other code on purpose (a mutant or revert commit)
+        counted += 1
         twin = None
         with contextlib.suppress(CampaignError, KeyError):
             twin = job_at(j["spec"], head, merged=True, files=p["files"])
@@ -2767,6 +2772,10 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
             gaps.append(f"{j['id']} ran other code than {head[:12]}: `campaign job rerun {j['id']}`")
         elif state != "done":
             gaps.append(f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}")
+    if not counted:
+        return [
+            f"no jobs of its own at its head: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"
+        ]
     return gaps
 
 
