@@ -35,10 +35,9 @@ from .core import (
 from .evidence import criteria_for
 from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, claim, finish, load_job, matches_inputs, resolve_job, tag
 from .mail import announce, inbox, leave_message, mailbox, peers, send_message
-from .procs import ensure_worker, spawn
 from .repo import ever_on, has_ref, main_branch, rev, same_repo, toplevel
 from .reuse import submit, supersede
-from .runner import reap
+from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
 from .status import JOB_MARKS
 from .wait import wait_for

@@ -19,13 +19,11 @@ from .jobcmds import PARALLEL, ctest_warning, quest_slot
 from .jobs import all_jobs, load_job, matches_inputs, tag
 from .journals import journal_place
 from .leads import stuck_warnings
-from .procs import ensure_worker
 from .repo import frozen, has_ref, main_branch, rev, same_repo
 from .reuse import build_test, docs_note, job_at, submit
-from .runner import LIGHT_BUILD_JOBS, reap
+from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, deferred, gates, locate, select, validate
-from .status import print_problem
-from .views import problems
+from .status import print_problem, problems
 from .worker import long_timeouts, stalls
 
 

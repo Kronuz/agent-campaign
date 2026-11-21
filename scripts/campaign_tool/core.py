@@ -262,5 +262,13 @@ def jobs_dir() -> Path:
 _made: set[Path] = set()  # job stores this process made sure exist
 
 
+def mtime(path: Path) -> float | None:
+    """A file's modification time, or None when it is gone (its owner may remove it at any moment)."""
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
 def size_text(n: int) -> str:
     return f"{n / 2**30:.1f} GiB" if n >= 2**30 else f"{n / 2**20:.0f} MiB"

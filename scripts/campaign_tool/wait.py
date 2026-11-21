@@ -17,9 +17,8 @@ from .jobs import all_jobs, attempt_dir, job_summary, load_job, resolve_job
 from .journals import journal_state
 from .leads import watch_leads
 from .mail import fetch_peers, inbox, mailbox, peers, push_outbox
-from .procs import ensure_worker
 from .repo import common_dir, frozen, has_ref, rev
-from .runner import reap
+from .runner import ensure_worker, reap
 from .state import branches
 
 

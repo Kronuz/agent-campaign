@@ -34,7 +34,7 @@ from .jobs import all_jobs, claim, resolve_job, slot_of
 from .journals import journals_at, land_journals, landing_journals
 from .leads import unlocks
 from .mail import inbox, mailbox, notify
-from .procs import drop_slot, spawn
+from .map import refresh_map
 from .repo import (
     ancestor,
     changed,
@@ -50,8 +50,8 @@ from .repo import (
 )
 from .reuse import submit
 from .reviews import landing_gaps, repo_lock, review_gaps, task_gaps
+from .runner import drop_slot, spawn
 from .state import branches, deferred
-from .views import refresh_map
 from .wait import wait_for
 
 VERSION = re.compile(r"(?<![\w.])(?:[0-9a-f]{7,40}|v?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z]+)*)(?!\w|\.\d)")

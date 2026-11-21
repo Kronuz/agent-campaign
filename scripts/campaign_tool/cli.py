@@ -21,12 +21,12 @@ from .jobcmds import cmd_job_cancel, cmd_job_list, cmd_job_log, cmd_job_rerun, c
 from .jobs import INPUTS_HELP
 from .land import cmd_clean, cmd_land, cmd_pin, cmd_task_merge
 from .leads import note_lead
+from .map import cmd_map
 from .mirrors import git_mirrored
 from .quests import cmd_accept, cmd_config, cmd_get, cmd_init, cmd_new, cmd_set, cmd_start
 from .runner import cmd_run
 from .status import cmd_status
 from .usage import cmd_usage
-from .views import cmd_map
 from .wait import cmd_wait
 from .worker import cmd_window, cmd_worker
 

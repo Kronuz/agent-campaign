@@ -15,15 +15,27 @@ from pathlib import Path
 
 from .campaign import Campaign
 from .ci import ci_covers
-from .core import TERMINAL, CampaignError, Json, git, git_ok, jobs_dir, plural, read_json, size_text, stamp, write_json
+from .core import (
+    TERMINAL,
+    CampaignError,
+    Json,
+    git,
+    git_ok,
+    jobs_dir,
+    mtime,
+    plural,
+    read_json,
+    size_text,
+    stamp,
+    write_json,
+)
 from .evidence import JOB_ID
 from .jobs import _jobs, all_jobs, slot_of
 from .journals import journal_place, journal_text, journals_at
 from .mail import notify
-from .procs import drop_slot, mtime, slot_idle, worktree_remove
 from .repo import ancestor, common_dir, has_ref, main_branch, main_checkout, rev, same_repo
 from .reuse import job_for_check
-from .runner import reap
+from .runner import drop_slot, reap, slot_idle, worktree_remove
 from .state import branches, campaigns, gates
 
 

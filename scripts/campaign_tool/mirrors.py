@@ -11,8 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from .core import ENTRY, jobs_dir
-from .procs import mtime
+from .core import ENTRY, jobs_dir, mtime
 
 # a job's git reaches GitHub through one bare mirror per repository, under the job store
 MIRRORED = re.compile(r"^https://(github\.com)/([^/\s]+)/([^/\s]+)\.git$")

@@ -1,10 +1,12 @@
-"""Status and brief: the campaign as the lead and agents read it."""
+"""Status and brief: the problems status reports, a quest as status shows it, and both commands' output."""
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -12,18 +14,361 @@ from pathlib import Path
 
 from style import mark, paint, styled
 
-from .campaign import Campaign, find_campaign, in_flight, overview, sidebar, unattended
-from .ci import warm_views
-from .core import FLIGHT, STATUSES, Json, git, plural
-from .jobs import all_jobs
-from .journals import id_ranges
-from .mail import inbox
-from .procs import worker_alive
-from .repo import frozen, warm_repos
-from .runner import reap
-from .state import branches, campaigns, most_waited_on
-from .views import STAGES, problems, quest_view
+from .campaign import Campaign, ended_at_head, find_campaign, in_flight, overview, park_met, sidebar, unattended
+from .ci import ci_covers, warm_views
+from .core import CI_CHECK, FAILED, FLIGHT, STATUSES, Json, git, jobs_dir, plural
+from .evidence import criteria, criteria_evidence, evidence_table, replaced_citations, stray_rows
+from .jobs import all_jobs, job_summary, load_job, quest_jobs
+from .journals import checkouts, id_ranges, journal_place, journal_text, next_step, state_of
+from .mail import answered, inbox
+from .map import STAGES, acceptance
+from .repo import (
+    ancestor,
+    changed,
+    changed_files,
+    common_dir,
+    frozen,
+    has_ref,
+    is_meta,
+    lead_file,
+    main_branch,
+    merge_base,
+    off_branch,
+    on_commits,
+    rev,
+    same_repo,
+    warm_repos,
+)
+from .reuse import docs_note, job_for_check
+from .reviews import landing_gaps, merged_journals, task_states, verdict, waits_line
+from .runner import reap, worker_alive
+from .state import (
+    abandoned,
+    branches,
+    campaigns,
+    changes,
+    clashes,
+    consumed,
+    cross_overlaps,
+    dead_end,
+    deferred,
+    foreign,
+    gates,
+    most_waited_on,
+    starved,
+    unstarted_waits,
+)
 from .worker import cpu_lines, health_lines, queue_health
+
+
+def problems(c: Campaign) -> list[tuple[str, str]]:
+    """(severity, message) for everything git, the worktrees and the queue contradict."""
+    out: list[tuple[str, str]] = []
+    if c.state.get("landing"):
+        out.append(
+            (
+                "warning",
+                f"the landing of {c.state['landing'].get('id')} was interrupted; the next state-writing command completes or clears it",
+            )
+        )
+    for pid, p in c.quests.items():
+        for d in dict.fromkeys(p["needs"] + p["after"]) if p["status"] not in ("landed", "dropped") else ():
+            if why := dead_end(c, d):
+                out.append(("error", f"{pid} waits on {why}: rewire it (`campaign set {pid} after=...`)"))
+            elif why := abandoned(c, d):
+                out.append(
+                    (
+                        "warning",
+                        f"{pid} waits on {d}: {why}, so it no longer blocks; confirm {pid} needs none of its "
+                        f"work and remove it (`campaign set {pid} after=...`)",
+                    )
+                )
+        if p["status"] in ("active", "review") and (first := starved(c, pid)):
+            out.append(
+                (
+                    "error",
+                    f"{pid} holds files of {', '.join(first)}, which it lands after, so they cannot start and "
+                    f"{pid} cannot land: narrow {pid}'s files (`campaign set {pid} files=...`) to what it changes",
+                )
+            )
+        reviewed = p["status"] == "review" and set(p["lenses"]) <= set(p.get("accepted", {}))
+        if reviewed and (late := [d for d in p["after"] if not c.met(d) and not dead_end(c, d)]):
+            out.append(
+                (
+                    "warning",
+                    f"{pid} is reviewed and waits to land after {', '.join(late)}: if landing first breaks "
+                    f"nothing, drop that order (`campaign set {pid} after=...`)",
+                )
+            )
+    for name, o in campaigns().items():
+        for qid, q in o["state"].get("quests", {}).items() if name != c.name else ():
+            for d in [*q.get("needs", []), *q.get("after", [])] if q.get("status") not in ("landed", "dropped") else ():
+                mine = d.partition(":")[2] if d.partition(":")[0] == c.name else ""
+                if mine and (why := dead_end(c, mine)):
+                    out.append(("error", f"{name}:{qid} waits on our {why}: tell {name}'s lead which quest it means"))
+    touched: dict[str, list[tuple[str, str]]] = {}
+    warm_repos([c.repo(p) for p in c.quests.values()])
+    landed: dict[Path, list[str]] = {}
+    for p in c.quests.values():
+        landed.setdefault(c.repo(p), []).extend(x["commit"] for x in p.get("landed", []))
+    stray: dict[Path, set[str]] = {}
+    for pid, p in c.quests.items():
+        repo = c.repo(p)
+        if not common_dir(repo):
+            out.append(("error", f"{pid}: repository {repo} is missing"))
+            continue
+        main = main_branch(repo)
+        if repo not in stray:
+            stray[repo] = off_branch(repo, landed[repo], main)
+        for entry in p.get("landed", []):
+            if entry["commit"] in stray[repo]:
+                out.append(("error", f"{pid}: landed commit {entry['commit'][:12]} is not on {main}"))
+        if p["status"] not in ("active", "review"):
+            continue
+        unmet = [d for d in p["needs"] if not c.met(d)]
+        if unmet:
+            out.append(("warning", f"{pid}: active before its needs landed: {', '.join(unmet)}"))
+        for name, branch, rel, _ in branches(c, pid):
+            if not has_ref(repo, branch):
+                out.append(("error", f"{name}: branch {branch} is gone; drop the quest or restart it"))
+                continue
+            wt = (c.home / rel).resolve() if rel else None
+            if wt is None or not wt.exists():
+                out.append(("warning", f"{name}: worktree {rel or '(none)'} is missing"))
+            if not same_repo(repo, c.home):
+                if not has_ref(c.home, branch):
+                    out.append(("error", f"{name}: its journal branch {branch} is missing in the home"))
+                jp = journal_place(c, name)
+                if jp is None or jp == wt or not jp.exists():
+                    out.append(("warning", f"{name}: its journal's worktree in the home is missing"))
+            head = rev(repo, branch)
+            if name == pid and ancestor(repo, head, main) and head != rev(repo, p["base"]):
+                out.append(
+                    (
+                        "warning",
+                        f"{pid}: {branch} is merged into {main} but not recorded (`campaign land {pid} --record {head[:12]}`)",
+                    )
+                )
+            against = rev(repo, main) if name == pid else rev(repo, p["branch"])
+            paths = changed(repo, merge_base(repo, against, head), head)
+            owned = [x for x in paths if lead_file(x)]
+            if owned:
+                out.append(("warning", f"{name}: edits the lead's files {', '.join(owned[:5])}"))
+            code = [x for x in paths if not is_meta(x)]
+            scope = p["files"] if name == pid else p.get("tasks", {}).get(name.partition("--")[2], {}).get("files", [])
+            if scope:
+                outside = [x for x in code if not any(fnmatch.fnmatch(x, g) for g in scope)]
+                if outside:
+                    out.append(("warning", f"{name}: changes files outside its scope: {', '.join(outside[:5])}"))
+            for x in code:
+                touched.setdefault(f"{p['repo']}:{x}", []).append((pid, name))
+    overlaps: dict[tuple[str, ...], list[str]] = {}
+    for path, who in touched.items():
+        pids = tuple(sorted({w[0] for w in who}))
+        if len(pids) > 1:
+            overlaps.setdefault(pids, []).append(path.split(":", 1)[1])
+    for pids, paths in sorted(overlaps.items()):
+        out.append(("warning", f"one writer per file: {' and '.join(pids)} both change {', '.join(paths[:5])}"))
+    for pid, p in c.quests.items():
+        if met := park_met(c, p):
+            back = "active" if p.get("branch") else "planned"
+            out.append(("error", f"{pid}: parked {met}: `campaign set {pid} status={back}`"))
+        live = p["status"] in ("planned", "active", "review")
+        for dep in [*p["needs"], *p["after"]]:
+            if ":" in dep and live and foreign(dep) is None:
+                out.append(("warning", f"{pid}: depends on {dep}, which no campaign on this machine has"))
+        if not live:
+            continue
+        # one warning per peer quest, naming every overlap: files, and contracts either side changes
+        peer: dict[str, Json] = {}
+        if p["status"] in ("active", "review"):
+            for other in cross_overlaps(c, pid):
+                peer.setdefault(other, {"files": False, "theirs": [], "mine": []})["files"] = True
+        for name, o in campaigns().items():
+            if name == c.name:
+                continue
+            # only a started quest changes a contract
+            for qid, q in o["state"].get("quests", {}).items():
+                if q.get("status") not in ("planned", "active", "review"):
+                    continue
+                theirs = consumed(p["consumes"], changes(Path(o["home"]), q)) if q.get("status") != "planned" else []
+                mine = consumed(q.get("consumes", []), changes(c.home, p)) if p["status"] != "planned" else []
+                if theirs or mine:
+                    entry = peer.setdefault(f"{name}:{qid}", {"files": False, "theirs": [], "mine": []})
+                    entry.update(theirs=theirs, mine=mine)
+        for other, e in peer.items():
+            parts = [f"files may overlap: order them (--after {other}) or narrow files"] if e["files"] else []
+            if e["theirs"]:
+                parts.append(
+                    f"contract{'s' if len(e['theirs']) > 1 else ''} {', '.join(e['theirs'])} changing in {other}: build against its brief"
+                )
+            if e["mine"]:
+                parts.append(
+                    f"{other} consumes contract{'s' if len(e['mine']) > 1 else ''} {', '.join(e['mine'])}, which {pid} changes: tell its lead"
+                )
+            out.append(("warning", f"{pid} and {other}: " + "; ".join(parts)))
+    providers: dict[str, list[str]] = {}
+    for pid, p in c.quests.items():
+        if p["status"] != "dropped":
+            for contract in p["provides"]:
+                providers.setdefault(contract, []).append(pid)
+    for contract, pids in sorted(providers.items()):
+        if len(pids) > 1:
+            out.append(
+                ("warning", f"contract {contract} is provided by {', '.join(pids)}: one provider, or a system review")
+            )
+        changing = [x for x in pids if c.quests[x]["status"] in ("active", "review")]
+        consumers = [
+            x
+            for x, q in c.quests.items()
+            if contract in q["consumes"] and q["status"] in ("planned", "active", "review") and x not in pids
+        ]
+        if changing and consumers:
+            out.append(
+                (
+                    "info",
+                    f"contract {contract} is changing in {', '.join(changing)}; consumers {', '.join(consumers)} build against its brief",
+                )
+            )
+    jobs = all_jobs()
+    for pid, p in c.quests.items():
+        for record in p["landed"]:
+            for jid in record.get("later", []):
+                job = load_job(jobs_dir() / jid)
+                st = job["state"].get("state", "missing")
+                if st == "missing":
+                    out.append(("warning", f"{pid}: deferred check {jid}'s job is gone; its result is unknown"))
+                elif st in ("failed", "timeout", "interrupted", "cancelled", "skipped"):
+                    at = str(job["spec"].get("commit", record["commit"]))[:12]
+                    out.append(
+                        (
+                            "error",
+                            f"{pid}: deferred check {jid} is {st} at {at}: fix forward or revert, then `campaign verify {pid} --deferred`",
+                        )
+                    )
+    if any(j["state"].get("state") == "queued" for j in jobs) and not worker_alive():
+        out.append(
+            ("warning", "jobs are queued and no worker runs (`campaign worker`, or any submit or wait starts one)")
+        )
+    for j in jobs:
+        if j["state"].get("state") == "interrupted" and j["spec"].get("campaign") == c.ident:
+            out.append(("warning", f"job {j['id']} ({j['spec'].get('what')}) was interrupted and not retried"))
+    return out
+
+
+def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, table: bool = False) -> Json:
+    """A quest as status shows it: what it still needs ("missing"), its branch, checks, reviews and
+    journals, and the jobs that failed at its current code, each noted or not in a journal. Brief
+    keeps only what an agent acts on."""
+    p = c.quests[pid]
+    view: Json = {"id": pid, "status": p["status"], "risk": p["risk"], "title": p["title"], "missing": []}
+    view["weakened"] = [h for h in p.get("history", []) if h.get("weakened")]
+    view["files"] = p["files"]
+    unmet = unstarted_waits(c, p)
+    clash: list[str] = clashes(c, pid) if p["status"] == "planned" and not unmet else []
+    view["launchable"] = p["status"] == "planned" and not unmet and not clash
+    if p["status"] == "planned" and unmet:
+        view["missing"] = [waits_line(c, unmet)]
+    elif clash:
+        view["missing"] = [f"files may overlap {', '.join(clash)}: start once it lands, or narrow files"]
+    elif p["status"] == "blocked":
+        view["missing"] = [f"blocked until {', '.join(p.get('until', []))}: {p.get('reason', '')}"]
+    repo = c.repo(p)
+    mine = quest_jobs(jobs, c.ident, pid)
+    view["jobs"] = {s: sum(1 for j in mine if j["state"].get("state") == s) for s in ("queued", "running")}
+    view["landed"] = [
+        x["commit"][:12]
+        + ("" if x.get("final") else " (increment)")
+        + (" (before the campaign)" if x.get("earlier") else "")
+        + (f" (unverified: {'; '.join(x['unverified'])})" if x.get("unverified") else "")
+        + (f" (CI skipped: {x['ci_skipped']})" if x.get("ci_skipped") else "")
+        for x in p["landed"]
+    ]
+    later = [load_job(jobs_dir() / j)["state"].get("state", "missing") for x in p["landed"] for j in x.get("later", [])]
+    if later:
+        view["deferred"] = {s: later.count(s) for s in sorted(set(later))}
+    checked: set[str] = set()
+    texts: dict[str, str] = {}
+    if p["status"] in ("active", "review") and p.get("branch") and has_ref(repo, p["branch"]):
+        main = main_branch(repo)
+        head = rev(repo, p["branch"])
+        base = rev(repo, main)
+        ahead = on_commits(
+            ("ahead", str(repo), base, head), lambda: git(repo, "rev-list", "--count", f"{base}..{head}")
+        )
+        view.update(branch=p["branch"], head=head[:12], ahead=int(ahead))
+        view["missing"] = landing_gaps(c, pid, head, final=True, ci=True, jobs=jobs)
+        view["docs_only"] = [
+            f"{x['name']}: {j['id']} {docs_note(j)}"
+            for x in gates(p)
+            if not x["cmd"].startswith(CI_CHECK)
+            and (j := job_for_check(repo, head, x, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"]))
+            and docs_note(j)
+        ]
+        view["tasks"] = task_states(c, pid, jobs)
+        if brief:
+            for name, branch, _, _ in branches(c, pid):
+                texts[name] = journal_text(c, name, branch)
+            texts.update(merged_journals(c, pid))
+        if table:
+            tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
+            view["evidence"] = evidence_table(criteria_evidence(c, pid, tips, texts, jobs))
+    if not brief and "branch" in view:
+        head = rev(repo, p["branch"])
+        checks: dict[str, str] = {}
+        view["checks"] = checks
+        view["later"] = [x["name"] for x in deferred(p)]
+        for check in gates(p):
+            job = job_for_check(repo, head, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
+            note = f" ({docs_note(job)})" if job and docs_note(job) else ""
+            checks[check["name"]] = (job["state"].get("state", "?") + note) if job else "not run at head"
+            if job:
+                checked.add(job["id"])
+        view["reviews"] = {lens: verdict(c, pid, lens) for lens in p["lenses"]}
+        for lens, acc in p.get("accepted", {}).items():
+            if lens in view["reviews"]:
+                view["reviews"][lens] = acceptance(acc, verdict(c, pid, lens))
+        work: dict[str, Json] = {}
+        view["journal"] = work
+        for name, branch, rel, _ in branches(c, pid):
+            dirty = 0  # the code's and the journal's worktrees; -1 when one is missing
+            for place in checkouts(c, name, rel):
+                if place is None or not place.exists():
+                    dirty = -1
+                    break
+                dirty += len(changed_files(place))
+            texts[name] = journal_text(c, name, branch)
+            task = p.get("tasks", {}).get(name.partition("--")[2], {})
+            state = f"dropped: {task.get('reason', '')}" if task.get("status") == "dropped" else state_of(texts[name])
+            work[name] = {"state": state, "dirty": dirty, "worktree": rel}
+        texts.update(merged_journals(c, pid))
+        journal = texts.get(pid) or journal_text(c, pid, p["branch"])
+        wanted = criteria(c, pid)
+        tasks = [x for x in view["tasks"].values() if not x.startswith("dropped: ")]
+        tips = [rev(repo, b) for _, b, _, _ in branches(c, pid) if has_ref(repo, b)]
+        journals = {pid: journal, **{n: t for n, t in texts.items() if n != pid}}
+        rows = criteria_evidence(c, pid, tips, journals, jobs)
+        view["progress"] = {
+            "criteria": len(wanted),
+            "met": [x for x, r in rows.items() if any(e["met"] for e in r)],
+            "unlisted": [x for x, r in rows.items() if not r],
+            "detail": [{"id": x, **wanted[x], "rows": r} for x, r in rows.items()],
+            "tasks": len(tasks),
+            "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done|merged)\b", t, re.I)),
+            "next": next_step(journal),
+        }
+    view["replaced"] = replaced_citations(texts, mine)
+    view["stray"] = stray_rows(texts, criteria(c, pid)) if brief and texts else []
+    ended = ended_at_head(c, pid, mine)
+    view["done_at_head"] = sum(1 for j in ended if j["state"].get("state") == "done")
+    view["messages"] = [{**m, "answered": answered(m, texts.values())} for m in inbox(c, pid)]
+    noted = "\n".join(texts.values())
+    view["bad_at_head"] = [
+        {**job_summary(j), "check": j["id"] in checked, "noted": j["id"] in noted}
+        for j in ended
+        if j["state"].get("state") in FAILED
+    ]
+    return view
 
 
 def machine_status() -> int:

@@ -20,9 +20,8 @@ from typing import Any
 from .core import ENTRY, HEAVY, LIGHT_RUN, SHORT_RUN, Json, atomic_write, jobs_dir, plural, sh, stamp
 from .disk import daily_prune
 from .jobs import all_jobs, claim, finish, load_job, slot_of
-from .procs import spawn, worker_alive
 from .reuse import what_stem
-from .runner import admit, reap
+from .runner import admit, reap, spawn, worker_alive
 
 
 # a strict hold pins its own cores only where quiet can (Linux, FreeBSD's cpuset); elsewhere it drains

@@ -1666,7 +1666,7 @@ class Slots(CampaignCase):
             "import os, sys, time\n"
             "from pathlib import Path\n"
             f"sys.path.insert(0, {str(CAMPAIGN.parent)!r})\n"
-            "from campaign_tool import procs as m\n"
+            "from campaign_tool import runner as m\n"
             f"while not os.path.exists({str(go)!r}):\n"
             "    time.sleep(0.01)\n"
             f"m.slot_lock(Path({str(slot)!r}), Path(sys.argv[2] + '.beat'))\n"
