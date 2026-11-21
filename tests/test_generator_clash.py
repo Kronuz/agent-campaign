@@ -56,11 +56,19 @@ class Configure(CampaignCase):
         self.assertEqual(code, 0, text)
         self.assertIn(f"campaign: removed build: configured by {MAKEFILES}, this job uses {NINJA}", text)
 
-    def test_a_tree_from_another_source_does_not_fail_the_job(self) -> None:
-        self.assertEqual(self.run_job("cmake -S sub -B build", NINJA)[0], 0)
+    def test_a_tree_from_a_directory_of_the_source_is_kept(self) -> None:
+        build = "cmake -S sub -B build && touch build/marker"
+        self.assertEqual(self.run_job(build, NINJA)[0], 0)
+        code, text = self.run_job("cmake -S sub -B build && test -f build/marker && echo again", NINJA)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("campaign: removed", text)
+
+    def test_a_tree_from_a_source_outside_the_slot_does_not_fail_the_job(self) -> None:
+        ext = "mkdir -p ../ext && cp CMakeLists.txt ../ext/ && cmake -S ../ext -B build"
+        self.assertEqual(self.run_job(ext, NINJA)[0], 0)
         code, text = self.run_job("cmake -S . -B build", NINJA)
         self.assertEqual(code, 0, text)
-        self.assertRegex(text, r"campaign: removed build: configured from \S+/sub, not this job's source")
+        self.assertRegex(text, r"campaign: removed build: configured from \S+/ext, outside this job's sources")
 
     def test_a_sub_build_another_generator_configured_does_not_fail_the_job(self) -> None:
         sub = "mkdir -p .deps/x-subbuild && cp CMakeLists.txt .deps/x-subbuild/ && cmake -S .deps/x-subbuild -B .deps/x-subbuild"
@@ -107,6 +115,23 @@ class Scan(unittest.TestCase):
         self.clear(NINJA)
         self.assertFalse((self.slot / "gone").exists() or (self.slot / "elsewhere").exists())
         self.assertEqual(len(self.said), 2)
+
+    def test_a_tree_whose_source_is_outside_every_root_is_removed(self) -> None:
+        outside = self.dir / "elsewhere"
+        outside.mkdir()
+        cache(self.slot / "build", NINJA, outside)
+        self.clear(NINJA)
+        self.assertFalse((self.slot / "build").exists())
+        self.assertIn("outside this job's sources", self.said[0])
+
+    def test_a_tree_from_a_directory_inside_a_source_is_kept(self) -> None:
+        (self.slot / "sub").mkdir()
+        (self.slot / "ref-x" / "lib").mkdir(parents=True)
+        cache(self.slot / "build", NINJA, self.slot / "sub")
+        cache(self.slot / "build-r", NINJA, self.slot / "ref-x" / "lib")
+        self.clear(NINJA, self.slot, self.slot / "ref-x")
+        self.assertEqual(self.said, [])
+        self.assertEqual(len(list(self.slot.glob("build*/CMakeCache.txt"))), 2)
 
     def test_a_tree_moved_to_another_path_is_removed(self) -> None:
         cache(self.slot / "build", NINJA, self.slot)

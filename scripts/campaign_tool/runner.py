@@ -318,11 +318,11 @@ def cmake_trees(slot: Path) -> Iterator[Path]:
             ]
 
 
-def stale_tree(slot: Path, tree: Path, generator: str, sources: Iterable[Path]) -> str:
-    """Why a job that configures with GENERATOR (empty when its environment names none) from one of
-    SOURCES cannot reuse TREE, or "": another generator configured it, or a source that is none of the
-    job's (a tree's own directory, as a sub-build's, and the directories between it and SLOT are its own), or it
-    was configured at another path."""
+def stale_tree(tree: Path, generator: str, sources: Iterable[Path]) -> str:
+    """Why a job that configures with GENERATOR (empty when its environment names none) from SOURCES (the
+    slot's source roots) cannot reuse TREE, or "": another generator configured it, its source is gone or
+    lies outside every root (a directory inside one is a source: `-S sub -B build`), or it was configured
+    at another path."""
     try:
         have = cache_entries(tree)
     except OSError:
@@ -332,9 +332,9 @@ def stale_tree(slot: Path, tree: Path, generator: str, sources: Iterable[Path]) 
         return f"configured by {have['CMAKE_GENERATOR']}, this job uses {generator}"
     home = have.get("CMAKE_HOME_DIRECTORY")
     if home:
-        known = {here, *(p for p in here.parents if p.is_relative_to(slot.resolve())), *(s.resolve() for s in sources)}
-        if not Path(home).is_dir() or Path(home).resolve() not in known:
-            return f"configured from {home}, not this job's source"
+        roots = [s.resolve() for s in sources]
+        if not Path(home).is_dir() or not any(Path(home).resolve().is_relative_to(r) for r in roots):
+            return f"configured from {home}, outside this job's sources"
     where = have.get("CMAKE_CACHEFILE_DIR")
     if where and Path(where).resolve() != here:
         return f"configured at {where}"
@@ -357,7 +357,7 @@ def clear_stale_trees(slot: Path, generator: str, sources: Iterable[Path], say: 
     configured (CMake fails on it) and says why, one line a tree."""
     sources = list(sources)
     for tree in cmake_trees(slot):
-        why = stale_tree(slot, tree, generator, sources)
+        why = stale_tree(tree, generator, sources)
         if why and remove_tree(slot, tree):
             say(f"campaign: removed {tree.relative_to(slot)}: {why}")
 
@@ -544,7 +544,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             print(f"campaign: filling git mirrors failed: {e}", file=sys.stderr)
     if slot_of(spec):  # a shared slot's build tree another generator configured fails the configure
         slot = jobs_dir() / "slots" / spec["slot"]
-        sources = [slot, cwd, *(ref_path(spec, d, name) for name in spec["refs"])]
+        sources = [slot, *(ref_path(spec, d, name) for name in spec["refs"])]
         try:
             with open(ad / "log", "a") as note:
                 clear_stale_trees(slot, env.get("CMAKE_GENERATOR", ""), sources, lambda x: print(x, file=note))
