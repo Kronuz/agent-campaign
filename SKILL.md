@@ -270,6 +270,9 @@ daily (`campaign job prune`); `campaign sweep` removes merged worktrees. Mechani
 `campaign land` refuses with each gap `campaign brief` lists: dependencies, a merge of `main` when it
 changed code (`--merge-main` merges, pushes and lands when evidence carries), the file set, tasks,
 criteria, messages, the suite at its code, reviews, CI.
+CI green and reviews accepted at a quest's head carry across a clean merge from `main` (no conflict, no
+edit beside it; `--merge-main` does not push one); the landing records the CI run, and red CI on `main`
+after it is an error in `campaign check` until fixed forward.
 It fast-forwards `main` (or merges when only campaign files differ), checks the landed code is the
 tested code, records the landing, and pushes only with `--push`. Recorded exceptions: `--no-ci
 REASON`, and `--record COMMIT --reason R` (a landing done by hand, with the gates it never checked). A red
