@@ -49,7 +49,7 @@ from .repo import (
     same_repo,
 )
 from .reuse import submit
-from .reviews import landing_gaps, repo_lock, review_gaps, task_gaps
+from .reviews import landing_gaps, main_moved, repo_lock, review_gaps, task_gaps
 from .runner import drop_slot, spawn
 from .state import branches, deferred
 from .wait import wait_for
@@ -252,11 +252,15 @@ def cmd_task_merge(a: argparse.Namespace) -> int:
 def merge_main_into(c: Campaign, pid: str) -> str:
     """Merges main into the quest's branch in its worktree (a merge, never a rebase), and pushes the
     branch to origin when there is one, so CI runs at the merge. A conflict refuses, leaving the
-    branch as it was. Returns what happened, "" when main was in the branch already."""
+    branch as it was. Returns what happened, "" when a plain land would not ask for the merge: main
+    is in the branch, or moved only in its campaign records."""
     p = c.quests[pid]
     repo = c.repo(p)
     main, branch = main_branch(repo), p["branch"]
-    if ancestor(repo, rev(repo, main), rev(repo, branch)):
+    main_head = rev(repo, main)
+    if ancestor(repo, main_head, rev(repo, branch)) or not main_moved(
+        repo, main_head, merge_base(repo, main_head, rev(repo, branch))
+    ):
         return ""
     wt = (c.home / p.get("worktree", "")).resolve() if p.get("worktree") else None
     if wt is None or not wt.exists():
