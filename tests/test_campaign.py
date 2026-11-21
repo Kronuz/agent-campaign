@@ -240,6 +240,7 @@ class Ownership(CampaignCase):
         self.fails(self.home, "start", "more", match="overlap dense")
 
     def test_status_lists_launchable_quests_critical_path_first(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"  # every journal counts as untouched
         self.started("one", files="lib/**")
         new = ("--title", "t", "--risk", "low", "--files")
         self.ok(self.home, "new", "clash", *new, "lib/util.py")  # needs met, but one holds its files
@@ -268,6 +269,22 @@ class Ownership(CampaignCase):
         rows = "| slow merge | job J1 row 3 | lib/merge.py | . | open |\n| x | y | z | . | closed: fixed |\n"
         hunt.write_text(hunt.read_text() + rows)
         self.assertIn("  hunt list: 1 open", self.ok(self.home, "status").out)
+
+    def test_an_after_dependency_orders_the_landing_and_never_hides_idle_work(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"
+        self.ok(self.home, "new", "base", "--title", "t", "--risk", "low", "--files", "base.py")
+        top = self.started("top", files="top.py", after="base")
+        idle = "nothing moves without the lead: top"
+        journal = top / ".campaign/demo/journal/top.md"
+        journal.write_text(journal.read_text().replace("State:", "State: waiting on jobs J1 J2;", 1))
+        self.assertIn(idle, self.ok(self.home, "status").out, "its jobs ended: the work is the lead's to move")
+        journal.write_text(journal.read_text().replace("State:", "State: ready to land;", 1))
+        self.assertNotIn(idle, self.ok(self.home, "status").out, "ready, it waits only on base landing")
+        journal.write_text(journal.read_text().replace("State:", "State: working;", 1))
+        self.env["CAMPAIGN_IDLE"] = "3600"
+        self.assertNotIn(idle, self.ok(self.home, "status").out, "a journal touched this hour: an agent at work")
+        self.env["CAMPAIGN_IDLE"] = "0"
+        self.assertIn(idle, self.ok(self.home, "status").out, "a journal saying working, untouched: nobody is")
 
     def test_a_landing_prints_and_mails_what_it_unlocks(self) -> None:
         wt = self.started("lib", files="lib/**", check="unit=true")

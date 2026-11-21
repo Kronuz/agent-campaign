@@ -697,6 +697,20 @@ class Identity(CampaignCase):
         tags = json.loads((self.root / "jobs" / new / "for.json").read_text())["tags"]
         self.assertEqual([t["for"] for t in tags], [["A1"]])
 
+    def test_a_rerun_keeps_a_fails_without_job_at_the_code_it_names(self) -> None:
+        """A --fails-without job must fail without the fix; at the quest's head it would run the fix."""
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        before = self.git(wt, "rev-parse", "HEAD")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        test = "python3 app.py | grep -q 2"
+        jid = self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--commit", before, "--", test)
+        self.run_cli(self.home, "wait", jid)  # it fails at the code without the fix, as it must
+        self.fails(self.home, "job", "rerun", jid, match=f"{jid} must fail at the code without the fix")
+        self.assertIn(f"{jid} at {before[:12]}", self.ok(self.home, "job", "rerun", jid, "--commit", before).out)
+
     def test_a_docs_folder_counts_as_named_only_as_a_whole_argument(self) -> None:
         doc_path = campaign_module().doc_path
         self.assertTrue(doc_path("docs/design/results.md", "docs/design/bench/run.sh row 1000"))

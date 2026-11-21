@@ -25,7 +25,7 @@ campaign verify ID [--for A1] # the quest's gate checks at its branch head (--al
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
 campaign job list | show J | log J | cancel J
-campaign job rerun J... [--commit REF] [--minutes N]   # same jobs at the quest's head; a mutant needs --commit
+campaign job rerun J... [--commit REF] [--minutes N]   # same jobs at the quest's head; a mutant or --fails-without job needs --commit
 campaign usage [--json]       # agent runs and jobs per quest, role and assignment
 ```
 

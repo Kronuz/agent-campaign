@@ -163,8 +163,9 @@ job passing at the exact commit; it queues no local job.
    branch moves or a message arrives), never with a loop that retries `land`, which hides every
    refusal. It resumes a contributor by message while its context is small (about 150k tokens),
    else starts a fresh one with the "Resume" prompt; at every wake it fills idle capacity: first
-   what `campaign status` says nothing moves without, then launchable tasks, then an exploration
-   batch.
+   what `campaign status` says nothing moves without (no job queued and the journal untouched for an
+   hour, whatever the quest waits on to land: `after` orders the landing, never the work), then
+   launchable tasks, then an exploration batch.
 4. When every task is in, the quest is the feature: the lead sets `status=review`, runs the suite,
    launches the review its risk needs and the measurements its criteria name, all at once. Their
    findings become tasks; then `campaign accept ID LENS` and `campaign land ID` on a green suite

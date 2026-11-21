@@ -1170,22 +1170,41 @@ def in_flight(counts: dict[str, int]) -> str:
 
 
 def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
-    """Active or in-review quests with every dependency landed and no job of theirs queued or running,
-    or whose journal says it waits on the lead whatever runs: nothing moves them unless the lead does."""
+    """Active or in-review quests nothing moves unless the lead does: no job of theirs queued or running
+    and their journal untouched for CAMPAIGN_IDLE seconds (an hour: no contributor at work), unless the
+    journal says ready and only a dependency not yet landed holds them (`after` orders the landing,
+    never the work); or whose journal says it waits on the lead, whatever runs."""
     busy = {
         j["spec"].get("quest")
         for j in jobs
         if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
     }
-    live = [k for k, p in c.quests.items() if p["status"] in ("active", "review")]
-    return sorted(
-        k
-        for k in live
-        if (k not in busy and all(c.met(d) for d in [*c.quests[k]["needs"], *c.quests[k]["after"]]))
-        or LEAD_WAIT.match(state_of(journal_text(c, k, c.quests[k].get("branch", ""))))
-    )
+    quiet_for = float(os.environ.get("CAMPAIGN_IDLE", "3600"))
+
+    def idle(k: str) -> bool:
+        p = c.quests[k]
+        state = state_of(journal_text(c, k, p.get("branch", "")))
+        if LEAD_WAIT.match(state):
+            return True
+        if k in busy or journal_age(c, k) < quiet_for:
+            return False
+        return not READY.match(state) or all(c.met(d) for d in [*p["needs"], *p["after"]])
+
+    return sorted(k for k, p in c.quests.items() if p["status"] in ("active", "review") and idle(k))
 
 
+def journal_age(c: Campaign, name: str) -> float:
+    """Seconds since NAME's journal last changed in its worktree, or was last committed on its branch."""
+    wt = journal_place(c, name)
+    path = wt / f"{c.meta}/journal/{name}.md" if wt else None
+    if path is not None and path.exists():
+        return time.time() - path.stat().st_mtime
+    branch = c.quests[name].get("branch", "")
+    stamp = git(c.home, "log", "-1", "--format=%ct", branch, check=False).strip() if branch else ""
+    return time.time() - float(stamp) if stamp.isdigit() else float("inf")
+
+
+READY = re.compile(r"(?:ready|done)\b", re.I)
 LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?lead\b", re.I)
 
 
@@ -8418,6 +8437,11 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     by default the head of their quest's branch, in whichever of the job's repositories holds it
     (its own or a `--ref`'s), else of their repository."""
     specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, a.jobs)}
+    if not a.commit and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):
+        die(
+            f"{', '.join(old)} must fail at the code without the fix: at the quest's head they run the fix; "
+            "name that code with --commit"
+        )
     if a.minutes is not None and a.minutes <= 0:
         die("--minutes is a positive number")
     for jid, spec in specs.items() if a.minutes else ():  # a job that timed out, given the time it needs
