@@ -212,6 +212,26 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
     return "success"
 
 
+def ci_waiting(c: Campaign, p: Json) -> bool:
+    """Whether CI at the quest's head is queued or running, the landing's or a `ci:` check's: a live
+    waiter, which moves the quest without the lead."""
+    repo = c.repo(p)
+    if not shutil.which("gh") or not p.get("branch") or not has_ref(repo, p["branch"]):
+        return False
+    head = rev(repo, p["branch"])
+    if c.state.get("ci") == "github" and ci_state(repo, head, c.state.get("ci_later", [])).startswith("running: "):
+        return True
+    names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
+    return any(ci_job(repo, head, name).endswith(" is running") for name in names)
+
+
+def forget_ci() -> None:
+    """Drops the answers GitHub may still change, so a long wait asks again."""
+    with _gh_lock:
+        for key in [k for k, f in _gh.items() if f.done()]:
+            del _gh[key]
+
+
 def ci_covers(c: Campaign) -> bool:
     """Whether landing needs CI green at the exact commit, which tests the merge with main."""
     return c.state.get("ci") == "github"

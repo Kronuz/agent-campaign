@@ -159,13 +159,17 @@ job passing at the exact commit; it queues no local job.
    free in its repository; `campaign status` lists them, critical path first.
 2. A contributor builds its task, runs its tests as jobs (`--quest ID --task T`), commits and ends
    its turn; the lead merges it and starts what it unblocked.
-3. The lead waits with one background `campaign wait --commits` (it returns when a job ends, a
-   branch moves or a message arrives), never with a loop that retries `land`, which hides every
-   refusal. It resumes a contributor by message while its context is small (about 150k tokens),
-   else starts a fresh one with the "Resume" prompt; at every wake it fills idle capacity: first
-   what `campaign status` says nothing moves without (no job queued and the journal untouched for an
-   hour, whatever the quest waits on to land: `after` orders the landing, never the work), then
-   launchable tasks, then an exploration batch.
+3. The lead waits with one background `campaign wait --commits`, never with a loop that retries
+   `land`, which hides every refusal. It returns when a job ends, a branch moves, a message arrives
+   or the lead's **to-do list** gains an item, at once when the wait starts with one, and again for
+   an item left undone 30 minutes (`CAMPAIGN_TODO_REPEAT`). The list ends every wait, `status` and
+   `brief`, critical path first, each item with its command: quests to start, tasks to merge,
+   quests to land or review, quests nothing moves without (a journal waiting on the lead or on jobs
+   that ended, or untouched for an hour with no job queued or running and no CI running), and idle
+   light slots beside open hunt rows. Waiting on a job, CI or a drain is never a reason for the
+   list to be empty. The lead acts on every item at every wake: it resumes a contributor by message
+   while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
+   prompt; "wait again" is printed only when the list is empty.
 4. When every task is in, the quest is the feature: the lead sets `status=review`, runs the suite,
    launches the review its risk needs and the measurements its criteria name, all at once. Their
    findings become tasks; then `campaign accept ID LENS` and `campaign land ID` on a green suite
