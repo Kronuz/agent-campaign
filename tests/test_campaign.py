@@ -1662,6 +1662,19 @@ class DirectPath(CampaignCase):
         status = self.ok(self.home, "status").out
         self.assertIn("deferred checks: 1 done, 1 failed", status)
         self.assertNotIn("not in a journal yet", status)  # a landed quest's failures are history
+        # removing the red deferred check on the record drops its run too; the other one stays
+        self.ok(self.home, "set", "fast", "--later", "other-platform=echo other", "--weaken", "CI runs the soak")
+        self.assertEqual(len(self.quest("fast")["landed"][0]["later"]), 1)
+        self.ok(self.home, "check")
+        self.ok(
+            self.home,
+            "set",
+            "fast",
+            "--later",
+            "soak=sleep 1; grep -q fixed app.py",
+            "--later",
+            "other-platform=echo other",
+        )
         # the fix lands (here straight on main); rerunning the deferred checks on main clears the error
         self.commit(self.home, {"app.py": "print(2)  # fixed\n"})
         self.ok(self.home, "verify", "fast", "--deferred")

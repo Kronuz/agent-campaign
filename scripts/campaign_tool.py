@@ -1868,6 +1868,10 @@ def cmd_set(a: argparse.Namespace) -> int:
             p["checks"] = [placed(x, p["risk"]) for x in a.check] + deferred(p)
         if a.later:
             p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later if x]
+            kept = {x["cmd"] for x in deferred(p)}  # a removed deferred check's runs stop counting
+            for record in p["landed"]:
+                runs = [load_job(jobs_dir() / j) for j in record.get("later", [])]
+                record["later"] = [j["id"] for j in runs if j["spec"].get("cmd", "") in kept or not j["spec"]]
         if a.check or a.later or a.inputs:
             declare_inputs(p, a.id, a.inputs)
         if RISKS.index(p["risk"]) > RISKS.index(before["risk"]):  # a raised risk brings its reviews
