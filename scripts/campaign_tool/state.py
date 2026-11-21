@@ -484,7 +484,7 @@ def outside(paths: list[str], globs: list[str]) -> list[str]:
     return [x for x in paths if not is_meta(x) and globs and not any(fnmatch.fnmatch(x, g) for g in globs)]
 
 
-CRITERION = re.compile(r"^\s*[-*]\s*\**A\d+\b.*(?:\n[ \t]+\S.*)*", re.M)  # `- A1 ...` and its wrapped lines
+CRITERION = re.compile(r"^\s*[-*]\s*\**A\d+[a-z]?\b.*(?:\n[ \t]+\S.*)*", re.M)  # `- A1 ...` and its wrapped lines
 
 
 def criteria_hash(c: Campaign, pid: str) -> str:

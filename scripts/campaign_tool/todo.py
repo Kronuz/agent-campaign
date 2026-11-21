@@ -120,7 +120,7 @@ def todo_lines(t: Json) -> list[str]:
     counts.append(f"{len(f['lead'])} needing the lead")
     head = f"in flight: {', '.join(counts)}"
     if not t["items"]:
-        return [f"{head}; nothing for the lead to do: wait again after this"]
+        return [f"{head}; the lead has nothing to do: wait again after this"]
     lines = [f"to do, critical path first ({head}):"]
     lines += [f"- {x['text']}: `{x['cmd']}`" for x in t["items"]]
     return lines

@@ -122,15 +122,21 @@ def plan_decisions(plan: Path) -> set[str]:
 
 
 def id_ranges(ids: list[str]) -> str:
-    """A1, A2, A3, A5 as "A1-A3, A5"."""
-    nums = sorted(int(x[1:]) for x in ids)
-    runs: list[list[int]] = []
-    for n in nums:
-        if runs and n == runs[-1][1] + 1:
-            runs[-1][1] = n
+    """A1, A2, A3, A3b, A5 as "A1-A3, A3b, A5": consecutive plain ids as a range, a suffixed one alone."""
+
+    def key(x: str) -> tuple[int, str]:
+        m = re.fullmatch(r"A(\d+)([a-z]?)", x)
+        return (int(m.group(1)), m.group(2)) if m else (1 << 30, x)
+
+    runs: list[list[str]] = []
+    for x in sorted(ids, key=key):
+        n, suffix = key(x)
+        last = key(runs[-1][-1]) if runs else (-2, "-")
+        if not suffix and not last[1] and n == last[0] + 1:
+            runs[-1].append(x)
         else:
-            runs.append([n, n])
-    return ", ".join(f"A{a}" if a == b else f"A{a}-A{b}" for a, b in runs)
+            runs.append([x])
+    return ", ".join(r[0] if len(r) == 1 else f"{r[0]}-{r[-1]}" for r in runs)
 
 
 def next_step(journal: str) -> str:

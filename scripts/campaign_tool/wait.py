@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import os
 import select as os_select
 import sys
@@ -128,16 +129,22 @@ def wait_events(c: Campaign, timeout: float) -> int:
     made: list[Json] = [{"at": 0.0, "of": None, "list": {"items": []}}]
     every = max(tick, float(os.environ.get("CAMPAIGN_TODO_TICK", "30")))
 
-    def listing(heads: dict[str, str]) -> Json:
+    def listing(heads: dict[str, str], fresh: bool = False) -> Json:
         """The to-do list, made again when the state, a job or a branch changed, else every EVERY
-        seconds (time alone moves a journal past the idle bound, or CI to its end)."""
+        seconds (time alone moves a journal past the idle bound, or CI to its end); FRESH, made
+        from the state read again (what a return prints: a command may be writing it)."""
         nonlocal c
         last = made[0]
-        if state_stamp(c) != loaded[0]:  # the lead landed, started or set something
+        if fresh:  # as the writer leaves it: a command writes mail before the state
+            with open(Path(common_dir(c.home)) / "campaign.lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_SH)
+                loaded[0] = state_stamp(c)
+                c = Campaign(c.home, c.name)
+        elif state_stamp(c) != loaded[0]:  # the lead landed, started or set something
             loaded[0] = state_stamp(c)
             c = Campaign(c.home, c.name)
         of = (loaded[0], sorted(heads.items()), sorted((j["id"], j["state"].get("state")) for j in mine))
-        if of == last["of"] and time.time() - last["at"] < every:
+        if not fresh and of == last["of"] and time.time() - last["at"] < every:
             return dict(last["list"])
         if time.time() - asked[0] >= float(os.environ.get("CAMPAIGN_CI_SECONDS", "60")):
             forget_ci()  # CI that was running may have finished
@@ -184,7 +191,8 @@ def wait_events(c: Campaign, timeout: float) -> int:
             break
         running = mine
         idle = not any(j["state"].get("state") not in TERMINAL for j in running)
-        if not heads and not peers(c) and idle and not listed["items"]:
+        flying = any(p["status"] in FLIGHT for p in c.quests.values())  # by the state, not by branches mid-landing
+        if not flying and not peers(c) and idle and not listed["items"]:
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
         if timeout and time.time() - start >= timeout:
@@ -205,6 +213,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
+    listed = listing(heads, fresh=True)
     now = time.time()
     keys = {x["key"] for x in listed["items"]}
     for key in [k for k in shown if k not in keys]:  # done, or gone: it fires anew if it comes back
