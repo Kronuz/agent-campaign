@@ -43,3 +43,5 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   the campaign state. Leave nothing running when you finish.
 - Run git as `git -C <path> ...`, never `cd ... && git`: Claude Code stops for approval on each.
 - Final message, under 250 words: State, each criterion with its evidence, Blocked on.
+- A session of your own (not a subagent) is titled `<campaign> · contributor <quest>` (launched
+  with `claude -n` or the harness's equivalent); if it is not, tell the lead in your journal.
