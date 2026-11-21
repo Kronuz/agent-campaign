@@ -35,6 +35,8 @@ to the skill that starts relying on a harness feature adds its row here in the s
 | Sidebar progress (`report`) | cmux status pills and bar; a terminal bar elsewhere | the same | the same (verified 2026-11-05) |
 | Periodic report to the owner | a session-only cron job (CronCreate), recreated each session, expiring after 7 days | `manage_schedule` | none: report at turn boundaries |
 | Lead woken when a job or agent ends | background Bash command; agent completion notices | async shell notices | see "Lead waits without tokens" above |
+| Leads of different campaigns message each other directly | Claude Code cross-session messages: SendMessage to a peer session's `uds:/tmp/cc-socks/<pid>.sock` (ListAgents names them); they arrive as a `cross-session-message`. Beside `campaign message`, whose record is the durable one | unknown | unknown |
+| A background contributor reports and is resumed | the subagent's final report arrives through SubagentHandback; an agent that stops with its own background command still running sends an interim "waiting on its own background work" notice and notifies again when it ends; SendMessage resumes it with its context | see "Resume an agent" above | see "Resume an agent" above |
 | A file sent to the owner's other devices | SendUserFile | unknown | unknown |
 
 "unbuilt" means the harness has the hook point and the campaign has not used it yet; "unknown"
