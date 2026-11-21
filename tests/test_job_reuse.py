@@ -10,7 +10,6 @@ from pathlib import Path
 
 from harness import CampaignCase, campaign_module
 
-
 HAS_CMAKE = all(map(shutil.which, ("cmake", "ninja", "cc")))
 CM = "cmake_minimum_required(VERSION 3.16)\nproject(p C)\nenable_testing()\n"
 BUILD = "cmake -S . -B build -G Ninja >/dev/null && cmake --build build >/dev/null"
