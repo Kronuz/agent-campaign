@@ -3251,7 +3251,8 @@ def journal_gaps(c: Campaign, pid: str) -> list[str]:
     branch changing more than its quest's journals, or the home's main changing them meanwhile."""
     main = main_branch(c.home)
     main_head = rev(c.home, main)
-    own = {f"{c.meta}/journal/{name}.md" for name, _, _, _ in branches(c, pid)}
+    names = [pid, *(f"{pid}--{task}" for task in c.quests[pid].get("tasks", {}))]  # merged tasks' too
+    own = {f"{c.meta}/journal/{name}.md" for name in names}
     gaps: list[str] = []
     for name, branch, _, _ in branches(c, pid):
         if not has_ref(c.home, branch):

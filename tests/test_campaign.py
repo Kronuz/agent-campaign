@@ -2011,6 +2011,18 @@ class Campaigns(CampaignCase):
         self.assertFalse(journal.exists(), "the journal's worktree outlived the landing")
         self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/api"), "")
 
+    def test_a_merged_tasks_journal_belongs_to_its_library_quest(self) -> None:
+        self.lib_quest(self.home, "api", "--files", "lib.py,util.py")
+        self.ok(self.home, "start", "api", "--task", "u", "--files", "util.py")
+        t = self.quest("api")["tasks"]["u"]
+        code, journal = (self.home / t["worktree"]).resolve(), (self.home / t["journal"]).resolve()
+        self.commit(code, {"util.py": "Y = 1\n"})
+        self.commit(journal, {".campaign/demo/journal/api--u.md": "done\n"})
+        job = self.submit(code, "--quest", "api", "--task", "u", "--", "true")
+        self.ok(self.home, "wait", job)
+        self.ok(self.home, "task", "merge", "api", "u")
+        self.assertNotIn("changes more than its journals", self.ok(self.home, "brief", "api").out)
+
     def test_a_planned_contract_change_warns_once_it_starts(self) -> None:
         self.ok(
             self.home,
