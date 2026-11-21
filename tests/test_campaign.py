@@ -286,6 +286,17 @@ class Ownership(CampaignCase):
         self.env["CAMPAIGN_IDLE"] = "0"
         self.assertIn(idle, self.ok(self.home, "status").out, "a journal saying working, untouched: nobody is")
 
+    def test_a_quest_never_holds_the_files_of_what_it_lands_after(self) -> None:
+        new = ("--title", "t", "--risk", "low", "--check", "unit=true")
+        self.ok(self.home, "new", "core", *new, "--files", "lib/**")
+        self.ok(self.home, "new", "user", *new, "--files", "lib/util.py,app.py", "--after", "core")
+        self.fails(self.home, "start", "user", match="lands after core, whose files it would hold")
+        self.ok(self.home, "start", "user", "--force", "legacy start")
+        self.assertIn("user holds files of core, which it lands after", self.run_cli(self.home, "check").out)
+        self.ok(self.home, "set", "user", "files=app.py")
+        self.assertNotIn("holds files of", self.run_cli(self.home, "check").out)
+        self.ok(self.home, "start", "core")
+
     def test_a_landing_marks_its_hunt_row_done(self) -> None:
         hunt = self.home / ".campaign/demo/hunt.md"
         rows = "| Slow lib loads | job 1 | lib/** | . | open |\n| Slow lib saves | job 2 | lib/** | . | open |\n"

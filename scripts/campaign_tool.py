@@ -832,6 +832,20 @@ def clashes(c: Campaign, pid: str) -> list[str]:
     ]
 
 
+def starved(c: Campaign, pid: str) -> list[str]:
+    """The unlanded quests PID must land after (`after` or `needs`) whose files overlap PID's: while
+    PID is active they cannot start, so neither can land."""
+    p, repo = c.quests[pid], c.repo(c.quests[pid])
+    return [
+        d
+        for d in dict.fromkeys(p["needs"] + p["after"])
+        if (q := c.quests.get(d))
+        and q["status"] in ("planned", "blocked")
+        and c.repo(q) == repo
+        and overlap(p["files"], q["files"])
+    ]
+
+
 def cross_overlaps(c: Campaign, pid: str) -> list[str]:
     """Quests of other campaigns whose files may overlap this one's in the same repository, unless
     either orders the other (--after or needs): landing then enforces the order."""
@@ -2137,6 +2151,11 @@ def cmd_start(a: argparse.Namespace) -> int:
             unmet = [d for d in p["needs"] if not c.met(d)]
             if unmet and not a.force:
                 die(f"{a.id} needs {', '.join(unmet)} landed first (--force REASON to start anyway)")
+            if (first := starved(c, a.id)) and not a.force:
+                die(
+                    f"{a.id} lands after {', '.join(first)}, whose files it would hold, so they could never start: "
+                    f"narrow {a.id}'s files to what it changes before them, or --force REASON"
+                )
             clash = clashes(c, a.id)
             if clash and not a.force:
                 die(
@@ -3966,6 +3985,14 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                         f"work and remove it (`campaign set {pid} after=...`)",
                     )
                 )
+        if p["status"] in ("active", "review") and (first := starved(c, pid)):
+            out.append(
+                (
+                    "error",
+                    f"{pid} holds files of {', '.join(first)}, which it lands after, so they cannot start and "
+                    f"{pid} cannot land: narrow {pid}'s files (`campaign set {pid} files=...`) to what it changes",
+                )
+            )
         reviewed = p["status"] == "review" and set(p["lenses"]) <= set(p.get("accepted", {}))
         if reviewed and (late := [d for d in p["after"] if not c.met(d) and not dead_end(c, d)]):
             out.append(
