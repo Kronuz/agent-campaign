@@ -405,8 +405,8 @@ def cmd_land(a: argparse.Namespace) -> int:
             "from": main_head,
             "at": stamp(),
             **({"ci_skipped": a.no_ci} if a.no_ci and c.state.get("ci") else {}),
+            **({"ci": ci_landing(c, p, target)} if a.no_ci is None and c.state.get("ci") == "github" else {}),
         }
-        relied = ci_landing(c, p, target) if a.no_ci is None and c.state.get("ci") == "github" else None
         write_json(c.path, c.state)
         before = rev(checkout, "HEAD")
         try:
@@ -438,8 +438,6 @@ def cmd_land(a: argparse.Namespace) -> int:
         record = landing_record(repo, main, c.state.pop("landing"))
         if record is None:
             die(f"{main} does not contain {target[:12]} after landing it")
-        if relied:
-            record["ci"] = relied  # the runs it relied on; `main_ci_problems` reads main's after a carried one
         warnings: list[str] = []  # main moved: from here a failed step warns, and the landing is recorded
         if not same_repo(repo, c.home):
             warnings += after_landing("merging its journal", lambda: land_journals(c, a.id), undo=c.home)

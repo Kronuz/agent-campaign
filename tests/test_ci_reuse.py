@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 from harness import CampaignCase, campaign_module
 
@@ -105,33 +101,10 @@ class CiReuse(CampaignCase):
         self.verified("b")
         self.fails(self.home, "land", "b", match=f"CI at {merge[:12]}: no CI runs")
 
-    def problems(self) -> tuple[list[tuple[str, str]], str, str]:
-        """main_ci_problems, and `check` and `status` with it wired into `problems` as the lead wires it."""
-        tool = campaign_module()
-        real = tool.status.problems
-
-        def wired(c: Any) -> list[tuple[str, str]]:
-            found: list[tuple[str, str]] = [*real(c), *tool.ci.main_ci_problems(c)]
-            return found
-
-        cwd = os.getcwd()
-        out: list[str] = []
-        try:
-            os.chdir(self.home)
-            with (
-                mock.patch.dict(os.environ, self.env, clear=True),
-                mock.patch.object(tool.status, "problems", wired),
-                mock.patch.object(tool.checks, "problems", wired),
-            ):
-                found = tool.ci.main_ci_problems(tool.Campaign(self.home))
-                for argv in (["check"], ["status"]):
-                    text = io.StringIO()
-                    with contextlib.redirect_stdout(text), contextlib.suppress(SystemExit):
-                        tool.main(argv)
-                    out.append(text.getvalue())
-        finally:
-            os.chdir(cwd)
-        return found, out[0], out[1]
+    def problems(self) -> tuple[str, str]:
+        """What `check` and `status` say."""
+        check = self.run_cli(self.home, "check")
+        return check.text, self.ok(self.home, "status").text
 
     def test_red_ci_on_main_after_a_carried_landing_is_an_error(self) -> None:
         _, head = self.quest_green_at_head("10")
@@ -139,20 +112,40 @@ class CiReuse(CampaignCase):
         self.ok(self.home, "land", "b", "--merge-main")
         landed = self.quest("b")["landed"][0]["commit"]
         self.assertEqual(self.quest("b")["landed"][0]["ci"]["commit"], head)
-        self.assertEqual(self.problems()[0], [])  # main's CI has not run yet
-        self.ci({landed: "failure"})
-        found, check, status = self.problems()
         error = (
             f"b: CI on main at {landed[:12]}, where it landed on CI carried from {head[:12]} across a merge "
             "from main, failed: build (failure): fix main forward "
             "(`campaign new b-fix --title \"Fix main's CI after b\" --files 'lib/**'`)"
         )
-        self.assertEqual(found, [("error", error)])
-        self.assertIn(error, check)
+        self.assertNotIn("b: CI on main", self.problems()[0])  # main's CI has not run yet
+        self.ci({landed: "failure"})
+        check, status = self.problems()
+        self.assertIn(f"error: {error}", check)
+        self.assertEqual(self.run_cli(self.home, "check").code, 1)
         self.assertIn(error, status)
         fix = self.commit(self.home, {"app.py": "print(2)\n"}, "fix main forward")
         self.ci({fix: "success"})
-        self.assertEqual(self.problems()[0], [])  # main is green again
+        self.assertNotIn("b: CI on main", self.problems()[0])  # main is green again
+
+    def test_a_ci_criterion_counts_the_heads_ci_across_a_clean_merge(self) -> None:
+        b, head = self.quest_green_at_head("10")
+        brief = self.home / ".campaign/demo/quests/b.md"
+        text = brief.read_text().replace("None in this test.", "- A1 [ci] CI is green.")
+        self.commit(self.home, {".campaign/demo/quests/b.md": text}, "b: a [ci] criterion")
+        self.commit(self.home, {"other/o.txt": "1\n"})
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        merge = self.git(b, "rev-parse", "HEAD")
+        out = self.ok(self.home, "brief", "b").out
+        self.assertIn(f"| A1 | CI green at {head[:12]} (carried to {merge[:12]} across clean merges) |", out)
+        self.ok(self.home, "land", "b")
+
+    def test_a_recovered_landing_keeps_the_ci_it_relied_on(self) -> None:
+        tool = campaign_module()
+        head = self.git(self.home, "rev-parse", "HEAD")
+        relied = {"commit": head, "runs": [5], "carried": True}
+        intent = {"id": "b", "target": head, "final": True, "mode": "ff", "ci": relied}
+        record = tool.landing_record(self.home, "main", intent)
+        self.assertEqual(record["ci"], relied)
 
     def reviewed_high_risk_quest(self) -> Path:
         """Quest b, high risk, accepted at its head, whose CI passed there."""
