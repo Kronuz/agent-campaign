@@ -218,7 +218,7 @@ def landing_gaps(
         gaps.append(waits_line(c, unmet))
     main_head = rev(repo, main)
     base = merge_base(repo, main_head, target)
-    moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
+    moved = main_moved(repo, main_head, base)
     if moved:
         gaps.append(
             f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} "
