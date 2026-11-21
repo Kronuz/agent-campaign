@@ -12,7 +12,7 @@ soaks and recovery tails are milestone checks.
 | Stage | Length | Level | Purpose |
 |---|---|---|---|
 | Smoke | seconds | `light` | The row's own command at its smallest size, at the commit the row will measure: every arm runs, its effective configuration is printed and asserted, and the output holds every field the decision reads; a failed assertion aborts. |
-| Row | ≤ 10 min | `strict`; one `exclusive` job per decision, never trials, A/As or platform repeats | One job per row, holding its interleaved A/B pairs (`--ref base=<commit>`; `$JOB_REF_BASE` is the baseline checkout). It decides by the rule (metric, arms, noise floor, threshold) the quest file fixed first; a rule changed after data is a Decisions row, every row rerun under it. |
+| Row | ≤ 10 min | `strict`; `exclusive` only for a published number or when the strict interval straddles the threshold, one job, never trials, A/As or platform repeats; `light` for memory, disk, bytes written and counts | One job per row, holding its interleaved A/B pairs (`--ref base=<commit>`; `$JOB_REF_BASE` is the baseline checkout). It decides by the rule (metric, arms, noise floor, threshold) the quest file fixed first; a rule changed after data is a Decisions row, every row rerun under it. |
 
 A row measures the quest branch with `main` merged in first, so landing never re-measures it. Run a
 row a second time only when its interval straddles the target. Chain the stages with `--after`, so

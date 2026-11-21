@@ -639,7 +639,7 @@ QUEST_FIELDS: dict[str, type] = {
     "messages": list,
     "history": list,  # changes to risk, lenses and checks
     "reason": str,
-    "into": str,  # a dropped quest's successor (ID or NAME:ID): its dependents wait on that
+    "into": str,  # a dropped quest's successor (ID or NAME:ID), whose dependents wait on it; "none": they stop waiting
     "until": list,  # a park's conditions: quest ids, PLAN decision ids, or owner
     "milestone": str,
     "updated": str,
@@ -696,8 +696,11 @@ def validate(data: Json) -> list[str]:
                 errors.append(f"{pid}: a check needs name, cmd, level and minutes: {check}")
         if p.get("status") in ("blocked", "dropped") and not p.get("reason"):
             errors.append(f"{pid}: {p.get('status')} needs a reason")
-        if p.get("into") and (p.get("status") != "dropped" or (":" not in p["into"] and p["into"] not in quests)):
-            errors.append(f"{pid}: into= names the quest a drop folds into (ID or NAME:ID), only on a dropped quest")
+        into = p.get("into")
+        if into and (p.get("status") != "dropped" or (into != "none" and ":" not in into and into not in quests)):
+            errors.append(
+                f"{pid}: into= names the quest a drop folds into (ID, NAME:ID or none), only on a dropped quest"
+            )
         if (p.get("status") == "blocked") != bool(p.get("until")):
             errors.append(f"{pid}: a park, and only a park, names until= (quest ids, PLAN decision ids or owner)")
         if p.get("status") == "landed" and not any(x.get("final") for x in p.get("landed", [])):
@@ -733,7 +736,7 @@ def follow(c: Campaign, dep: str) -> tuple[str, Json | None]:
     while True:
         name, _, qid = dep.rpartition(":")
         q = foreign(dep) if name and name != c.name else c.quests.get(qid)
-        if q is None or q.get("status") != "dropped" or not q.get("into") or dep in seen:
+        if q is None or q.get("status") != "dropped" or q.get("into", "none") == "none" or dep in seen:
             return dep, q
         seen.add(dep)
         dep = q["into"] if ":" in q["into"] or not name or name == c.name else f"{name}:{q['into']}"
@@ -749,7 +752,7 @@ def most_waited_on(c: Campaign, top: int = 3) -> list[tuple[str, int]]:
     def ups(key: str) -> list[str]:
         name, q = key.partition(":")[0], every[key]
         found = (follow(c, d if ":" in d else f"{name}:{d}") for d in [*q.get("needs", []), *q.get("after", [])])
-        return [end for end, dq in found if dq is None or dq.get("status") != "landed"]
+        return [end for end, dq in found if dq is None or dq.get("status") not in ("landed", "dropped")]
 
     heads: dict[str, set[str]] = {}
     for key in live:
@@ -770,25 +773,43 @@ def most_waited_on(c: Campaign, top: int = 3) -> list[tuple[str, int]]:
 
 
 def unstarted_waits(c: Campaign, p: Json) -> list[str]:
-    """What keeps a quest from starting: needs not landed, and any dependency that can never land."""
-    return [d for d in p["needs"] if not c.landed(d)] + [d for d in p["after"] if dead_end(c, d)]
+    """What keeps a quest from starting: needs not met, and any dependency on no quest."""
+    return [d for d in p["needs"] if not c.met(d)] + [d for d in p["after"] if dead_end(c, d)]
 
 
 def refuse_dead(c: Campaign, deps: list[str]) -> None:
-    """Refuses a dependency that can never land, in this campaign or another one on this machine."""
+    """Refuses a dependency on no quest, or on a drop with no successor, here or in another campaign."""
     for d in deps:
-        if (d.partition(":")[0] if ":" in d else c.name) in (c.name, *campaigns()) and (why := dead_end(c, d)):
+        here = (d.partition(":")[0] if ":" in d else c.name) in (c.name, *campaigns())
+        if here and (why := dead_end(c, d) or abandoned(c, d)):
             die(f"{why}: depend on a quest that can land")
 
 
 def dead_end(c: Campaign, dep: str) -> str:
-    """Why a dependency can never land, or "": it names no quest, or a drop that names no successor."""
+    """Why a dependency blocks for good, or "": it names no quest any campaign here has."""
+    return f"{dep} names no quest" if follow(c, dep)[1] is None else ""
+
+
+def abandoned(c: Campaign, dep: str) -> str:
+    """Why a dependency no longer blocks, or "": it ends in a drop with no successor (into=none),
+    whose work nobody will land, so nothing waits on it."""
     end, q = follow(c, dep)
-    if q is None:
-        return f"{dep} names no quest"
-    if q.get("status") == "dropped":
-        return f"{end} was dropped ({q.get('reason', '')}) and names no successor (into=)"
-    return ""
+    return f"{end} was dropped ({q.get('reason', '')}) with no successor" if q and q["status"] == "dropped" else ""
+
+
+def dependents(c: Campaign, pid: str) -> dict[str, list[str]]:
+    """Every live quest, in each campaign here, whose dependency ends at quest PID (through drops)."""
+    me, out = f"{c.name}:{pid}", dict[str, list[str]]()
+    every = [(c.name, c.quests), *((n, o["state"].get("quests", {})) for n, o in campaigns().items() if n != c.name)]
+    for name, quests in every:
+        for qid, q in quests.items():
+            deps = [
+                d for d in [*q.get("needs", []), *q.get("after", [])] if name == c.name or d.startswith(f"{c.name}:")
+            ]
+            ends = [end if ":" in end else f"{c.name}:{end}" for end, _ in (follow(c, d) for d in deps)]
+            if q.get("status") not in ("landed", "dropped") and me in ends:
+                out.setdefault(name, []).append(qid)
+    return out
 
 
 def foreign(dep: str) -> Json | None:
@@ -903,9 +924,11 @@ class Campaign:
     def repo(self, p: Json) -> Path:
         return resolved(self.home / p["repo"])
 
-    def landed(self, pid: str) -> bool:
-        _, q = follow(self, pid)
-        return q is not None and q.get("status") == "landed"
+    def met(self, dep: str) -> bool:
+        """The dependency holds nothing back: its quest (through drops) landed, or was dropped with
+        no successor."""
+        _, q = follow(self, dep)
+        return q is not None and q.get("status") in ("landed", "dropped")
 
     def save(self, message: str, extra: tuple[str, ...] = ()) -> None:
         errors = validate(self.state)
@@ -1158,7 +1181,7 @@ def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
     return sorted(
         k
         for k in live
-        if (k not in busy and all(c.landed(d) for d in [*c.quests[k]["needs"], *c.quests[k]["after"]]))
+        if (k not in busy and all(c.met(d) for d in [*c.quests[k]["needs"], *c.quests[k]["after"]]))
         or LEAD_WAIT.match(state_of(journal_text(c, k, c.quests[k].get("branch", ""))))
     )
 
@@ -1928,7 +1951,7 @@ def cmd_set(a: argparse.Namespace) -> int:
             return 0
         if "status=dropped" not in a.assignments and (why := unparsed_criteria(c, a.id, filled=False)):
             die(why)
-        waited, was = blockers(c), p["status"]
+        waited, was, waiting = blockers(c), p["status"], dependents(c, a.id)
         before = {k: json.loads(json.dumps(p[k])) for k in ("risk", "lenses", "checks")}
         for item in a.assignments:
             key, sep, value = item.partition("=")
@@ -1989,12 +2012,18 @@ def cmd_set(a: argparse.Namespace) -> int:
             die("--weaken: nothing here weakens the quest")
         if p.get("into") and p["status"] != "dropped":
             die("into= names the quest a drop folds into: set it with status=dropped")
-        if p.get("into") and follow(c, p["into"])[1] is None:
+        if p.get("into", "none") != "none" and follow(c, p["into"])[1] is None:
             die(f"into={p['into']} names no quest")
         if any(x.startswith(("needs=", "after=")) for x in a.assignments):
             refuse_dead(c, [*p["needs"], *p["after"]])
-        if p["status"] == "dropped" and was != "dropped":
-            tell_dependents(c, a.id, p)
+        if p["status"] == "dropped" and was != "dropped" and waiting:
+            if not p.get("into"):
+                who = ", ".join(k if n == c.name else f"{n}:{k}" for n, ids in waiting.items() for k in ids)
+                die(
+                    f"{who} wait on {a.id}: drop it with into=SUCCESSOR (they wait on that quest) or "
+                    f"into=none (nobody lands its work; they stop waiting on it)"
+                )
+            tell_dependents(c, a.id, p, waiting)
         if p["status"] not in ("blocked", "dropped") and not any(x.startswith("reason=") for x in a.assignments):
             p.pop("reason", None)
         if p["status"] != "blocked":
@@ -2050,7 +2079,7 @@ def cmd_start(a: argparse.Namespace) -> int:
                 die(f"{a.id} is {p['status']}")
             if why := unparsed_criteria(c, a.id):
                 die(why)
-            unmet = [d for d in p["needs"] if not c.landed(d)]
+            unmet = [d for d in p["needs"] if not c.met(d)]
             if unmet and not a.force:
                 die(f"{a.id} needs {', '.join(unmet)} landed first (--force REASON to start anyway)")
             clash = clashes(c, a.id)
@@ -2594,7 +2623,7 @@ def landing_gaps(
     repo = c.repo(p)
     main = main_branch(repo)
     gaps: list[str] = []
-    unmet = [d for d in p["needs"] + (p["after"] if final else []) if not c.landed(d)]
+    unmet = [d for d in p["needs"] + (p["after"] if final else []) if not c.met(d)]
     if unmet:
         gaps.append(waits_line(c, unmet))
     main_head = rev(repo, main)
@@ -3841,29 +3870,21 @@ def next_step(journal: str) -> str:
     return "" if step.startswith("<") else step
 
 
-def tell_dependents(c: Campaign, pid: str, p: Json) -> None:
-    """A drop reaches every quest that waits on it: other campaigns' leads get a message, ours a line."""
+def tell_dependents(c: Campaign, pid: str, p: Json, waiting: dict[str, list[str]]) -> None:
+    """A drop reaches every quest that waits on it: other campaigns' leads get a message, ours a line.
+    Their dependencies follow the drop when read; the message only says so."""
     then = (
         f"it folds into {p['into']}, which they now wait on"
-        if p.get("into")
-        else "it names no successor (into=): rewire them"
+        if p["into"] != "none"
+        else "it has no successor, so they no longer wait on it: check they need none of its work"
     )
-    done = ("landed", "dropped")
-    ours = [k for k, q in c.quests.items() if q["status"] not in done and pid in q["needs"] + q["after"]]
-    if ours:
-        print(f"{pid} dropped: {', '.join(ours)} wait on it; {then}")
-    for name, o in campaigns().items():
-        theirs = [k for k, q in o["state"].get("quests", {}).items() if name != c.name and q.get("status") not in done]
-        theirs = [
-            k
-            for k in theirs
-            if f"{c.name}:{pid}"
-            in [*o["state"]["quests"][k].get("needs", []), *o["state"]["quests"][k].get("after", [])]
-        ]
-        if theirs:
-            text = f"{c.name}:{pid} was dropped ({p.get('reason', '')}): your {', '.join(theirs)} wait on it; {then}"
-            leave_message(Campaign(Path(o["home"]), name), "", text, f"{c.name} lead", origin=c.name)
-            print(f"told {name}'s lead: {', '.join(theirs)} wait on {pid}")
+    for name, ids in waiting.items():
+        if name == c.name:
+            print(f"{pid} dropped: {', '.join(ids)} wait on it; {then}")
+            continue
+        text = f"{c.name}:{pid} was dropped ({p.get('reason', '')}): your {', '.join(ids)} wait on it; {then}"
+        leave_message(Campaign(Path(campaigns()[name]["home"]), name), "", text, f"{c.name} lead", origin=c.name)
+        print(f"told {name}'s lead: {', '.join(ids)} wait on {pid}")
 
 
 def problems(c: Campaign) -> list[tuple[str, str]]:
@@ -3880,8 +3901,16 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
         for d in dict.fromkeys(p["needs"] + p["after"]) if p["status"] not in ("landed", "dropped") else ():
             if why := dead_end(c, d):
                 out.append(("error", f"{pid} waits on {why}: rewire it (`campaign set {pid} after=...`)"))
+            elif why := abandoned(c, d):
+                out.append(
+                    (
+                        "warning",
+                        f"{pid} waits on {d}: {why}, so it no longer blocks; confirm {pid} needs none of its "
+                        f"work and remove it (`campaign set {pid} after=...`)",
+                    )
+                )
         reviewed = p["status"] == "review" and set(p["lenses"]) <= set(p.get("accepted", {}))
-        if reviewed and (late := [d for d in p["after"] if not c.landed(d) and not dead_end(c, d)]):
+        if reviewed and (late := [d for d in p["after"] if not c.met(d) and not dead_end(c, d)]):
             out.append(
                 (
                     "warning",
@@ -3894,7 +3923,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
             for d in [*q.get("needs", []), *q.get("after", [])] if q.get("status") not in ("landed", "dropped") else ():
                 mine = d.partition(":")[2] if d.partition(":")[0] == c.name else ""
                 if mine and (why := dead_end(c, mine)):
-                    out.append(("error", f"{name}:{qid} waits on our {why}: name the successor or tell {name}'s lead"))
+                    out.append(("error", f"{name}:{qid} waits on our {why}: tell {name}'s lead which quest it means"))
     touched: dict[str, list[tuple[str, str]]] = {}
     warm_repos([c.repo(p) for p in c.quests.values()])
     landed: dict[Path, list[str]] = {}
@@ -3914,7 +3943,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                 out.append(("error", f"{pid}: landed commit {entry['commit'][:12]} is not on {main}"))
         if p["status"] not in ("active", "review"):
             continue
-        unmet = [d for d in p["needs"] if not c.landed(d)]
+        unmet = [d for d in p["needs"] if not c.met(d)]
         if unmet:
             out.append(("warning", f"{pid}: active before its needs landed: {', '.join(unmet)}"))
         for name, branch, rel, _ in branches(c, pid):
@@ -4309,7 +4338,7 @@ def quest_map(c: Campaign, pid: str, jobs: list[Json]) -> Json:
         "status": p["status"],
         "reason": p.get("reason", ""),
         "milestone": p.get("milestone", ""),
-        "needs": [d for d in p["needs"] if not c.landed(d)],
+        "needs": [d for d in p["needs"] if not c.met(d)],
         "landed": {
             "at": final[-1]["at"],
             "commit": final[-1]["commit"],

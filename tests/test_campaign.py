@@ -1978,35 +1978,38 @@ class Campaigns(CampaignCase):
         self.assertIn("window closed", self.ok(self.home, "window", "--close").out)
         self.assertIn("no window open", self.ok(self.home, "window").out)
 
-    def test_a_dependency_follows_a_drop_to_its_successor_and_a_dead_one_is_an_error(self) -> None:
-        """A drop names its successor (into=): another campaign's quest waiting on it waits on that, and
-        its lead is told; a dependency on no quest, or on a drop with no successor, is refused or an error."""
+    def test_a_drop_moves_or_releases_every_campaigns_dependents_without_their_lead(self) -> None:
+        """Dropping a quest another campaign's quest waits on must say into=SUCCESSOR, which the waiting
+        quest then waits on, or into=none, which releases it; its lead hears either way. A dependency on
+        no quest is refused, and blocks with an error."""
         for pid in ("hello", "lane"):
             self.ok(
                 self.home, "new", pid, "--title", pid, "--risk", "low", "--files", f"{pid}.py", "--check", "unit=true"
             )
         new = ("new", "transport", "--title", "t", "--risk", "low", "--files", "o.py", "--check", "unit=true")
         self.fails(self.other, *new, "--after", "demo:nope", match="demo:nope names no quest")
-        self.ok(self.other, *new, "--after", "demo:hello")
+        self.ok(self.other, *new, "--needs", "demo:hello")
         self.assertIn("most waited on: demo:hello (1 waiting)\n", self.ok(self.other, "status").out)
         self.fails(self.other, "set", "transport", "after=demo:gone", match="demo:gone names no quest")
         self.fails(self.home, "set", "hello", "into=lane", match="with status=dropped")
+        self.fails(self.home, "set", "hello", "status=dropped", "reason=r", match="other:transport wait on hello")
         dropped = self.ok(self.home, "set", "hello", "status=dropped", "reason=folded into lane", "into=lane").out
         self.assertIn("told other's lead: transport wait on hello", dropped)
         mail = (self.other / ".git" / "campaign-mail" / "other" / "@" / "msg-1.json").read_text()
         self.assertIn("demo:hello was dropped (folded into lane): your transport wait on it; it folds into lane", mail)
-        self.assertNotIn("transport", self.ok(self.home, "check").out, "a drop with a successor is no dead end")
-        self.assertIn("launchable now: transport\n", self.ok(self.other, "status").out)
-        self.ok(self.home, "set", "lane", "status=dropped", "reason=gone")
-        ours = self.fails(self.home, "check").out
-        self.assertIn("other:transport waits on our lane was dropped (gone) and names no successor", ours)
-        theirs = self.fails(self.other, "check").out
-        self.assertIn("transport waits on demo:lane was dropped (gone) and names no successor (into=)", theirs)
-        status = self.ok(self.other, "status", "transport").out
-        self.assertIn("launchable now: none", status)
-        self.assertIn(
-            "land demo:hello first (demo:lane was dropped (gone) and names no successor (into=): rewire it)", status
-        )
+        status = self.ok(self.other, "status").out
+        self.assertIn("launchable now: none\n  most waited on: demo:lane (1 waiting)\n", status)
+        self.fails(self.home, "set", "lane", "status=dropped", "reason=gone", match="other:transport wait on lane")
+        self.ok(self.home, "set", "lane", "status=dropped", "reason=gone", "into=none")
+        mail = (self.other / ".git" / "campaign-mail" / "other" / "@" / "msg-2.json").read_text()
+        self.assertIn("it has no successor, so they no longer wait on it", mail)
+        self.assertNotIn("transport", self.ok(self.home, "check").out)
+        self.assertIn("launchable now: transport\n", self.ok(self.other, "status").out, "released, not blocked")
+        warned = self.ok(self.other, "check").out
+        self.assertIn("transport waits on demo:hello: demo:lane was dropped (gone) with no successor, so it no", warned)
+        self.fails(self.other, "set", "transport", "after=demo:lane", match="demo:lane was dropped (gone) with no")
+        self.ok(self.home, "new", "x", "--title", "x", "--risk", "low", "--files", "x.py", "--check", "unit=true")
+        self.ok(self.home, "set", "x", "status=dropped", "reason=no one waits")  # into= only when someone waits
 
     def test_a_message_wakes_the_other_campaigns_lead_in_cmux(self) -> None:
         calls = self.root / "cmux-calls"
@@ -2191,7 +2194,7 @@ class Campaigns(CampaignCase):
         self.ok(self.home, "set", "api", "after=other:use")
         self.assertNotIn("other:use started", self.ok(self.home, "status").out, "ordered after it")
         self.assertEqual(self.state()["messages"][-1]["closed"], "ordered --after other:use")
-        self.ok(self.other, "set", "use", "status=dropped", "reason=not now")
+        self.ok(self.other, "set", "use", "status=dropped", "reason=not now", "into=none")
         self.ok(self.other, "start", "more")
         self.assertIn("other:more started", self.ok(self.home, "brief").out)
         self.ok(self.other, "set", "more", "status=dropped", "reason=not now either")
