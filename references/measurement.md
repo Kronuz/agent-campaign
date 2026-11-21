@@ -11,7 +11,7 @@ soaks and recovery tails are milestone checks.
 
 | Stage | Length | Level | Purpose |
 |---|---|---|---|
-| Smoke | seconds | `light` | The row's own command at its smallest size, at the commit the row will measure: every arm runs, its effective configuration is printed and asserted, and the output holds every field the decision reads; a failed assertion aborts. |
+| Smoke | seconds | `light` | The row's own command at its smallest size, at the commit the row will measure: every arm runs, its effective configuration is printed and asserted (the arm's settings applied, the server under test the one named, counters non-zero, so ignored config keys, a missing load generator or an arm that ran as the baseline abort it), and the output holds every field the decision reads; a failed assertion aborts. |
 | Row | ≤ 10 min | `strict`; `exclusive` only for a published number or when the strict interval straddles the threshold, one job, never trials, A/As or platform repeats; `light` for memory, disk, bytes written and counts | One job per row, holding its interleaved A/B pairs (`--ref base=<commit>`; `$JOB_REF_BASE` is the baseline checkout). It decides by the rule (metric, arms, noise floor, threshold) the quest file fixed first; a rule changed after data is a Decisions row, every row rerun under it. |
 
 A row measures the quest branch with `main` merged in first, so landing never re-measures it. Run a
@@ -24,6 +24,8 @@ macOS strict shares the machine with light work (`beside`).
 - **Run-level intervals.** Interleave whole runs and take the interval over per-run medians, never
   over individual queries. Count a difference only when it clears the A/A band.
 - **Check what you time:** `file` on every benchmark binary, one toolchain per architecture.
+- **Every run times itself:** start, warm-up, timed part and teardown, saved with the results, so a
+  slow setup or teardown is never read as the measured part.
 - **Background work is measured under load:** merges and compaction compete for cores and I/O; a
   row measures whether they keep up and what they cost foreground latency.
 - **State every ratio with its direction** ("3.4× faster", "9% smaller") and the honest magnitude,
@@ -31,6 +33,8 @@ macOS strict shares the machine with light work (`beside`).
 
 ## Who measures what
 
+- A hot-path change runs one smoke A/B job against its parent before landing, so a large
+  regression is caught at the change that caused it, not in a bisect later.
 - An optimization has a budget of about five experiments; stop at the target or the third loser in
   a row, and record losers with their numbers.
 - Published numbers come from `main` or the exact landed commit, never a branch.

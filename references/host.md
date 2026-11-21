@@ -19,11 +19,13 @@ or newer).
 ```sh
 campaign job submit [--quest ID [--for A1,A2 [--fails-without]]] [--commit REF] [--ref NAME=[PATH@]REF] \
     [--cwd DIR] --level none|light|strict|exclusive --minutes N [--long REASON] [--priority P] \
-    [--after JOBS] [--build CMD] [--cpus N] [--env K=V] [--slot NAME] [--retries N] [--sync] -- CMD
+    [--after JOBS] [--build CMD] [--cpus N] [--env K=V] [--inputs NAME=GLOBS] [--task T] [--repo PATH] \
+    [--slot NAME] [--fresh | --keep] [--retries N] [--what TEXT] [--force] [--sync] -- CMD
 campaign verify ID [--for A1] # the quest's gate checks at its branch head (--all: deferred too)
 campaign verify ID --deferred # a landed quest's deferred checks, again on main
 campaign wait [JOBS | --quest ID | --commits] [--any] [--timeout S]   # exit 0 all done, 1 a failure, 3 timeout
-campaign job list | show J | log J | rerun J... | cancel J   # rerun: same jobs at the quest's head; a mutant needs --commit
+campaign job list | show J | log J | cancel J
+campaign job rerun J... [--commit REF] [--minutes N]   # same jobs at the quest's head; a mutant needs --commit
 campaign usage [--json]       # agent runs and jobs per quest, role and assignment
 ```
 
@@ -86,7 +88,9 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   heavy hold, keeping the slot.
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
-  campaigns splitting the light slots, rounded up; `quiet` arbitrates across sessions. An exclusive
+  campaigns splitting the light slots, rounded up; within each, the shortest job runs first, and
+  one queued over an hour (`CAMPAIGN_AGE`) goes ahead in submit order, so a batch of hour-long jobs
+  still delays everyone: plan it; `quiet` arbitrates across sessions. An exclusive
   job drains the machine, blocking new light holds while it waits: it starts in a lull (no runnable
   light work, the running light jobs ending within 10 minutes) or 20 minutes after the last drain
   (`CAMPAIGN_DRAIN_WAIT`); light work ending over 4 hours after it falls due waits
@@ -96,7 +100,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   work ending before the running ones starts; a priority-1 light job that waited a whole turn ends
   it after the running drain. `campaign window --minutes N --for TEXT` opens a turn by hand;
   `--close` ends it.
-  `campaign worker --restart` re-executes the worker on the current code after its tick; jobs keep
+  `campaign worker --restart` (after updating the tool) re-executes the worker on the current code
+  after its tick; jobs keep
   running. Priorities: gate checks and
   light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and
   measurements at 0, deferred checks and `--long` jobs at -1, using at most half the light slots;

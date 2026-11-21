@@ -68,7 +68,8 @@ the plan challenge, a reviewer from another model family when the harness offers
 The **frontier** tier, the most capable model a harness offers above strong, is for targeted hard
 or sensitive work only: research, a critical quest's review, and the design or review of a format,
 wire protocol, durability or concurrency mechanism about to freeze. Name its task at each launch,
-run one at a time, never make it a role's default, and measure whether it beats strong. Each
+run one at a time, never make it a role's default, and measure whether it beats strong: both on
+one commit from fresh contexts, compared by the material findings each alone made. Each
 harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
 (`campaign usage`, criteria met, rework), not on price alone.
 
@@ -108,6 +109,10 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   task merge ID T` merges it once its own tests (its `none` and `light` jobs, `--task T`) pass at
   its head; its `strict` and `exclusive` jobs are measurements the quest's landing checks, so they
   never hold a merge. The quest branch takes `main` daily. Disjoint tasks run at once.
+- **Increments:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest file's "May
+  land early" allows (behavior-preserving refactors, tests, unused internal APIs, code behind a
+  disabled switch). Never early: bytes on disk or the wire, public API, user-visible behavior, or
+  the part the review exists for.
 - **Cross-repository work** is several quests (`--repo PATH`) ordered by `after`, with an
   integration job that pins every repository's commit (`--ref NAME=PATH@REF`). Landing is ordered,
   never atomic: each intermediate state must work. Its journal stays in the home
@@ -150,7 +155,8 @@ job passing at the exact commit; it queues no local job.
    into tasks in the quest file and starts each launchable one (`--task T`), launching a
    contributor **in the background** per task with the "Contributor" prompt
    (`references/prompts.md`), critical path first, capped by what it can merge and the host's
-   light slots.
+   light slots. A quest is launchable when it is planned, its `needs` are met and its file set is
+   free in its repository; `campaign status` lists them, critical path first.
 2. A contributor builds its task, runs its tests as jobs (`--quest ID --task T`), commits and ends
    its turn; the lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits` (it returns when a job ends, a
@@ -248,8 +254,10 @@ across docs-only commits and merges from `main` touching neither the quest's fil
 `--inputs GLOBS` (a measurement without them: only docs). Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
 minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).
-Declare a job's `--minutes`. `campaign job
-rerun` resubmits it unchanged. Every process a job starts dies with it; long local work is a job, never a
+Declare the `--minutes` a job needs: drains and the shortest-first order plan by it until the job
+has run once. `campaign job rerun J... [--commit REF] [--minutes N]` resubmits jobs at the quest's
+head, keeping their command, level, directory, `--env`, tags and other repositories; `--minutes`
+gives a timed-out job the time it needs. Every process a job starts dies with it; long local work is a job, never a
 loose background process, stopped with `campaign job cancel ID`. The worker starts by itself and prunes
 daily (`campaign job prune`); `campaign sweep` removes merged worktrees. Mechanics: `references/host.md`.
 
@@ -285,8 +293,10 @@ write it under "Blocked on" and ask.
   of changes from `campaign wait --commits`, not journals, diffs or code.
 - Prompts point at files and commits; final reports stay under ~250 words, detail in the journal
   or review file. `campaign usage` shows tokens, cost and time per quest, role and assignment.
-- Report to the owner on events (a landing, a blocker, a decision), from `campaign status` and
-  `campaign map`, never by waking agents, quoting `status`'s host and waste lines.
+- Report to the owner on events (a landing, a blocker, a decision) and in the periodic report
+  (`references/harness.md`), from `campaign status` and `campaign map`, never by waking agents;
+  the periodic report quotes `status`'s host and waste lines. The lead owns the queue: it
+  cancels, re-levels and reruns jobs, and no contributor waits on one.
 
 ## Writing
 
