@@ -1867,7 +1867,7 @@ def cmd_set(a: argparse.Namespace) -> int:
         if a.check:
             p["checks"] = [placed(x, p["risk"]) for x in a.check] + deferred(p)
         if a.later:
-            p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later]
+            p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later if x]
         if a.check or a.later or a.inputs:
             declare_inputs(p, a.id, a.inputs)
         if RISKS.index(p["risk"]) > RISKS.index(before["risk"]):  # a raised risk brings its reviews
@@ -9095,7 +9095,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--task", metavar="TASK", help="one of the quest's tasks")
     p.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="the fields to set (lists comma-separated)")
     p.add_argument("--check", action="append", default=[], metavar=check, help="replace the gate checks")
-    p.add_argument("--later", action="append", default=[], metavar=check, help="replace the deferred checks")
+    p.add_argument(
+        "--later", action="append", default=[], metavar=check, help="replace the deferred checks ('' clears them)"
+    )
     p.add_argument("--inputs", action="append", default=[], metavar="NAME=GLOBS", help=INPUTS_HELP)
     p.add_argument(
         "--weaken",

@@ -1543,6 +1543,14 @@ class RiskPolicy(CampaignCase):
         self.ok(self.home, "set", "fix", "--check", "unit=true", "--weaken", "the unit check was the wrong command")
         self.assertEqual(self.quest("fix")["history"][-1]["weakened"], ["gate check unit changed"])
 
+    def test_an_empty_later_clears_the_deferred_checks_on_the_record(self) -> None:
+        self.started("fix", files="app.py", check="unit=true")
+        self.ok(self.home, "set", "fix", "--later", "san=true")
+        self.fails(self.home, "set", "fix", "--later", "", match="deferred check san removed")
+        self.ok(self.home, "set", "fix", "--later", "", "--weaken", "CI runs the sanitizers")
+        self.assertEqual([c["name"] for c in self.quest("fix")["checks"]], ["unit"])
+        self.assertEqual(self.quest("fix")["history"][-1]["weakened"], ["deferred check san removed"])
+
     def test_strengthening_needs_no_reason(self) -> None:
         self.started("fix", files="app.py", risk="normal", check="unit=true")
         self.ok(self.home, "set", "fix", "risk=critical")
