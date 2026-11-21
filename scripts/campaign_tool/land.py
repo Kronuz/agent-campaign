@@ -286,7 +286,7 @@ def merge_main_into(c: Campaign, pid: str) -> str:
     head = rev(wt, "HEAD")
     said = f"merged {main} into {branch} at {head[:12]}"
     if c.state.get("ci") == "github" and clean_merge(repo, head):
-        said += f", not pushed: it is clean, so CI at {rev(repo, f'{head}^')[:12]} carries"
+        said += f", not pushed: it is clean, so the land gate reads CI at {rev(repo, f'{head}^')[:12]}"
     elif git_ok(wt, "remote", "get-url", "origin"):
         pushed = subprocess.run(
             ["git", "-C", str(wt), "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], capture_output=True, text=True
@@ -559,6 +559,8 @@ def cmd_clean(a: argparse.Namespace) -> int:
         p = c.quest(a.id)
         if p["status"] not in ("landed", "dropped"):
             die(f"{a.id} is {p['status']}: clean only landed or dropped quests")
+        if p["status"] == "landed" and not same_repo(c.repo(p), c.home):
+            land_journals(c, a.id)  # what a landing's failed journal merge left (merged ones are skipped)
         for item in clean_quest(c, a.id, force=a.force):
             print(f"kept {item} (--force removes it)")
         p["updated"] = stamp()

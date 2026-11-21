@@ -52,7 +52,11 @@ class CiReuse(CampaignCase):
         # main changes another file and, in another hunk, the file the quest changed
         self.commit(self.home, {"other/o.txt": "1\n", "lib/util.py": LINES.replace("L11 = 11", "L11 = 110")})
         merged = self.fails(
-            self.home, "land", "b", "--merge-main", match=f"not pushed: it is clean, so CI at {head[:12]}"
+            self.home,
+            "land",
+            "b",
+            "--merge-main",
+            match=f"not pushed: it is clean, so the land gate reads CI at {head[:12]}",
         )
         self.assertIn("check unit is not green", merged.text)  # main touched its file: the local check reruns
         self.assertNotIn("\n  CI at", merged.text)  # the head's CI speaks for the merge
@@ -142,6 +146,19 @@ class CiReuse(CampaignCase):
             f"carried from {head[:12]} across a merge from main (main's side brought a), failed", self.problems()[0]
         )
 
+    def test_a_fixed_forward_landing_is_not_blamed_again(self) -> None:
+        self.quest_green_at_head("10")
+        self.commit(self.home, {"other/o.txt": "1\n"})
+        self.ok(self.home, "land", "b", "--merge-main")
+        self.ci({self.quest("b")["landed"][0]["commit"]: "failure"})
+        fix = self.commit(self.home, {"app.py": "print(2)\n"}, "fix main forward")
+        self.ci({fix: "success"})
+        later = self.commit(self.home, {"app.py": "print(3)\n"}, "an unrelated later change")
+        self.ci({later: ""})  # main's CI runs at its new head: the fix's green still clears b
+        self.assertNotIn("b: CI on main", self.problems()[0])
+        self.ci({later: "failure"})  # nor is a later red head b's
+        self.assertNotIn("b: CI on main", self.problems()[0])
+
     def test_a_ci_criterion_counts_the_heads_ci_across_a_clean_merge(self) -> None:
         b, head = self.quest_green_at_head("10")
         brief = self.home / ".campaign/demo/quests/b.md"
@@ -194,7 +211,7 @@ class CiReuse(CampaignCase):
     def test_the_newest_run_at_a_commit_is_its_ci(self) -> None:
         _, head = self.quest_green_at_head("10")
         red = {"databaseId": 7, "name": "build", "status": "completed", "conclusion": "failure"}
-        self.runs[head] = [{**red, "databaseId": 9, "conclusion": "success"}, red]  # a dispatch after the red run
+        self.runs[head] = [red, {**red, "databaseId": 9, "conclusion": "success"}]  # a dispatch after the red run
         (self.root / "gh.json").write_text(json.dumps(self.runs))
         self.ok(self.home, "land", "b")
         self.assertEqual(self.quest("b")["landed"][0]["ci"], {"commit": head, "runs": [9]})
@@ -216,4 +233,29 @@ class LandingCompletes(CampaignCase):
         self.ok(self.home, "land", "pin")
         self.assertEqual(self.quest("pin")["status"], "landed")
         self.assertEqual(self.git(lib, "show", "main:lib.py"), "X = 2")
+        self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/pin"), "")
+
+    def test_clean_merges_the_journal_a_failed_landing_step_left(self) -> None:
+        self.repo("lib", {"lib.py": "X = 1\n"})
+        self.ok(self.home, "new", "pin", "--title", "pin", "--risk", "low", "--repo", "../lib", "--check", "unit=true")
+        self.ok(self.home, "start", "pin")
+        self.commit(self.root / "lib-wt/demo/pin", {"lib.py": "X = 2\n"})
+        place = self.root / "app-wt/demo/pin"
+        journal = ".campaign/demo/journal/pin.md"
+        self.commit(place, {journal: (place / journal).read_text() + "\nA NOTE\n"})
+        self.verified("pin")
+        hook = (
+            Path(self.git(self.home, "rev-parse", "--path-format=absolute", "--git-path", "hooks")) / "pre-merge-commit"
+        )
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("#!/bin/sh\nexit 1\n")  # the journal merge fails after main moved
+        hook.chmod(0o755)
+        landed = self.ok(self.home, "land", "pin")
+        self.assertIn("merging its journal failed", landed.text)
+        self.assertIn("`campaign clean pin` retries it", landed.text)
+        self.assertEqual(self.quest("pin")["status"], "landed")
+        self.assertEqual(self.git(self.home, "ls-tree", "main", journal), "")  # not merged
+        hook.unlink()
+        self.ok(self.home, "clean", "pin")
+        self.assertIn("A NOTE", self.git(self.home, "show", f"main:{journal}"))
         self.assertEqual(self.git(self.home, "branch", "--list", "quest/demo/pin"), "")
