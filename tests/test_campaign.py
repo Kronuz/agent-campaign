@@ -286,6 +286,23 @@ class Ownership(CampaignCase):
         self.env["CAMPAIGN_IDLE"] = "0"
         self.assertIn(idle, self.ok(self.home, "status").out, "a journal saying working, untouched: nobody is")
 
+    def test_a_landing_marks_its_hunt_row_done(self) -> None:
+        hunt = self.home / ".campaign/demo/hunt.md"
+        rows = "| Slow lib loads | job 1 | lib/** | . | open |\n| Slow lib saves | job 2 | lib/** | . | open |\n"
+        hunt.write_text(hunt.read_text() + rows)
+        self.git(self.home, "commit", "-qam", "hunt rows")
+        wt = self.started("lib", files="lib/**", check="unit=true")
+        self.fails(self.home, "set", "lib", "hunt=Slow lib", match="starts 2 open rows")
+        self.ok(self.home, "set", "lib", "hunt=Slow lib loads")
+        self.commit(wt, {"lib/util.py": "X = 2\n"})
+        self.verified("lib")
+        self.ok(self.home, "land", "lib")
+        landed = self.quest("lib")["landed"][-1]["commit"]
+        loads, saves = [r for r in hunt.read_text().splitlines() if r.startswith("| Slow lib")]
+        self.assertEqual(loads, f"| Slow lib loads | job 1 | lib/** | . | done: {self.home.name}:{landed[:9]} (lib) |")
+        self.assertTrue(saves.endswith("| open |"), "only its own row")
+        self.assertEqual(self.git(self.home, "status", "--porcelain", "--", ".campaign/demo/hunt.md"), "", "committed")
+
     def test_a_landing_prints_and_mails_what_it_unlocks(self) -> None:
         wt = self.started("lib", files="lib/**", check="unit=true")
         new = ("--title", "t", "--risk", "low", "--check", "unit=true", "--files")

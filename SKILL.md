@@ -177,6 +177,9 @@ For a list worth hunting (a benchmark's losing rows, a profile's hotspots, thinl
 small bugs), send several economical contributors at once, one target each, confirmed on `main`
 first: `references/assignments/exploration.md`. Size the batch by its targets and by what the lead
 can review and land.
+A quest made from a hunt row names it (`campaign new ... --hunt WORDS`, or `campaign set ID
+hunt=WORDS`, the first words of exactly one open row), and its landing marks that row done with the
+landed commit, so a fixed target never goes out to another explorer.
 
 The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead's, committed;
 `campaign init` writes it): one row per target with its evidence and the files to start in;

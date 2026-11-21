@@ -642,6 +642,7 @@ QUEST_FIELDS: dict[str, type] = {
     "into": str,  # a dropped quest's successor (ID or NAME:ID), whose dependents wait on it; "none": they stop waiting
     "until": list,  # a park's conditions: quest ids, PLAN decision ids, or owner
     "milestone": str,
+    "hunt": str,  # the first words of the hunt row it closes when it lands
     "updated": str,
 }
 
@@ -1377,6 +1378,33 @@ def hunt_open(c: Campaign) -> int | None:
     return sum(1 for line in path.read_text().splitlines() if table_cells(line)[-1].lower() == "open")
 
 
+def hunt_row(c: Campaign, prefix: str) -> str:
+    """PREFIX, once it starts the first cell of exactly one open row of the hunt list."""
+    path = c.home / c.meta / "hunt.md"
+    rows = path.read_text().splitlines() if path.exists() else []
+    hits = [r for r in rows if (cells := table_cells(r))[-1].lower() == "open" and cells[0].startswith(prefix)]
+    if len(hits) != 1:
+        die(f"hunt={prefix!r} starts {len(hits)} open rows of {c.meta}/hunt.md: give the first words of exactly one")
+    return prefix
+
+
+def close_hunt(c: Campaign, quest: str, repo: Path, commit: str) -> tuple[str, ...]:
+    """Marks the hunt row QUEST names done at its landed COMMIT; the path to commit with the state."""
+    prefix, path = c.quests[quest].get("hunt"), c.home / c.meta / "hunt.md"
+    if not prefix or not path.exists():
+        return ()
+    rows = path.read_text().splitlines(keepends=True)
+    for i, row in enumerate(rows):
+        cells = table_cells(row)
+        if cells[-1].lower() == "open" and cells[0].startswith(prefix):
+            body = row.rstrip()[:-1].rstrip()  # the row without its closing pipe
+            rows[i] = f"{body[: body.rindex('|')]}| done: {repo.name}:{commit[:9]} ({quest}) |\n"
+            atomic_write(path, "".join(rows))
+            return (f"{c.meta}/hunt.md",)
+    print(f"campaign: no open hunt row starts {prefix!r}: none marked done", file=sys.stderr)
+    return ()
+
+
 def sidebar(c: Campaign) -> None:
     """A bar for the current milestone, a pill for the project and one per quest in flight, drawn
     by commands run in the home. Only changes are sent; the last view per workspace is cached in the
@@ -1863,6 +1891,7 @@ def cmd_new(a: argparse.Namespace) -> int:
             "checks": checks,
             "lenses": list(dict.fromkeys(lenses)),
             "milestone": a.milestone or "",
+            **({"hunt": hunt_row(c, a.hunt)} if a.hunt else {}),
             "accepted": {},
             "landed": [],
             "updated": stamp(),
@@ -1886,6 +1915,7 @@ QUEST_KEYS = (
     "into",
     "repo",
     "milestone",
+    "hunt",
     "needs",
     "after",
     "provides",
@@ -1988,9 +2018,13 @@ def cmd_set(a: argparse.Namespace) -> int:
                 die(f"risk is one of {', '.join(RISKS)}, not {value!r}")
             elif key in ("title", "risk", "reason", "repo", "milestone", "into"):
                 p[key] = value
+            elif key == "hunt":
+                p.pop("hunt", None)
+                if value:
+                    p["hunt"] = hunt_row(c, value)
             else:
                 die(
-                    f"no field {key} to set; the fields are title, status, risk, reason, into, until, repo, milestone, "
+                    f"no field {key} to set; the fields are title, status, risk, reason, into, until, repo, milestone, hunt, "
                     f"needs, after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, "
                     "--later and --inputs"
                 )
@@ -3224,7 +3258,8 @@ def cmd_land(a: argparse.Namespace) -> int:
         kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
         p["updated"] = stamp()
         opened = unlocks(c, waited, f"{a.id} landed") if final else ""
-        c.save(message + f" at {landed[:12]}", extra=refresh_map(c))
+        hunted = close_hunt(c, a.id, repo, landed) if final else ()
+        c.save(message + f" at {landed[:12]}", extra=(*refresh_map(c), *hunted))
         for m in filed:
             (mailbox(c, a.id) / f"{m['id']}.json").unlink(missing_ok=True)
         notify(f"Landed {a.id}" if final else f"Landed part of {a.id}", f"{p['title']} at {landed[:12]}")
@@ -9315,6 +9350,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--consumes", metavar="CONTRACTS", help="APIs, formats or protocols it builds against")
     p.add_argument("--lenses", metavar="LENSES", help="the reviews it needs (default: by risk)")
     p.add_argument("--milestone", metavar="NAME", help="the PLAN milestone it belongs to")
+    p.add_argument(
+        "--hunt", metavar="WORDS", help="the first words of the hunt row it fixes; landing marks the row done"
+    )
     p.add_argument(
         "--check", action="append", default=[], metavar=check, help="a gate check: must pass on the landed code"
     )
