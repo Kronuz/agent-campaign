@@ -7527,6 +7527,8 @@ def plan(
     drain_wait = float(os.environ.get("CAMPAIGN_DRAIN_WAIT", str(2 * SHORT_RUN * 60)))
     drain_slack = float(os.environ.get("CAMPAIGN_DRAIN_SLACK", "600"))
     drain_turn = float(os.environ.get("CAMPAIGN_DRAIN_TURN", "3600"))
+    # light work started while a drain is queued ends by its due plus this: soaks wait, builds and suites do not
+    drain_hold = float(os.environ.get("CAMPAIGN_DRAIN_HOLD", "14400"))
     age = float(os.environ.get("CAMPAIGN_AGE", "3600"))  # seconds before a queued job outranks shorter ones
     states = {j["id"]: j["state"].get("state") for j in jobs}
     queued = [j for j in jobs if states[j["id"]] == "queued"]
@@ -7554,8 +7556,36 @@ def plan(
         """Whether J's build slot is another job's: a built job keeps its own while it waits for its hold."""
         return slot_of(j["spec"]) in busy and j["state"].get("phase") != "built"
 
-    # light work its slot holds back (a built drain's, say) is not waiting for the machine
-    wanting = {camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none") and not held(j)}
+    # how long each command took, oldest run first
+    took: dict[tuple[str, str, str], list[float]] = {}
+    for j in sorted(jobs, key=lambda j: j["id"]):
+        st = j["state"]
+        if st.get("state") == "done" and st.get("started") and st.get("ended"):
+            took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
+    # a drain's wait counts from the last drain that ran: one cancelled or skipped while queued
+    # never held the machine, so it must not restart the wait
+    last_drain = max(
+        (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
+        default=0.0,
+    )
+    # when the first queued drain falls due: light work running far past it would hold it for hours
+    due = min(
+        (
+            max(float(j["spec"].get("submitted") or 0), last_drain) + drain_wait
+            for j in queued
+            if drains(j) and not held(j) and all(states.get(x) == "done" for x in j["spec"].get("after", []))
+        ),
+        default=0.0,
+    )
+
+    def outlasts(j: Json) -> bool:
+        """Whether light job J would run past the queued drain's due by more than DRAIN_HOLD."""
+        return bool(due) and now + expected_seconds(j["spec"], took) > max(due, now) + drain_hold
+
+    # light work its slot or a queued drain holds back (a built drain's, a soak's) is not waiting for the machine
+    wanting = {
+        camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none") and not held(j) and not outlasts(j)
+    }
     sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
     slots = light_slots(heavy)
     share = math.ceil(slots / sharing)  # no slot idles while every campaign has its share
@@ -7563,12 +7593,6 @@ def plan(
     # stream of short jobs never starves a long one
     aged = {j["id"] for j in queued if now - float(j["spec"].get("submitted") or now) > age}
     queued = queue_order(queued, aged, holds)
-    # how long each command took, oldest run first
-    took: dict[tuple[str, str, str], list[float]] = {}
-    for j in sorted(jobs, key=lambda j: j["id"]):
-        st = j["state"]
-        if st.get("state") == "done" and st.get("started") and st.get("ended"):
-            took.setdefault(run_kind(j["spec"]), []).append(float(st["ended"]) - float(st["started"]))
 
     # a draining hold blocks new light holds until the running ones end: start one only when
     # they all end soon; past its wait, only light work that ends before them fills the lull
@@ -7581,12 +7605,6 @@ def plan(
         default=now,
     )
     drain_ok = lights_end - now <= drain_slack
-    # a drain's wait counts from the last drain that ran: one cancelled or skipped while queued
-    # never held the machine, so it must not restart the wait
-    last_drain = max(
-        (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
-        default=0.0,
-    )
     starved = [
         j
         for j in queued
@@ -7653,6 +7671,8 @@ def plan(
             continue  # light work goes first after a full batch
         if overdue and weight and not full and now + expected_seconds(j["spec"], took) > lights_end:
             continue  # an overdue drain waits: only light work that ends before the running work starts
+        if weight and outlasts(j):
+            continue  # it would run past a queued drain's due by more than DRAIN_HOLD: it waits for the drains
         if is_late and not is_heavy and late >= max(1, slots // 2):
             continue  # deferred work never takes every slot from the direct path
         if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:

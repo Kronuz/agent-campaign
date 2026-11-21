@@ -87,13 +87,15 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns splitting the light slots, rounded up; `quiet` arbitrates across sessions. An exclusive
-  job drains the machine, blocking new light holds while it waits; it starts in a lull (no runnable light work, and the running light jobs end within
-  10 minutes by their last runs), or once it has waited 20 minutes since the last drain ran
-  (`CAMPAIGN_DRAIN_WAIT`). Ready heavy jobs run back to back in one drain, up to 6 jobs or 30 minutes (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`); then
-  light work goes first once. An overdue drain opens a turn (`CAMPAIGN_DRAIN_TURN`, an hour) in which
-  queued drains are due, admitting only light work ending before the running ones; a priority-1
-  light job that waited a whole turn ends it after the running drain. `campaign window --minutes N --for
-  TEXT` opens such a turn by hand; `--close` ends it.
+  job drains the machine, blocking new light holds while it waits: it starts in a lull (no runnable
+  light work, the running light jobs ending within 10 minutes) or 20 minutes after the last drain
+  (`CAMPAIGN_DRAIN_WAIT`); light work ending over 4 hours after it falls due waits
+  (`CAMPAIGN_DRAIN_HOLD`). Ready heavy jobs run back to back, up to 6 jobs or 30 minutes
+  (`CAMPAIGN_BATCH_JOBS`, `CAMPAIGN_BATCH_MINUTES`), then light work goes first once. An overdue
+  drain opens an hour's turn (`CAMPAIGN_DRAIN_TURN`) in which queued drains are due and only light
+  work ending before the running ones starts; a priority-1 light job that waited a whole turn ends
+  it after the running drain. `campaign window --minutes N --for TEXT` opens a turn by hand;
+  `--close` ends it.
   `campaign worker --restart` re-executes the worker on the current code after its tick; jobs keep
   running. Priorities: gate checks and
   light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and

@@ -1861,6 +1861,21 @@ class Campaigns(CampaignCase):
         self.assertLess(self.job(short)["started"], self.job(ab)["started"], "the lull went unused")
         self.assertLess(float(self.job(short)["started"]), float(self.job(ours)["ended"]), "it waited out the lull")
 
+    def test_light_work_running_far_past_a_drains_due_waits_for_the_drain(self) -> None:
+        """Before a queued drain falls due, light work still starts, unless it would run past it by DRAIN_HOLD."""
+        self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="30", CAMPAIGN_DRAIN_HOLD="300")
+        go = self.root / "go"  # ours holds the only light slot until the rest are queued, however slow submits are
+        ours = self.submit(self.home, "--level", "light", "--force", "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        self.wait_until(lambda: self.job(ours)["state"] == "running")
+        ab = self.submit(self.home, "--level", "exclusive", "--minutes", "1", "--", "true")
+        long = self.submit(self.other, "--level", "light", "--minutes", "100", "--", "true long")
+        short = self.submit(self.other, "--level", "light", "--minutes", "1", "--", "true short")
+        go.touch()
+        self.ok(self.home, "wait", ours, ab, "--timeout", "60", timeout=90)
+        self.ok(self.other, "wait", long, short, "--timeout", "60", timeout=90)
+        self.assertLess(self.job(short)["started"], self.job(ab)["started"], "short light work waited")
+        self.assertLess(self.job(ab)["started"], self.job(long)["started"], "a long job held the drain past its turn")
+
     def test_drains_and_light_work_take_turns(self) -> None:
         """With no drain turn, queued light work runs after a drain before the next drain's wait is up."""
         self.env.update(CAMPAIGN_LIGHT_JOBS="1", CAMPAIGN_DRAIN_WAIT="5", CAMPAIGN_DRAIN_TURN="0")
