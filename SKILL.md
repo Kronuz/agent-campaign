@@ -73,6 +73,10 @@ one commit from fresh contexts, compared by the material findings each alone mad
 harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
 (`campaign usage`, criteria met, rework), not on price alone.
 
+**Quota never decides quality.** The tier, effort, reviews, lenses and checks follow from the work
+and its risk alone, never from quota left, burn rate or price: never downgrade a model, skip or
+shrink a review or check, or trim a criterion to save quota.
+
 ## Start a campaign
 
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
@@ -121,7 +125,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
   msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing (more in
-  `references/host.md`).
+  `references/host.md`). The lead never hand-lists receivers: a change other campaigns must know (a
+  rule, a reserved decision, a format) goes to every other lead with `campaign message --all
+  "TEXT"`, and the tool itself tells them, once each, of every skill commit landed and installed.
 - **Docs areas** under `tested_docs` are separate quests from the start, chained with `--after`;
   docs of an in-flight format change stay in its quest.
 - **Scope changes:** a new ask goes into the quest file first, then to the contributor; superseded
@@ -137,7 +143,7 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 A **task**'s gate is its own jobs, never a review. A **quest**'s gate, once, when the feature is done: the suite
 and CI, the review its risk needs, and the measurements its criteria name. Findings and slow rows
 become tasks on the quest branch; nothing reruns but what they change. Sanitizers and the platform
-matrix are CI's.
+matrix are CI's. Gate checks queued by `verify` run first, at priority 2, ahead of the quest's other light evidence (1).
 
 Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **milestone checks**
 (`--later`): queued at low priority on the landed code, run once per milestone on `main`, green

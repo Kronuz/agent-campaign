@@ -183,10 +183,11 @@ def peers(c: Campaign) -> dict[str, str]:
     return dict(x.split("=", 1) for x in c.state.get("peers", []) if "=" in x)
 
 
-def send_message(c: Campaign, peer: str, pid: str, text: str, by: str) -> str:
+def send_message(c: Campaign, peer: str, pid: str, text: str, by: str, *, uid: str = "") -> str:
     """Adds a message for a campaign on another machine to this campaign's outbox (a ref of its own,
-    never main) and pushes it; one that can't be pushed now goes with the next push."""
-    uid = f"{c.name}-{secrets.token_hex(4)}"
+    never main) and pushes it; one that can't be pushed now goes with the next push. A message under
+    a UID the outbox already holds is not added again."""
+    uid = uid or f"{c.name}-{secrets.token_hex(4)}"
     message = {"uid": uid, "from": c.name, "quest": pid, "at": stamp(), "by": by, "text": text}
     blob = subprocess.run(
         ["git", "-C", str(c.home), "hash-object", "-w", "--stdin"],
@@ -204,6 +205,9 @@ def send_message(c: Campaign, peer: str, pid: str, text: str, by: str) -> str:
 
     for _ in range(5):  # another agent may add a message at the same moment
         parent = git(c.home, "rev-parse", "--verify", "--quiet", outbox_ref(c.name), check=False)
+        if parent and git_ok(c.home, "cat-file", "-e", f"{parent}:{peer}/{uid}.json"):
+            push_outbox(c)
+            return uid
         try:
             plumb("read-tree", *([parent] if parent else ["--empty"]))
             plumb("update-index", "--add", "--cacheinfo", f"100644,{blob},{peer}/{uid}.json")

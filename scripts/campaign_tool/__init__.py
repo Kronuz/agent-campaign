@@ -2,8 +2,8 @@
 
 One module per subsystem (docs/source-layout.md lists them). A module imports only from those
 before it in this order, so their imports never cycle: core, repo, mirrors, jobs, reuse, runner,
-state, mail, journals, ci, evidence, reviews, campaign, leads, disk, worker, map, status, usage,
-wait, jobcmds, checks, land, quests, cli.
+state, mail, journals, ci, evidence, reviews, campaign, leads, broadcast, disk, worker, map, status,
+usage, wait, jobcmds, checks, land, quests, cli.
 """
 
 from .cli import main
