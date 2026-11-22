@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .campaign import Campaign, blockers, close_hunt, find_campaign, landing_record, writing
-from .checks import submit_checks
+from .checks import landing_reruns, submit_checks
 from .ci import check_evidence, ci_covers
 from .core import (
     EXCLUDE_META,
@@ -377,7 +377,8 @@ def cmd_land(a: argparse.Namespace) -> int:
         with frozen():  # the gaps only read
             gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
-            die(merged + f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps))
+            queued = landing_reruns(c, a.id) if merged else ""  # what the merge voided, ahead of the queue
+            die(merged + f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps) + queued)
         if merged:
             print(merged.rstrip("; "))
         evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]
