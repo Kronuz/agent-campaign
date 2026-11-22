@@ -23,7 +23,7 @@ from .mail import fetch_peers, inbox, mailbox, peers, push_outbox
 from .repo import common_dir, frozen, has_ref, rev
 from .runner import ensure_worker, reap
 from .state import branches
-from .todo import repeat_seconds, todo, todo_lines
+from .todo import SHOWN, repeat_seconds, todo, todo_lines
 
 
 def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
@@ -215,7 +215,9 @@ def wait_events(c: Campaign, timeout: float) -> int:
     keys = {x["key"] for x in listed["items"]}
     for key in [k for k in shown if k not in keys]:  # done, or gone: it fires anew if it comes back
         del shown[key]
-    for x in listed["items"]:
+    fired = due(listed["items"])  # printed first: what woke the lead is never past the SHOWN cut
+    listed["items"] = fired + [x for x in listed["items"] if x not in fired]
+    for x in listed["items"][:SHOWN]:  # only what is printed counts as shown
         if code == 0 or x["key"] not in shown:
             shown[x["key"]] = now
     remember(heads, ended)

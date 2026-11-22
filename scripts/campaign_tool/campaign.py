@@ -186,7 +186,7 @@ def journal_age(c: Campaign, name: str) -> float:
 
 READY = re.compile(r"(?:ready|done)\b", re.I)
 OWNER_WAIT = re.compile(r"\b(?:blocked on|waiting on|waits on|waiting for|waits for) (?:the )?owner\b", re.I)
-LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?lead\b", re.I)
+LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?(?:owner (?:and|or) (?:the )?)?lead\b", re.I)
 JOB_WAIT = re.compile(r"(?:waiting on|waits on) (?:the )?(?:jobs?|ci|queue)\b", re.I)
 
 

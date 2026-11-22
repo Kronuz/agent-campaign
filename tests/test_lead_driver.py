@@ -4,6 +4,7 @@ for the lead, and status, brief and every wait end with the list."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -369,6 +370,82 @@ class LeadDriver(CampaignCase):
         self.assertEqual(len([x for x in calls if x.startswith("run list --commit")]), 20, calls)
         self.assertLessEqual(len(calls), 20, "a head's CI was asked twice in one interval")
 
+    def github(self, answer: str = '[{"name": "build", "status": "queued", "conclusion": ""}]') -> Path:
+        """CI on GitHub, through a gh stub that logs each call to gh-calls, answers gh-answer, sleeps
+        while gh-sleep exists and exits with gh-exit's code; the stub's answers last 120 s."""
+        self.env["CAMPAIGN_CI_SECONDS"] = "120"
+        state = self.state()
+        state["ci"] = "github"
+        (self.home / ".campaign/demo/state.json").write_text(json.dumps(state))
+        self.git(self.home, "commit", "-q", "-am", "require CI")
+        r = self.root
+        (r / "gh-answer").write_text(answer + "\n")
+        (r / "gh-exit").write_text("0\n")
+        gh = r / "bin" / "gh"
+        gh.write_text(
+            f'#!/bin/sh\necho "$*" >> {r}/gh-calls\nwhile [ -e {r}/gh-sleep ]; do sleep 0.2; done\n'
+            f"cat {r}/gh-answer\nexit $(cat {r}/gh-exit)\n"
+        )
+        gh.chmod(0o755)
+        return r / "gh-calls"
+
+    def asked(self, log: Path, what: str = "run list --commit") -> list[str]:
+        return [x for x in log.read_text().splitlines() if x.startswith(what)] if log.exists() else []
+
+    def test_a_commit_no_remote_holds_is_never_asked_about(self) -> None:
+        log = self.github()
+        bare = self.root / "origin.git"
+        self.git(self.root, "init", "-q", "--bare", str(bare))
+        self.git(self.home, "remote", "add", "origin", str(bare))
+        self.git(self.home, "push", "-q", "origin", "HEAD")
+        wt = self.started("fix", files="app.py")
+        head = self.commit(wt, {"app.py": "print(2)\n"})
+        self.ok(self.home, "status")
+        self.assertEqual(self.asked(log), [], "GitHub was asked about a commit it never saw")
+        self.git(wt, "push", "-q", "origin", "HEAD")
+        self.ok(self.home, "status")
+        self.assertEqual([x.split()[3] for x in self.asked(log)], [head])
+
+    def test_a_failed_answer_is_kept_and_a_broken_cache_file_is_a_miss(self) -> None:
+        log = self.github()
+        self.started("fix", files="app.py")
+        (self.root / "gh-exit").write_text("1\n")  # an expired login
+        self.ok(self.home, "status")
+        self.ok(self.home, "status")
+        calls = self.asked(log)
+        self.assertTrue(calls)
+        self.assertEqual(len(calls), len(set(calls)), "every process asked again after a failure")
+        cache = sorted((self.root / "jobs" / ".gh").glob("*.json"))
+        for text in ("null", "[1, 2]", '{"until": "x", "data": 1}'):
+            for f in cache:
+                f.write_text(text)
+            self.ok(self.home, "status")
+
+    def test_answers_untouched_for_a_day_are_pruned(self) -> None:
+        self.github()
+        self.started("fix", files="app.py")
+        folder = self.root / "jobs" / ".gh"
+        folder.mkdir(parents=True, exist_ok=True)
+        old = folder / f"{'0' * 32}.json"
+        old.write_text("{}")
+        os.utime(old, (time.time() - 2 * 86400,) * 2)
+        self.ok(self.home, "status")
+        self.assertFalse(old.exists())
+
+    def test_a_hung_gh_call_holds_no_other_process_long(self) -> None:
+        self.github('[{"name": "build", "status": "completed", "conclusion": "success"}]')
+        self.started("fix", files="app.py")
+        (self.root / "gh-sleep").write_text("")
+        first = subprocess.Popen(
+            [sys.executable, str(CAMPAIGN), "status"], cwd=self.home, env=self.env, stdout=subprocess.PIPE, text=True
+        )
+        time.sleep(4)
+        (self.root / "gh-sleep").unlink()  # GitHub answers at once for everyone else
+        start = time.time()
+        self.ok(self.home, "status")
+        self.assertLess(time.time() - start, 20, "one hung gh call held another process")
+        first.communicate(timeout=120)
+
     # A5: a quest that waits on the owner is the lead's to park, never to resume
 
     def test_a_quest_waiting_on_the_owner_is_parked_not_resumed(self) -> None:
@@ -381,6 +458,13 @@ class LeadDriver(CampaignCase):
         self.ok(self.home, *park.split()[1:])
         self.assertEqual(self.todo(self.ok(self.home, "status").out), [])
 
+    def test_a_quest_waiting_on_owner_and_lead_stays_the_leads(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"
+        self.started("fix", files="app.py")
+        self.journal("fix", "blocked on owner and lead: the wire format")
+        want = "- answer fix: its journal waits on the lead: blocked on owner and lead: the wire format"
+        self.assertEqual(self.todo(self.ok(self.home, "status").out), [f"{want}: `campaign status fix`"])
+
     # A2: a wait or brief prints ten items and counts the rest; status prints them all
 
     def test_the_list_shows_ten_items_and_counts_the_rest(self) -> None:
@@ -392,3 +476,13 @@ class LeadDriver(CampaignCase):
         self.assertEqual(items[:10], [f"- start {k}: launchable: `campaign start {k}`" for k in names[:10]], out)
         self.assertEqual(items[10:], ["- and 2 more: `campaign status`"])
         self.assertEqual(len(self.todo(self.ok(self.home, "status").out)), 12)
+
+    def test_the_item_that_woke_the_lead_is_printed(self) -> None:
+        for i in range(11):
+            self.ok(self.home, "new", f"q{i:02}", "--title", "t", "--risk", "low", "--files", f"q{i:02}.py")
+        self.ok(self.home, "wait", "--commits", "--timeout", "30")  # ten shown, the eleventh due again
+        self.ok(self.home, "wait", "--commits", "--timeout", "30")  # the eleventh shown
+        self.ok(self.home, "new", "zz-new", "--title", "t", "--risk", "low", "--files", "zz.py")
+        r = self.run_cli(self.home, "wait", "--commits", "--timeout", "30")
+        self.assertEqual(r.code, 0)
+        self.assertEqual(self.todo(r.out)[0], "- start zz-new: launchable: `campaign start zz-new`", r.out)

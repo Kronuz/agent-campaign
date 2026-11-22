@@ -30,22 +30,28 @@ if TYPE_CHECKING:  # annotations only: they import this module, so importing the
 
 
 _gh: dict[str, Future[tuple[int, Any]]] = {}
+_until: dict[str, float] = {}  # when each answer in _gh stops counting
 _gh_lock = threading.Lock()
+_pruned = [False]
+GH_TIMEOUT = 30  # seconds a gh call may take: past it, a failed answer
+LOCK_WAIT = 10  # seconds a process waits for another asking the same: then it asks too
 
 
 def ci_seconds() -> float:
     """How long an answer GitHub may still change (a run queued or running, or none yet) is kept for
-    every process on the host; a completed one is kept five times as long (a newer run may come)."""
+    every process on the host; a failed call half as long, a completed red run list five times, a
+    green one fifteen (a newer run may still come)."""
     return float(os.environ.get("CAMPAIGN_CI_SECONDS", "120"))
 
 
 FOREVER = 1e18
+NO_RUNS = "no CI runs for this commit (push the branch)"
 
 
 def runs_kept(runs: Any) -> float:
     """Seconds a commit's run list is kept: a newer run can follow even a completed set."""
     done = bool(runs) and all(isinstance(x, dict) and x.get("status") == "completed" for x in runs)
-    return 5 * ci_seconds() if done else ci_seconds()
+    return (15 if all_passed(runs) else 5) * ci_seconds() if done else ci_seconds()
 
 
 def view_kept(view: Any) -> float:
@@ -57,17 +63,22 @@ def view_kept(view: Any) -> float:
 
 
 def gh_cached(path: Path) -> Json:
-    """The answer on disk at PATH while it counts, else {}."""
-    hit: Json = {}
+    """The answer on disk at PATH while it counts ({"until", "code", "data"}), else {}."""
+    hit: Any = None
     with contextlib.suppress(OSError, ValueError):
         hit = json.loads(path.read_text())
-    return hit if time.time() < float(hit.get("until", 0)) else {}
+    if not isinstance(hit, dict) or "data" not in hit:
+        return {}
+    with contextlib.suppress(TypeError, ValueError):
+        if time.time() < float(hit.get("until", 0)):
+            return hit
+    return {}
 
 
 def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Future[tuple[int, Any]]:
     """`gh ARGS` (JSON out) in REPO, started in the background, or found started or answered:
     (returncode, data or stderr). An answer is kept on disk for every process on the host for the
-    seconds KEPT gives it; a failed call is not kept."""
+    seconds KEPT gives it, a failed one for half of ci_seconds()."""
     key = hashlib.sha256(json.dumps([str(repo), args]).encode()).hexdigest()[:32]
     with _gh_lock:
         if key not in _gh:
@@ -76,27 +87,51 @@ def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Futur
                 from concurrent.futures import Future  # noqa: PLC0415
 
                 _gh[key] = Future()
-                _gh[key].set_result((0, hit["data"]))
+                _gh[key].set_result((int(hit.get("code", 0)), hit["data"]))
+                _until[key] = float(hit["until"])
             else:
-                _gh[key] = pool().submit(gh_ask, repo, args, kept, path)
+                _gh[key] = pool().submit(gh_ask, repo, args, kept, path, key)
         return _gh[key]
 
 
-def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path) -> tuple[int, Any]:
-    """Asks GitHub unless another process answered while this one waited for the key's lock."""
+def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path, key: str) -> tuple[int, Any]:
+    """Asks GitHub unless another process answered while this one waited for the key's lock, at
+    most LOCK_WAIT seconds: a hung call elsewhere holds no one past that."""
     path.parent.mkdir(exist_ok=True)
+    prune_answers(path.parent)
     with open(path.with_suffix(".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        for _ in range(LOCK_WAIT * 10):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(0.1)
         if hit := gh_cached(path):
-            return 0, hit["data"]
-        p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True)
-        if p.returncode != 0:
-            return p.returncode, p.stderr.strip()
-        data = json.loads(p.stdout or "null")
+            _until[key] = float(hit["until"])
+            return int(hit.get("code", 0)), hit["data"]
+        try:
+            p = subprocess.run(["gh", *args], cwd=repo, capture_output=True, text=True, timeout=GH_TIMEOUT)
+            code, data = p.returncode, (json.loads(p.stdout or "null") if p.returncode == 0 else p.stderr.strip())
+        except subprocess.TimeoutExpired:
+            code, data = 124, f"gh took over {GH_TIMEOUT} s"
+        except ValueError as e:
+            code, data = 1, f"gh answered no JSON: {e}"
+        _until[key] = time.time() + (kept(data) if code == 0 else ci_seconds() / 2)
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"until": time.time() + kept(data), "data": data}))
+        tmp.write_text(json.dumps({"until": _until[key], "code": code, "data": data}))
         tmp.replace(path)
-        return 0, data
+        return code, data
+
+
+def prune_answers(folder: Path) -> None:
+    """Once a process: removes the answers and locks untouched for a day."""
+    if _pruned[0]:
+        return
+    _pruned[0] = True
+    for x in folder.iterdir() if folder.is_dir() else []:
+        with contextlib.suppress(OSError):
+            if time.time() - x.stat().st_mtime > 86400:
+                x.unlink()
 
 
 def gh_json(repo: Path, args: list[str], kept: Callable[[Any], float]) -> tuple[int, Any]:
@@ -117,13 +152,14 @@ def all_passed(items: Any) -> bool:
 def ci_commit(repo: Path, commit: str) -> str:
     """The commit whose CI speaks for COMMIT: itself, or, when it has no runs, its nearest
     first-parent ancestor that differs only in campaign files or documentation, which CI workflows
-    skip (`paths-ignore`). Their runs are asked for all at once."""
+    skip (`paths-ignore`); "" when no remote-tracking ref holds COMMIT and no pushed ancestor of it
+    has runs. Only pushed commits are asked, all at once."""
     asked = [(k, gh_start(repo, ci_runs(k), runs_kept)) for k in ci_candidates(repo, commit)]
     for k, runs in asked:
         code, listed = runs.result()
         if code == 0 and listed:
             return k
-    return commit
+    return commit if commit in [k for k, _ in asked] else ""  # "": GitHub has not seen it
 
 
 def ci_candidates(repo: Path, commit: str) -> list[str]:
@@ -137,7 +173,16 @@ def ci_candidates(repo: Path, commit: str) -> list[str]:
         if not all(is_meta(x) or doc_path(x, "") for x in changed(repo, k, commit)):
             break
         out.append(k)
-    return out
+    gone = unpushed(repo, out)
+    return [k for k in out if k not in gone]
+
+
+def unpushed(repo: Path, commits: list[str]) -> set[str]:
+    """COMMITS no remote-tracking ref contains: GitHub never saw them, so they have no CI. None when
+    REPO has no remote-tracking ref at all (nothing tells)."""
+    if not commits or not git(repo, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes", check=False):
+        return set()
+    return set(commits) & set(git(repo, "rev-list", *commits, "--not", "--remotes", check=False).split())
 
 
 def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
@@ -184,12 +229,14 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
+    if not commit:
+        return NO_RUNS
     code, listed = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {listed}"
     runs = [r for r in listed or [] if r.get("name") not in later]
     if not runs:
-        return "no CI runs for this commit (push the branch)"
+        return NO_RUNS
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
         return "running: " + ", ".join(pending)
@@ -210,6 +257,8 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
+    if not commit:
+        return NO_RUNS
     code, runs = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {runs}"
@@ -256,10 +305,12 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
 
 
 def forget_ci() -> None:
-    """Drops this process's answers, so a long wait reads them again: from disk while they count."""
+    """Drops this process's answers that stopped counting, so a long wait asks again."""
     with _gh_lock:
-        for key in [k for k, f in _gh.items() if f.done()]:
+        now = time.time()
+        for key in [k for k, f in _gh.items() if f.done() and _until.get(k, 0) <= now]:
             del _gh[key]
+            _until.pop(key, None)
 
 
 def ci_covers(c: Campaign) -> bool:
