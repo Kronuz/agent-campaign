@@ -364,7 +364,34 @@ def finish(job: Json, code: int, state: str, note: str = "", fence: int = 0) -> 
 
 
 FAILS_WITHOUT = 2  # spec["fails_without"]: the command must fail; no field is a self-inverted command that exits 0
-NO_RUN = (126, 127)  # not executable, not found: the command never ran, so it proves nothing
+NO_RUN = {125: "its checkout failed", 126: "it is not runnable", 127: "it was not found"}  # the command never ran
+NO_TESTS = re.compile(rb"^No tests were found", re.M)  # ctest's line when its run matched no test
+
+
+def ran_no_test(log: Path) -> bool:
+    """Whether a job's LOG shows a ctest run that ran no test: the one fact a fails-without record
+    has only in its log."""
+    try:
+        return NO_TESTS.search(log.read_bytes()) is not None
+    except OSError:
+        return False
+
+
+def fails_without_miss(st: Json, log: Path | None = None) -> str:
+    """Why a finished --fails-without attempt (ST, with its LOG once) shows nothing about the fix, or
+    "" when it does: its build built, its command ran a test, and the test failed."""
+    built, code = (st.get("build") or {}).get("exit"), st.get("exit")
+    if built not in (None, 0):
+        return f"the mutant did not build: its build failed (exit {built}), so it shows nothing about the fix"
+    if code == 0:
+        return "the test passed without the fix: it must fail there"
+    if code == 124:
+        return "it timed out, so it shows nothing about the fix"
+    if code in NO_RUN:
+        return f"exit {code}: the command did not run ({NO_RUN[code]}), so it shows nothing about the fix"
+    if log is not None and ran_no_test(log):
+        return f"ctest ran no test (No tests were found; exit {code}), so it shows nothing about the fix"
+    return ""
 
 
 def claim(job: Json) -> bool:

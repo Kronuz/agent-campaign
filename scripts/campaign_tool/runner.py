@@ -43,7 +43,7 @@ from .core import (
     stamp,
     write_json,
 )
-from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, attempt_dir, campaign_env, finish, load_job, slot_of
+from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, campaign_env, fails_without_miss, finish, load_job, slot_of
 from .mirrors import mirror_env, mirror_pins
 from .repo import _listed, rev
 from .reuse import STRACE_ARGS, record_reads, save_reads, tracer
@@ -355,20 +355,28 @@ def attend(
             kill_group(child, beat)
 
 
-def outcome(spec: Json, code: int, cancelled: bool = False, timed_out: bool = False) -> tuple[str, str]:
-    """A command's result as the job's (state, note). A --fails-without job passes when its command
-    exits nonzero; a timeout, a cancel and a command that did not run never count as failing."""
+def outcome(
+    spec: Json,
+    code: int,
+    cancelled: bool = False,
+    timed_out: bool = False,
+    *,
+    built: int | None = None,
+    log: Path | None = None,
+) -> tuple[str, str]:
+    """A command's result as the job's (state, note); BUILT is its staged build's exit, LOG its output.
+    A --fails-without job passes when its test ran and failed (`fails_without_miss`); a timeout and a
+    cancel never count as failing."""
     if cancelled:
         return "cancelled", ""
     if timed_out or code == 124:
         return "timeout", ""
     if spec.get("fails_without", 0) < FAILS_WITHOUT:
+        if built not in (None, 0):
+            return "failed", f"its build failed (exit {built})"
         return ("done" if code == 0 else "failed"), ""
-    if code in NO_RUN:
-        return "failed", f"exit {code}: the command did not run, so it shows nothing about the fix"
-    if code == 0:
-        return "failed", "the test passed without the fix: it must fail there"
-    return "done", f"the test failed without the fix, as it must (exit {code})"
+    miss = fails_without_miss({"exit": code, "build": {"exit": built}}, log)
+    return ("failed", miss) if miss else ("done", f"the test failed without the fix, as it must (exit {code})")
 
 
 def admission(d: Path, limit: float) -> str:
@@ -477,10 +485,11 @@ def cmd_run(a: argparse.Namespace) -> int:
             write_json(d / "state.json", st)
             cancelled, timed_out = why == "cancelled", why == "timeout"
         if code != 0 or cancelled or timed_out:
+            write_json(d / "state.json", st)  # its build's exit, for a reaper that finds only the exit file
             (ad / "exit").write_text(str(code))
             release(spec, d)
-            state = "cancelled" if cancelled else "timeout" if timed_out or code == 124 else "failed"
-            finish(job, code, state, f"its build failed (exit {code})" if state == "failed" else "", fence=me)
+            state, note = outcome(spec, code, cancelled, timed_out, built=code or None)
+            finish(job, code, state, note, fence=me)
             return 0
     argv = ["bash", "-c", 'date +%s > "$JOB_DIR/began"\n' + spec["cmd"]]
     traced = tracer() if spec.get("commit") and spec["level"] in ("none", "light") and not spec.get("build") else ""
@@ -506,7 +515,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     )
     sweep(os.getsid(0), beat)
     (ad / "exit").write_text(str(code))
-    state, note = outcome(spec, code, cancelled, timed_out)
+    state, note = outcome(spec, code, cancelled, timed_out, log=ad / "log")
     reads: Json | None = None
     if traced and state == "done":
         root = jobs_dir() / "slots" / spec["slot"] if spec.get("slot") else d / "src"
@@ -552,7 +561,8 @@ def reap() -> None:
             exit_file = attempt_dir(job) / "exit"
             if exit_file.exists() and booted_here:
                 code = int(exit_file.read_text().strip() or "1")
-                state, note = outcome(spec, code)
+                built = (st.get("build") or {}).get("exit") or None
+                state, note = outcome(spec, code, built=built, log=attempt_dir(job) / "log")
                 finish(job, code, state, "; ".join(filter(None, [note, "recorded after its runner died"])))
                 continue
             release(spec, d)

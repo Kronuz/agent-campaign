@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from .ci import ci_covers, ci_job, ci_state
 from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, jobs_dir, section, table_cells
-from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
+from .jobs import FAILS_WITHOUT, all_jobs, derived, fails_without_miss, load_job
 from .journals import decisions
 from .repo import SHA, file_at, read_object, same_repo
 from .reuse import descends, docs_note, job_at, job_for_check, shape
@@ -244,12 +244,12 @@ def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | N
 
 def fails_without_met(j: Json) -> bool:
     """Whether a job tagged --fails-without shows the test failing where the fix is missing, by the
-    rule of its own record: a current job's command failed (not as 124, 126 or 127); an older job's
-    self-inverted command exited 0."""
+    rule of its own record: a current job's test ran and failed (`fails_without_miss`, which its runner
+    also applied to its log); an older job's self-inverted command exited 0."""
     st = j["state"]
     if st.get("state") != "done":
         return False
-    return j["spec"].get("fails_without", 0) < FAILS_WITHOUT or st.get("exit") not in (0, 124, *NO_RUN)
+    return j["spec"].get("fails_without", 0) < FAILS_WITHOUT or not fails_without_miss(st)
 
 
 def fails_without_why(j: Json) -> str:
@@ -258,7 +258,8 @@ def fails_without_why(j: Json) -> str:
     if state == "failed" and v < FAILS_WITHOUT:
         return f"{j['id']} exited {st.get('exit')}: its command had to exit 0 where the fix is missing"
     if state in ("done", "failed") and v >= FAILS_WITHOUT:
-        return f"{j['id']} {state}: {st.get('note') or 'it did not fail without the fix'}"
+        why = st.get("note") if state == "failed" else fails_without_miss(st)
+        return f"{j['id']} {state}: {why or fails_without_miss(st) or 'it did not fail without the fix'}"
     return f"{j['id']} {state}: no result yet" if state in ("queued", "running") else f"{j['id']} {state}"
 
 
