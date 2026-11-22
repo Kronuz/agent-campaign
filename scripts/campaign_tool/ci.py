@@ -158,8 +158,7 @@ def all_passed(items: Any) -> bool:
 def ci_commit(repo: Path, commit: str) -> str:
     """The commit whose CI speaks for COMMIT: itself, or, when it has no runs, its nearest
     first-parent ancestor that differs only in campaign files or documentation, which CI workflows
-    skip (`paths-ignore`); "" when no remote-tracking ref holds COMMIT and no pushed ancestor of it
-    has runs. Only pushed commits are asked, all at once."""
+    skip (`paths-ignore`). COMMIT and its pushed ancestors are asked, all at once."""
     asked = [
         (k, gh_start(repo, ci_runs(k), runs_kept if k == commit else ancestor_kept))
         for k in ci_candidates(repo, commit)
@@ -168,11 +167,12 @@ def ci_commit(repo: Path, commit: str) -> str:
         code, listed = runs.result()
         if code == 0 and listed:
             return k
-    return commit if commit in [k for k, _ in asked] else ""  # "": GitHub has not seen it
+    return commit
 
 
 def ci_candidates(repo: Path, commit: str) -> list[str]:
-    """COMMIT and its nearest first-parent ancestors whose code is COMMIT's: whose CI may speak for it."""
+    """COMMIT and its nearest first-parent ancestors whose code is COMMIT's, those a remote-tracking
+    ref holds: whose CI may speak for it."""
     log = on_commits(
         ("ci-line", str(repo), commit),
         lambda: git(repo, "rev-list", "--first-parent", "--max-count=20", commit, check=False).split(),
@@ -182,7 +182,7 @@ def ci_candidates(repo: Path, commit: str) -> list[str]:
         if not all(is_meta(x) or doc_path(x, "") for x in changed(repo, k, commit)):
             break
         out.append(k)
-    gone = unpushed(repo, out)
+    gone = unpushed(repo, out[1:])  # COMMIT itself is always asked: it may be pushed from elsewhere
     return [k for k in out if k not in gone]
 
 
@@ -238,8 +238,6 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    if not commit:
-        return NO_RUNS
     code, listed = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {listed}"
@@ -266,8 +264,6 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     if not shutil.which("gh"):
         return "gh is not installed"
     commit = ci_commit(repo, commit)
-    if not commit:
-        return NO_RUNS
     code, runs = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {runs}"

@@ -392,19 +392,44 @@ class LeadDriver(CampaignCase):
     def asked(self, log: Path, what: str = "run list --commit") -> list[str]:
         return [x for x in log.read_text().splitlines() if x.startswith(what)] if log.exists() else []
 
-    def test_a_commit_no_remote_holds_is_never_asked_about(self) -> None:
-        log = self.github()
+    def origin(self) -> Path:
+        """A bare origin the home pushed its main to: remote-tracking refs exist."""
         bare = self.root / "origin.git"
         self.git(self.root, "init", "-q", "--bare", str(bare))
         self.git(self.home, "remote", "add", "origin", str(bare))
         self.git(self.home, "push", "-q", "origin", "HEAD")
+        return bare
+
+    def test_an_ancestor_no_remote_holds_is_never_asked_about(self) -> None:
+        self.origin()
+        log = self.github()
         wt = self.started("fix", files="app.py")
-        head = self.commit(wt, {"app.py": "print(2)\n"})
+        code = self.commit(wt, {"app.py": "print(2)\n"})
+        head = self.commit(wt, {"README.md": "docs\n"})  # CI skips it: its parent's CI speaks for it
         self.ok(self.home, "status")
-        self.assertEqual(self.asked(log), [], "GitHub was asked about a commit it never saw")
+        self.assertEqual([x.split()[3] for x in self.asked(log)], [head], "GitHub was asked about an unpushed ancestor")
         self.git(wt, "push", "-q", "origin", "HEAD")
         self.ok(self.home, "status")
-        self.assertEqual([x.split()[3] for x in self.asked(log)], [head])
+        self.assertEqual([x.split()[3] for x in self.asked(log)], [head, code])
+
+    def test_a_head_pushed_elsewhere_keeps_its_running_ci(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"
+        origin = self.origin()
+        self.github('[{"databaseId": 7, "name": "build", "status": "in_progress", "conclusion": ""}]')
+        self.env["CAMPAIGN_CI_SECONDS"] = "0"
+        wt = self.started("install", files="app.py")
+        branch = self.state()["quests"]["install"]["branch"]
+        self.journal("install", "waiting on CI")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        self.git(wt, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        self.assertEqual(self.todo(self.ok(self.home, "status").out), [], "running CI is a live waiter")
+        other = self.root / "other"
+        self.git(self.root, "clone", "-q", "-b", branch, str(origin), str(other))
+        self.commit(other, {"app.py": "print(3)\n"})
+        self.git(other, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")  # the home's origin/<branch> stays behind
+        self.git(wt, "fetch", "-q", str(other), "HEAD")
+        self.git(wt, "reset", "-q", "--hard", "FETCH_HEAD")
+        self.assertEqual(self.todo(self.ok(self.home, "status").out), [], "a head pushed elsewhere lost its CI")
 
     def test_a_failed_answer_is_kept_and_a_broken_cache_file_is_a_miss(self) -> None:
         log = self.github()
