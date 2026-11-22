@@ -243,7 +243,7 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
         return f"gh failed: {listed}"
     runs = [r for r in listed or [] if r.get("name") not in later]
     if not runs:
-        return NO_RUNS
+        return "running: a queued run GitHub does not list yet" if not listed and unlisted_ci(repo, commit) else NO_RUNS
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
         return "running: " + ", ".join(pending)
@@ -257,6 +257,22 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if gone := [r["name"] for r in runs if r.get("conclusion") == "cancelled"]:
         return f"cancelled, not failed: {', '.join(gone)} (a newer push supersedes it; rerun it if none will)"
     return "success"
+
+
+def unlisted_ci(repo: Path, commit: str) -> bool:
+    """Whether a GitHub Actions check suite is queued or running at COMMIT, a pushed one: GitHub's run
+    list can omit a queued run for 20 minutes and more (detent msg-24), its check suite never."""
+    if unpushed(repo, [commit]):
+        return False
+    args = ["api", f"repos/{{owner}}/{{repo}}/commits/{commit}/check-suites"]
+    code, data = gh_json(repo, args, lambda _: ci_seconds())
+    suites = data.get("check_suites") if code == 0 and isinstance(data, dict) else None
+    return any(
+        isinstance(x, dict)
+        and (x.get("app") or {}).get("slug") == "github-actions"
+        and x.get("status") in ("queued", "in_progress")
+        for x in suites or []
+    )
 
 
 def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
@@ -281,6 +297,8 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
     if isinstance(jobs, str):
         return jobs
     mine = [j for j in jobs if name.lower() in str(j.get("name", "")).lower()]
+    if not jobs and unlisted_ci(repo, commit):
+        return f"CI job {name!r} is running"
     if not mine:
         return f"no CI job named {name!r} at {commit[:12]} (push the branch)"
     if any(j.get("status") != "completed" for j in mine):
