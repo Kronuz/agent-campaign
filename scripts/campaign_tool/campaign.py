@@ -15,6 +15,7 @@ from pathlib import Path
 
 import report
 
+from .ci import ci_waiting
 from .core import (
     FAILED,
     FLIGHT,
@@ -118,42 +119,75 @@ def in_flight(counts: dict[str, int]) -> str:
 
 
 def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
-    """Active or in-review quests nothing moves unless the lead does: no job of theirs queued or running
-    and their journal untouched for CAMPAIGN_IDLE seconds (an hour: no contributor at work), unless the
-    journal says ready and only a dependency not yet landed holds them (`after` orders the landing,
-    never the work); or whose journal says it waits on the lead, whatever runs."""
-    busy = {
-        j["spec"].get("quest")
-        for j in jobs
-        if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
-    }
+    """The quests and tasks nothing moves unless the lead does (`activity`), by name."""
+    return sorted(k for k, (kind, _) in activity(c, jobs).items() if kind == "lead")
+
+
+def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
+    """What moves each active or in-review quest, and each of its tasks (QUEST--TASK): "working" (its
+    journal or a task's changed within CAMPAIGN_IDLE seconds, an hour: a contributor at work),
+    "waiting" (only a live waiter moves it: a job of its queued or running, or CI running at its
+    head; or it says ready and only a dependency not yet landed holds it, since `after` orders the
+    landing, never the work) or "lead" (nothing moves it unless the lead does: a journal that says
+    it waits on the lead, whatever runs; else, with no waiter, one that waits on the owner (the lead
+    parks it), one that says it waits on jobs (they ended) or one untouched), each with why."""
+    live = [
+        j for j in jobs if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
+    ]
+    busy = {str(j["spec"].get("quest")) + (f"--{j['spec']['task']}" if j["spec"].get("task") else "") for j in live}
     quiet_for = float(os.environ.get("CAMPAIGN_IDLE", "3600"))
+    out: dict[str, tuple[str, str]] = {}
+    for k, p in c.quests.items():
+        if p["status"] not in ("active", "review"):
+            continue
+        names = [x for x, _, _, _ in branches(c, k)] or [k]
+        for name, branch, _, _ in branches(c, k) or [(k, p.get("branch", ""), "", "")]:
+            state = state_of(journal_text(c, name, branch))
+            if LEAD_WAIT.match(state):
+                out[name] = ("lead", f"its journal waits on the lead: {state}")
+                continue
+            age = min(journal_age(c, x) for x in (names if name == k else [name]))  # a task at work moves its quest
+            moving = name in busy or (name == k and any(b.startswith(f"{k}--") for b in busy))
+            if moving or (name == k and ci_waiting(c, p)):
+                out[name] = ("working" if age < quiet_for else "waiting", state)
+            elif OWNER_WAIT.search(state):
+                out[name] = ("lead", f"its journal waits on the owner: {state}")
+            elif JOB_WAIT.match(state):
+                out[name] = ("lead", f"its jobs ended: {state}")
+            elif age < quiet_for:
+                out[name] = ("working", state)
+            elif name == k and READY.match(state) and not all(c.met(d) for d in [*p["needs"], *p["after"]]):
+                out[name] = ("waiting", state)
+            else:
+                out[name] = ("lead", f"nothing moved it for {duration(age)}: {state}")
+    return out
 
-    def idle(k: str) -> bool:
-        p = c.quests[k]
-        state = state_of(journal_text(c, k, p.get("branch", "")))
-        if LEAD_WAIT.match(state):
-            return True
-        if k in busy or journal_age(c, k) < quiet_for:
-            return False
-        return not READY.match(state) or all(c.met(d) for d in [*p["needs"], *p["after"]])
 
-    return sorted(k for k, p in c.quests.items() if p["status"] in ("active", "review") and idle(k))
+def duration(seconds: float) -> str:
+    """ "45 min", "3 h": how long, for a person."""
+    if seconds == float("inf"):
+        return "ever"
+    return f"{round(seconds / 60)} min" if seconds < 5400 else f"{round(seconds / 3600)} h"
 
 
 def journal_age(c: Campaign, name: str) -> float:
-    """Seconds since NAME's journal last changed in its worktree, or was last committed on its branch."""
+    """Seconds since NAME's journal (a quest's, or QUEST--TASK's) last changed in its worktree, or was
+    last committed on its branch."""
     wt = journal_place(c, name)
     path = wt / f"{c.meta}/journal/{name}.md" if wt else None
     if path is not None and path.exists():
         return time.time() - path.stat().st_mtime
-    branch = c.quests[name].get("branch", "")
+    pid, _, task = name.partition("--")
+    p = c.quests[pid]
+    branch = str((p.get("tasks", {}).get(task, {}) if task else p).get("branch", ""))
     stamp = git(c.home, "log", "-1", "--format=%ct", branch, check=False).strip() if branch else ""
     return time.time() - float(stamp) if stamp.isdigit() else float("inf")
 
 
 READY = re.compile(r"(?:ready|done)\b", re.I)
-LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?lead\b", re.I)
+OWNER_WAIT = re.compile(r"\b(?:blocked on|waiting on|waits on|waiting for|waits for) (?:the )?owner\b", re.I)
+LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?(?:owner (?:and|or) (?:the )?)?lead\b", re.I)
+JOB_WAIT = re.compile(r"(?:waiting on|waits on) (?:the )?(?:jobs?|ci|queue)\b", re.I)
 
 
 def overview(c: Campaign) -> Json:
@@ -164,14 +198,9 @@ def overview(c: Campaign) -> Json:
     counts = {s: sum(1 for p in live.values() if p["status"] == s) for s in STATUSES}
     ready = [k for k, p in live.items() if p["status"] == "planned" and not unstarted_waits(c, p)]
     held = {k: x for k in ready if (x := clashes(c, k))}
-    groups = [(name, ids) for name, _, ids in milestone_groups(c, {k: p["status"] for k, p in live.items()})]
-    placed = {k for _, ids in groups for k in ids}
-    groups.append(("", [k for k in live if k not in placed]))
+    groups = milestones(c, live)
     open_ = [(name, ids) for name, ids in groups if any(live[k]["status"] != "landed" for k in ids)]
-    place = {k: (n, i) for n, (_, ids) in enumerate(groups) for i, k in enumerate(ids)}
-    launchable = sorted(
-        (k for k in ready if k not in held), key=lambda k: (place[k][0], -len(waiting_on(live, k)), place[k][1])
-    )
+    launchable = sorted((k for k in ready if k not in held), key=critical_path(c, live, groups))
 
     def first(test: Callable[[str], bool]) -> tuple[str, list[str]] | None:
         return next(((name, ids) for name, ids in open_ if any(test(k) for k in ids)), None)
@@ -188,6 +217,24 @@ def overview(c: Campaign) -> Json:
             "launchable": [k for k in launchable if k in members],
         }
     return view
+
+
+def milestones(c: Campaign, live: dict[str, Json]) -> list[tuple[str, list[str]]]:
+    """The map's milestones in order, each with its quests, and last ("") the quests none names."""
+    groups = [(name, ids) for name, _, ids in milestone_groups(c, {k: p["status"] for k, p in live.items()})]
+    placed = {k for _, ids in groups for k in ids}
+    return [*groups, ("", [k for k in live if k not in placed])]
+
+
+def critical_path(
+    c: Campaign, live: dict[str, Json] | None = None, groups: list[tuple[str, list[str]]] | None = None
+) -> Callable[[str], tuple[int, int, int]]:
+    """The sort key putting quests critical path first: the earliest milestone, then the most quests
+    waiting on it, then the map's order."""
+    live = {k: p for k, p in c.quests.items() if p["status"] != "dropped"} if live is None else live
+    place = {k: (n, i) for n, (_, ids) in enumerate(groups or milestones(c, live)) for i, k in enumerate(ids)}
+    weight = {k: len(waiting_on(live, k)) for k in place}
+    return lambda k: (place[k][0], -weight[k], place[k][1]) if k in place else (len(place), 0, 0)
 
 
 def waiting_on(live: dict[str, Json], pid: str) -> set[str]:

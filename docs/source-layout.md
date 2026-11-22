@@ -40,10 +40,14 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `mail.py` (258 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
   outboxes between machines. Boundary: how a message is stored, delivered and closed. Opened alone
   when a message is lost, repeated or never wakes its reader.
-- `journals.py` (181 lines): Journals and the lead's Markdown records: where each journal lives, its
+- `alarm.py` (111 lines): The owner's alarm: a lead whose session holds one tool call unanswered (a
+  permission prompt nobody sees), read from Claude Code's transcript. Boundary: reading a lead's
+  transcript and telling the owner once per call. Opened alone when a harness changes its transcript
+  or the alarm fires wrongly.
+- `journals.py` (187 lines): Journals and the lead's Markdown records: where each journal lives, its
   sections, and PLAN.md. Boundary: reading the Markdown files agents and the lead write. Opened
   alone to change where a journal lives or how a section or table is parsed.
-- `ci.py` (242 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
+- `ci.py` (262 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
   once per command. Boundary: the tool's only conversation with GitHub (`gh`). Opened alone when CI
   evidence is missing or a command waits on GitHub.
 - `evidence.py` (410 lines): Criteria and their evidence: the quest file's criteria, journal rows,
@@ -52,8 +56,8 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `reviews.py` (396 lines): Reviews and landing gaps: verdicts, acceptances, drift, and what keeps a
   quest or task from landing. Boundary: the landing gate's judgment, short of landing itself. Opened
   alone when land refuses, or lets through, what it should not.
-- `campaign.py` (450 lines): The `Campaign`: its state loaded and saved by the one writer, the
-  overview, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
+- `campaign.py` (494 lines): The `Campaign`: its state loaded and saved by the one writer, the
+  overview, what moves each quest in flight, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
   Opened alone to change how state is written, locked or summarized in the sidebar.
 - `leads.py` (258 lines): Lead notices across campaigns: noting a lead, redelivering stuck messages,
   telling peers and dependents. Boundary: notices that open other campaigns on the machine. Opened
@@ -65,21 +69,25 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `disk.py` (526 lines): Disk: pruning the job store, sweeping merged worktrees, and warning before
   the disk fills. Boundary: reclaiming space, with the plans that decide what is safe to delete.
   Opened alone when prune or sweep deletes too much or too little.
-- `worker.py` (773 lines): The worker: its plan of which jobs run each tick, CPU metering, queue
+- `worker.py` (775 lines): The worker: its plan of which jobs run each tick, CPU metering, queue
   health, and its loop. Boundary: scheduling, one unit: the plan, the charges it reads and the loop
   that runs it only make sense together. Opened alone to change who runs next, or to read why the
   queue is slow.
+- `todo.py` (126 lines): The lead's to-do list: what nothing moves without, critical path first,
+  each item with its command, which status, brief and every wait end with. Boundary: turning the
+  overview, what moves each quest and the landing gaps into the lead's next commands. Opened alone
+  to add a kind of item or change its order.
 - `map.py` (324 lines): The campaign map (MAP.md): goals, milestones, and quests with their intent,
   result and criteria. Boundary: the map command and the file it writes. Opened alone to change how
   the map is drawn.
-- `status.py` (727 lines): Status and brief: the problems status reports, a quest as status shows
+- `status.py` (738 lines): Status and brief: the problems status reports, a quest as status shows
   it, and both commands' output. Boundary: what the lead and agents read about the campaign's
   present. Opened alone to add a problem status reports or change what status or brief prints.
 - `usage.py` (608 lines): Usage: agents' token use and cost, read from what the harnesses and jobs
   already record. Boundary: the usage command and its per-harness readers (Claude Code, Codex,
   Copilot). Opened alone when a harness changes its log format or a cost is wrong.
-- `wait.py` (217 lines): Waiting: sleeping until a quest branch moves, a job ends, or a message
-  arrives. Boundary: the wait command and what wakes it. Opened alone when a wait wakes too late or
+- `wait.py` (285 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
+  arrives, or the lead's to-do list has an item it has not been shown. Boundary: the wait command and what wakes it. Opened alone when a wait wakes too late or
   not at all.
 - `jobcmds.py` (546 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
   `message`. Boundary: the `job` and `message` command lines over the job store and mail. Opened
