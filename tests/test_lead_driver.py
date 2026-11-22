@@ -371,8 +371,8 @@ class LeadDriver(CampaignCase):
         self.assertLessEqual(len(calls), 20, "a head's CI was asked twice in one interval")
 
     def github(self, answer: str = '[{"name": "build", "status": "queued", "conclusion": ""}]') -> Path:
-        """CI on GitHub, through a gh stub that logs each call to gh-calls, answers gh-answer, sleeps
-        while gh-sleep exists and exits with gh-exit's code; the stub's answers last 120 s."""
+        """CI on GitHub, through a gh stub that logs each call to gh-calls, answers gh-answer, hangs
+        40 s when gh-sleep exists as it starts and exits with gh-exit's code; answers last 120 s."""
         self.env["CAMPAIGN_CI_SECONDS"] = "120"
         state = self.state()
         state["ci"] = "github"
@@ -383,7 +383,7 @@ class LeadDriver(CampaignCase):
         (r / "gh-exit").write_text("0\n")
         gh = r / "bin" / "gh"
         gh.write_text(
-            f'#!/bin/sh\necho "$*" >> {r}/gh-calls\nwhile [ -e {r}/gh-sleep ]; do sleep 0.2; done\n'
+            f'#!/bin/sh\necho "$*" >> {r}/gh-calls\nif [ -e {r}/gh-sleep ]; then sleep 40; fi\n'
             f"cat {r}/gh-answer\nexit $(cat {r}/gh-exit)\n"
         )
         gh.chmod(0o755)
