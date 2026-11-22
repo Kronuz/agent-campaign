@@ -163,9 +163,10 @@ class JobIndex(CampaignCase):
 
 
 class CiCache(CampaignCase):
-    def test_only_a_passed_ci_answer_outlives_its_command(self) -> None:
-        """A pending or failed CI answer is asked again by the next command (a failure can be re-run);
-        a passed one is kept for the host."""
+    def test_a_ci_answer_lasts_by_how_much_it_can_still_change(self) -> None:
+        """A live run list is asked again after CAMPAIGN_CI_SECONDS, a failed one after five times
+        that (it can be re-run), a passed one after fifteen (a newer run at the commit counts)."""
+        self.env["CAMPAIGN_CI_SECONDS"] = "1"
         answer = self.root / "ci-answer"
         calls = self.root / "gh-calls"
         fake = self.root / "bin" / "gh"
@@ -175,10 +176,10 @@ class CiCache(CampaignCase):
         wt = self.started("fix", files="app.py", check="unit=true")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
-        for status, conclusion, gap in (
-            ("in_progress", "", "running: build"),
-            ("completed", "failure", "failed: build (failure)"),
-            ("completed", "success", ""),
+        for status, conclusion, gap, lasts in (
+            ("in_progress", "", "running: build", 1),
+            ("completed", "failure", "failed: build (failure)", 5),
+            ("completed", "success", "", 15),
         ):
             run = {"name": "build", "databaseId": 7, "status": status, "conclusion": conclusion}
             answer.write_text(json.dumps([run]))
@@ -187,9 +188,11 @@ class CiCache(CampaignCase):
                 self.assertIn(gap, out)
             else:
                 self.assertNotIn("CI at", out)
-        calls.write_text("")
-        self.assertNotIn("CI at", self.ok(wt, "brief").out)
-        self.assertEqual(calls.read_text(), "", "a passed CI answer was asked again")
+            calls.write_text("")
+            self.ok(wt, "brief")
+            self.assertEqual(calls.read_text(), "", f"a {status} {conclusion} answer was asked again at once")
+            if lasts < 15:
+                time.sleep(lasts + 0.2)  # it expired: the next answer is asked
 
 
 class GitMirrors(CampaignCase):

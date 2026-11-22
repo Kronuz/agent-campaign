@@ -58,6 +58,7 @@ from .state import (
     starved,
     unstarted_waits,
 )
+from .todo import todo, todo_lines
 from .worker import cpu_lines, health_lines, queue_health
 
 
@@ -639,12 +640,17 @@ def show_status(a: argparse.Namespace) -> int:
     jobs = all_jobs()
     views = [quest_view(c, pid, jobs, brief=a.brief, table=a.brief and bool(a.id)) for pid in pids]
     queue = {s: sum(1 for j in jobs if j["state"].get("state") == s) for s in ("queued", "running")}
+    listed = None if a.id else todo(c, jobs, {v["id"]: v["missing"] for v in views if "branch" in v})
     if a.brief:
         b = brief(c, views, queue, scoped=bool(a.id))
+        if listed is not None:
+            b["todo"] = listed
         if a.json:
             print(json.dumps(b, indent=2))
         else:
             print_brief(b)
+            for line in todo_lines(listed) if listed is not None else []:
+                print(line)
         return 0
     found: list[tuple[str, str]] = [] if a.brief else problems(c)
     o = overview(c)
@@ -658,6 +664,7 @@ def show_status(a: argparse.Namespace) -> int:
                     "quests": views,
                     "problems": found,
                     "jobs": queue,
+                    **({"todo": listed} if listed is not None else {}),
                 },
                 indent=2,
             )
@@ -720,6 +727,10 @@ def show_status(a: argparse.Namespace) -> int:
         print()
     for severity, message in found:
         print_problem(severity, message)
+    if listed is not None:
+        print()
+        for line in todo_lines(listed, None):
+            print(line)
     return 0
 
 

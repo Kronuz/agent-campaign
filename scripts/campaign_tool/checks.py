@@ -15,7 +15,7 @@ from .ci import ci_covers
 from .core import CI_CHECK, HEAVY, Json, die, jobs_dir, plural, read_json, stamp
 from .disk import disk_floor, disk_warning, prune_plan
 from .evidence import criteria_for
-from .jobcmds import PARALLEL, ctest_warning, quest_slot
+from .jobcmds import PARALLEL, ctest_warning, quest_slot, script_digests
 from .jobs import all_jobs, load_job, matches_inputs, tag
 from .journals import journal_place
 from .leads import stuck_warnings
@@ -109,6 +109,9 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
     return out
 
 
+GATE_PRIORITY = 2  # above a quest's other light evidence (1), measurements (0) and deferred checks (-1)
+
+
 def submit_checks(
     c: Campaign, qid: str, checks: list[Json], commit: str, *, priority: int, fresh: bool = False, force: bool = False
 ) -> list[str]:
@@ -134,6 +137,7 @@ def submit_checks(
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
             "priority": priority,
             "retries": 1,
+            "scripts": script_digests(check["cmd"], str(repo)),  # the bytes of its outside scripts, as job submit
             **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
         exact = build_test(check)
@@ -183,7 +187,7 @@ def cmd_verify(a: argparse.Namespace) -> int:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
     ids = criteria_for(c, a.id, a.criteria or "")
-    for jid in submit_checks(c, a.id, checks, commit, priority=1, fresh=a.fresh, force=a.force):
+    for jid in submit_checks(c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force):
         if ids:
             tag(jid, c.ident, a.id, ids, False)
     print(f"wait for them with `campaign wait --quest {a.id}`")
