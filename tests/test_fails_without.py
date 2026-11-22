@@ -86,15 +86,18 @@ class FailsWithout(CampaignCase):
             ["--", f"{unittest} && python3 -m unittest -k nothing t_test"],  # NO TESTS RAN, exit 5
             ["--", "echo 'import nosuch' > bad_test.py && python3 -m unittest bad_test"],  # failed to import
         ]
-        if shutil.which("ctest"):  # the real one: its -R matching nothing, and a test never built
-            commands.append(["--", "mkdir -p e && cd e && ctest -R '^nothing$' --no-tests=error"])
+        if shutil.which("ctest"):  # the real one: its line, whatever its version exits, then forced nonzero
+            commands.append(["--", "mkdir -p e && cd e && ctest -R '^nothing$'; exit 8"])
             missing = "mkdir -p m && cd m && echo 'add_test(t /nonexistent/t_bin)' > CTestTestfile.cmake"
-            commands.append(["--", f"{missing} && ctest -R '^t$'"])
-        jids = self.mutants(wt, *commands)
-        self.assertTrue(all(self.job(j)["exit"] != 0 for j in jids), "ran no test, yet exited 0")
-        self.refused(wt, jids, *["no test result ("] * len(jids))
+            commands.append(["--", f"{missing} && ctest -R '^t$'; exit 8"])
+        own = [["--", "mkdir -p o && cd o && ctest -R '^nothing$' --no-tests=error"]] if shutil.which("ctest") else []
+        jids = self.mutants(wt, *commands, *own)  # OWN: a ctest's own exit, 0 on some versions
+        self.refused(wt, jids, *["no test result ("] * len(commands), *[""] * len(own))
         for jid, line in zip(jids, ("No tests were found", "***Not Run", "NO TESTS RAN", "Failed to import")):
             self.assertIn(line, self.job(jid)["note"], jid)
+        for jid in jids[len(commands) :]:  # not evidence by either rule: it passed, or it ran no test
+            note = self.job(jid)["note"]
+            self.assertTrue(note.startswith(("the test passed without the fix", "no test result (No tests")), note)
         (real,) = self.mutants(wt, ["--", "python3 app.py | grep -q 2"])  # main prints 1: the test fails
         self.assertEqual(self.job(real)["state"], "done")
         self.assertIn("A1  met", self.ok(self.home, "status", "fix").out)
