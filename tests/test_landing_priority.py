@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from harness import CampaignCase
 
@@ -20,8 +21,8 @@ class LandingPriority(CampaignCase):
     def priority(self, jid: str) -> int:
         return int(self.spec(jid)["priority"])
 
-    def spec(self, jid: str) -> dict[str, object]:
-        result: dict[str, object] = json.loads((self.root / "jobs" / jid / "spec.json").read_text())
+    def spec(self, jid: str) -> dict[str, Any]:
+        result: dict[str, Any] = json.loads((self.root / "jobs" / jid / "spec.json").read_text())
         return result
 
     def ready(self, pid: str = "b", criteria: str = "", **extra: str) -> tuple[Path, str]:

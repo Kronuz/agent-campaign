@@ -491,6 +491,7 @@ def rerun_jobs(
         )
     if minutes is not None and minutes <= 0:
         die("--minutes is a positive number")
+    minutes = minutes or 0  # 0: each job keeps its own
     for jid, spec in specs.items() if minutes else ():  # a job that timed out, given the time it needs
         heavy = spec["level"] in HEAVY
         cap = SHORT_RUN if heavy else LIGHT_RUN if LONG_RUN.search(spec["cmd"]) else 0
