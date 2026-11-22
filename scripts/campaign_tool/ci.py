@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -207,8 +208,17 @@ def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
                 if isinstance(run, dict) and "databaseId" in run:
                     gh_start(repo, run_view(run), view_kept)
 
-    for k in ci_candidates(repo, commit):
+    def suites(asked: Future[tuple[int, Any]], k: str) -> None:
+        with contextlib.suppress(Exception):  # unlisted_ci asks again, and reports what fails
+            if asked.result() == (0, []):
+                gh_start(repo, suites_args(k), lambda _: ci_seconds())
+
+    found = ci_candidates(repo, commit)
+    gone = unpushed(repo, found[:1])
+    for k in found:
         asked = gh_start(repo, ci_runs(k), runs_kept if k == commit else ancestor_kept)
+        if k not in gone:
+            asked.add_done_callback(lambda f, k=k: suites(f, k))
         if jobs:
             asked.add_done_callback(views)
 
@@ -237,13 +247,16 @@ def run_view(run: Json) -> list[str]:
 def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     if not shutil.which("gh"):
         return "gh is not installed"
-    commit = ci_commit(repo, commit)
+    head, commit = commit, ci_commit(repo, commit)
     code, listed = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {listed}"
     runs = [r for r in listed or [] if r.get("name") not in later]
     if not runs:
-        return "running: a queued run GitHub does not list yet" if not listed and unlisted_ci(repo, commit) else NO_RUNS
+        unlisted = "" if listed else unlisted_ci(repo, head)
+        if unlisted.startswith("stuck since "):
+            return f"CI queued since {unlisted[len('stuck since ') :]} (stuck?)"
+        return "running: a queued run GitHub does not list yet" if unlisted == "running" else NO_RUNS
     pending = [r["name"] for r in runs if r.get("status") != "completed"]
     if pending:
         return "running: " + ", ".join(pending)
@@ -259,20 +272,38 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     return "success"
 
 
-def unlisted_ci(repo: Path, commit: str) -> bool:
-    """Whether a GitHub Actions check suite is queued or running at COMMIT, a pushed one: GitHub's run
-    list can omit a queued run for 20 minutes and more (detent msg-24), its check suite never."""
-    if unpushed(repo, [commit]):
-        return False
-    args = ["api", f"repos/{{owner}}/{{repo}}/commits/{commit}/check-suites"]
-    code, data = gh_json(repo, args, lambda _: ci_seconds())
-    suites = data.get("check_suites") if code == 0 and isinstance(data, dict) else None
-    return any(
-        isinstance(x, dict)
-        and (x.get("app") or {}).get("slug") == "github-actions"
-        and x.get("status") in ("queued", "in_progress")
-        for x in suites or []
-    )
+QUEUE_LIMIT = 7200  # seconds a github-actions suite with no listed run counts as CI on its way
+
+
+def suites_args(commit: str) -> list[str]:
+    return ["api", f"repos/{{owner}}/{{repo}}/commits/{commit}/check-suites"]
+
+
+def unlisted_ci(repo: Path, commit: str) -> str:
+    """When no candidate of COMMIT (ci_commit's walk) lists a run: GitHub's run list can omit a
+    queued run for 20 minutes and more (detent msg-24), its check suite never. "running" while a
+    github-actions suite at a candidate is queued or in progress and younger than QUEUE_LIMIT,
+    "stuck since T" past it, "" with none (or runs listed: the run list answers)."""
+    found = ci_candidates(repo, commit)
+    lists = [gh_start(repo, ci_runs(k), runs_kept if k == commit else ancestor_kept) for k in found]
+    if any(code == 0 and listed for code, listed in (x.result() for x in lists)):
+        return ""
+    gone = unpushed(repo, found[:1])  # an unpushed head has no CI: its ancestors' suites still count
+    born: list[str] = []
+    asked = [gh_start(repo, suites_args(k), lambda _: ci_seconds()) for k in found if k not in gone]
+    for code, data in [x.result() for x in asked]:
+        for x in (data.get("check_suites") if code == 0 and isinstance(data, dict) else None) or []:
+            live = isinstance(x, dict) and x.get("status") in ("queued", "in_progress")
+            if live and (x.get("app") or {}).get("slug") == "github-actions":
+                born.append(str(x.get("created_at") or ""))
+    if not born:
+        return ""
+    since = min(born)
+    try:
+        age = time.time() - datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        age = 0.0  # no birth time: on its way
+    return "running" if age < QUEUE_LIMIT else f"stuck since {since}"
 
 
 def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
@@ -297,7 +328,7 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
     if isinstance(jobs, str):
         return jobs
     mine = [j for j in jobs if name.lower() in str(j.get("name", "")).lower()]
-    if not jobs and unlisted_ci(repo, commit):
+    if not jobs and unlisted_ci(repo, commit) == "running":  # "" while runs are listed
         return f"CI job {name!r} is running"
     if not mine:
         return f"no CI job named {name!r} at {commit[:12]} (push the branch)"
@@ -325,6 +356,18 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
         return True
     names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
     return any(ci_job(repo, head, name).endswith(" is running") for name in names)
+
+
+def ci_stuck(c: Campaign, p: Json) -> str:
+    """Since when a github-actions suite has sat queued at the quest's head with no run listed, past
+    QUEUE_LIMIT ("" otherwise): no waiter moves it, so it is the lead's to look at."""
+    repo = c.repo(p)
+    if not shutil.which("gh") or not p.get("branch") or not has_ref(repo, p["branch"]):
+        return ""
+    if c.state.get("ci") != "github" and not any(x["cmd"].startswith(CI_CHECK) for x in gates(p)):
+        return ""
+    unlisted = unlisted_ci(repo, rev(repo, p["branch"]))
+    return unlisted[len("stuck since ") :] if unlisted.startswith("stuck since ") else ""
 
 
 def forget_ci() -> None:

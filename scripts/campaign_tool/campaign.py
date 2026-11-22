@@ -15,7 +15,7 @@ from pathlib import Path
 
 import report
 
-from .ci import ci_waiting
+from .ci import ci_stuck, ci_waiting
 from .core import (
     FAILED,
     FLIGHT,
@@ -153,6 +153,8 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
             moving = moving or bool(set(JOB_ID.findall(state)) & pending)  # the jobs its State names
             if moving or (name == k and ci_waiting(c, p)):
                 out[name] = ("working" if age < quiet_for else "waiting", state)
+            elif name == k and (since := ci_stuck(c, p)):
+                out[name] = ("lead", f"CI queued since {since} (stuck?)")
             elif OWNER_WAIT.search(state):
                 out[name] = ("lead", f"its journal waits on the owner: {state}")
             elif JOB_WAIT.match(state):

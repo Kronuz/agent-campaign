@@ -190,6 +190,7 @@ def wait_events(c: Campaign, timeout: float) -> int:
         idle = not any(j["state"].get("state") not in TERMINAL for j in running)
         flying = any(p["status"] in FLIGHT for p in c.quests.values())  # by the state, not by branches mid-landing
         if not flying and not peers(c) and idle and not listed["items"]:
+            print("woken by: nothing to wait for (no new to-do)")
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
         if timeout and time.time() - start >= timeout:
@@ -240,10 +241,11 @@ def woken_by(moved: list[str], finished: list[str], messages: list[str], fired: 
     again ("no new to-do" when the list printed below holds only reminders)."""
     causes = [f"branch move {k.split(' ', 1)[0]}" for k in moved]
     causes += [f"job end {j}" for j in finished] + [f"message {m}" for m in messages]
-    causes += [] if causes or not timeout else [f"timeout after {timeout:g}s"]
     todo = ", ".join(f"{x['kind']} {x['quest']}".strip() for x in fired)
     if todo:
         return f"woken by: {'; '.join([*causes, f'to-do: {todo}'])}"
+    if not causes:  # the item that broke the wait may be done by the time the list is made again
+        causes = [f"timeout after {timeout:g}s"] if timeout else ["a to-do item, since done"]
     return f"woken by: {'; '.join(causes)} (no new to-do)"
 
 

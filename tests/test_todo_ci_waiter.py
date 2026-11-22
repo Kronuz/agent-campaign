@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from harness import CAMPAIGN, CampaignCase
@@ -27,7 +28,9 @@ class CiWaiter(CampaignCase):
         gh = r / "bin" / "gh"
         gh.write_text(
             f'#!/bin/sh\necho "$*" >> {r}/gh-calls\n'
-            f'case "$1" in run) cat {r}/gh-runs;; api) cat {r}/gh-suites;; *) echo "{{}}";; esac\n'
+            f'case "$1 $2" in "run view") echo \'{{"jobs": []}}\';; run*) cat {r}/gh-runs;;\n'
+            f'api*) sha=$(echo "$2" | cut -d/ -f5); cat {r}/suites-$sha 2>/dev/null || cat {r}/gh-suites;;\n'
+            f'*) echo "{{}}";; esac\n'
         )
         gh.chmod(0o755)
 
@@ -142,3 +145,64 @@ class CiWaiter(CampaignCase):
         self.commit(other, {"app.py": "print(2)\n"})
         out, _ = waiter.communicate(timeout=60)
         self.assertEqual(out.splitlines()[0], "woken by: branch move other (no new to-do)", out)
+
+    # F1: a journal-only head above the code commit whose queued run GitHub does not list
+
+    def origin(self) -> None:
+        bare = self.root / "origin.git"
+        self.git(self.root, "init", "-q", "--bare", str(bare))
+        self.git(self.home, "remote", "add", "origin", str(bare))
+        self.git(self.home, "push", "-q", "origin", "HEAD")
+
+    def test_a_journal_head_finds_the_queued_run_below_it(self) -> None:
+        (self.root / "gh-suites").write_text('{"check_suites": []}\n')
+        self.origin()
+        wt = self.started("fix", files="fix.py")
+        code = self.commit(wt, {"fix.py": "done\n"})
+        path = wt / ".campaign/demo/journal/fix.md"
+        path.write_text(re.sub(r"^State:.*$", "State: waiting on CI", path.read_text(), count=1, flags=re.M))
+        self.git(wt, "commit", "-q", "-am", "journal")  # CI skips it (paths-ignore)
+        self.git(wt, "push", "-q", "origin", "HEAD:refs/heads/quest/demo/fix")
+        (self.root / f"suites-{code}").write_text(QUEUED_SUITE + "\n")
+        out = self.ok(self.home, "status").out
+        self.assertIn("running: a queued run GitHub does not list yet", out)
+        self.assertEqual([x for x in self.todo(out) if "fix" in x], [], out)
+
+    # F2: a suite queued past two hours with no run is the lead's to look at, never hidden
+
+    def suite_born(self, ago: timedelta) -> str:
+        at = (datetime.now(timezone.utc) - ago).strftime("%Y-%m-%dT%H:%M:%SZ")
+        suite = {"app": {"slug": "github-actions"}, "status": "queued", "conclusion": None, "created_at": at}
+        (self.root / "gh-suites").write_text(json.dumps({"check_suites": [suite]}) + "\n")
+        return at
+
+    def test_a_suite_queued_for_hours_is_a_resume_item(self) -> None:
+        self.lib_quest("flakes")
+        self.suite_born(timedelta(minutes=5))
+        self.assertEqual([x for x in self.todo(self.ok(self.home, "status").out) if "flakes" in x], [])
+        for f in (self.root / "jobs" / ".gh").glob("*.json"):
+            f.unlink()
+        at = self.suite_born(timedelta(hours=3))
+        items = [x for x in self.todo(self.ok(self.home, "status").out) if "flakes" in x]
+        self.assertEqual(items, [f"- resume flakes: CI queued since {at} (stuck?): `campaign status flakes`"])
+
+    # F4: listed runs answer; the check suites are asked only when no run is listed
+
+    def test_listed_runs_without_jobs_ask_no_check_suites(self) -> None:
+        self.ok(self.home, "config", "ci=")
+        self.ok(
+            self.home, "new", "gate", "--title", "t", "--risk", "low", "--files", "g.py", "--check", "build=ci:build"
+        )
+        self.ok(self.home, "start", "gate")
+        self.commit(self.wt("gate"), {"g.py": "1\n"})
+        self.runs("queued", "")
+        self.ok(self.home, "status")
+        calls = (self.root / "gh-calls").read_text().splitlines()
+        self.assertTrue([x for x in calls if x.startswith("run ")], calls)
+        self.assertEqual([x for x in calls if x.startswith("api ")], [], "a listed run's missing jobs asked suites")
+
+    # F5: every return names what woke it, "nothing to wait for" included
+
+    def test_nothing_to_wait_for_names_itself(self) -> None:
+        out = self.ok(self.home, "wait", "--commits", "--timeout", "10").out
+        self.assertEqual(out.splitlines()[0], "woken by: nothing to wait for (no new to-do)", out)
