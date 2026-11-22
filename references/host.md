@@ -256,7 +256,7 @@ landed journal.
   to share entries; jobs inherit the submitter's PATH, so a launcher found there is used.
 - **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
   it runs out before its reset, read from each harness's own records (`references/harness.md`).
-  It is information for decisions, never a reason to launch work. It does not see credits bought for Claude Code, so it can report a
+  It informs pacing only: never a reason to launch work, and never a reason to lower a tier, effort, review or check (SKILL.md, "Quota never decides quality"). It does not see credits bought for Claude Code, so it can report a
   window as spent while those credits still cover it: ask the owner before stopping work for it.
 - **`report`** draws the owner's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). `campaign` and `quiet` keep it current by themselves: every state change and
