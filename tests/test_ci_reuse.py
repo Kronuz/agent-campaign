@@ -24,6 +24,7 @@ class CiReuse(CampaignCase):
             "import json, sys\n"
             f"runs = json.load(open({str(self.root / 'gh.json')!r}))\n"
             "a = sys.argv[1:]\n"
+            f"open({str(self.root / 'gh.log')!r}, 'a').write(' '.join(a) + '\\n')\n"
             "if a[:2] == ['run', 'list']:\n"
             "    print(json.dumps(runs.get(a[a.index('--commit') + 1], [])))\n"
             "else:\n"
@@ -159,6 +160,28 @@ class CiReuse(CampaignCase):
         self.ci({later: "failure"})  # nor is a later red head b's
         self.assertNotIn("b: CI on main", self.problems()[0])
 
+    def test_main_ci_reads_stay_bounded(self) -> None:
+        self.quest_green_at_head("10")
+        self.commit(self.home, {"other/o.txt": "1\n"})
+        self.ok(self.home, "land", "b", "--merge-main")
+        landed = self.quest("b")["landed"][0]["commit"]
+        self.ci({landed: "failure"})
+        for i in range(80):
+            self.commit(self.home, {"app.py": f"print({i})\n"}, f"main {i}")
+        self.ci({self.git(self.home, "rev-parse", "main"): ""})  # none of main's 80 commits finished
+
+        def asked() -> tuple[int, str]:
+            log = self.root / "gh.log"
+            log.write_text("")
+            text = self.run_cli(self.home, "check").text
+            return sum(x.startswith("run list") for x in log.read_text().splitlines()), text
+
+        calls, text = asked()
+        self.assertLessEqual(calls, 20 + 1)  # its landing's CI, and at most MAIN_WALK of main's
+        self.assertIn("main's CI not read past", text)
+        self.ci({landed: "success"})  # its rerun passed: no walk at all
+        self.assertEqual(asked()[0], 1)
+
     def test_a_ci_criterion_counts_the_heads_ci_across_a_clean_merge(self) -> None:
         b, head = self.quest_green_at_head("10")
         brief = self.home / ".campaign/demo/quests/b.md"
@@ -255,6 +278,9 @@ class LandingCompletes(CampaignCase):
         self.assertIn("`campaign clean pin` retries it", landed.text)
         self.assertEqual(self.quest("pin")["status"], "landed")
         self.assertEqual(self.git(self.home, "ls-tree", "main", journal), "")  # not merged
+        self.fails(self.home, "clean", "pin")  # the hook still refuses: clean leaves no merge half done
+        merging = Path(self.git(self.home, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"))
+        self.assertFalse(merging.exists())
         hook.unlink()
         self.ok(self.home, "clean", "pin")
         self.assertIn("A NOTE", self.git(self.home, "show", f"main:{journal}"))

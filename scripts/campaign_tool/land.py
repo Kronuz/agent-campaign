@@ -560,7 +560,11 @@ def cmd_clean(a: argparse.Namespace) -> int:
         if p["status"] not in ("landed", "dropped"):
             die(f"{a.id} is {p['status']}: clean only landed or dropped quests")
         if p["status"] == "landed" and not same_repo(c.repo(p), c.home):
-            land_journals(c, a.id)  # what a landing's failed journal merge left (merged ones are skipped)
+            try:  # what a landing's failed journal merge left (merged ones are skipped)
+                land_journals(c, a.id)
+            except CampaignError:
+                git(c.home, "merge", "--abort", check=False)
+                raise
         for item in clean_quest(c, a.id, force=a.force):
             print(f"kept {item} (--force removes it)")
         p["updated"] = stamp()

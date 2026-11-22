@@ -277,23 +277,20 @@ def commit_depth(repo: Path, commit: str) -> int:
     return int(count)
 
 
-def main_green(repo: Path, head: str, oldest: str, later: list[str]) -> str:
-    """The newest commit on main's first-parent line from HEAD down to OLDEST whose CI is green, or
-    "", asked newest first and one at a time (usually the head answers): commits changing only
-    campaign files or documentation are their ancestors' to CI, and skipped."""
-    line = git(repo, "rev-list", "--first-parent", head, "--not", f"{oldest}^").split()
-    code = (k for k in line if not all(is_meta(x) or doc_path(x, "") for x in changed(repo, f"{k}^", k)))
-    return next((k for k in code if ci_state(repo, k, later) == "success"), "")
+MAIN_WALK = 20  # main's code commits whose CI main_ci_problems reads, at most, looking for a green one
 
 
 def main_ci_problems(c: Campaign) -> list[tuple[str, str]]:
-    """An error for each landing that relied on CI carried across a clean merge from main (`ci_gate`) whose
-    landed commit's CI then failed, naming both sides of the merge (it, and the quests that landed on
-    main after its green head) and its fix-forward command, until a commit at or after it on main's
-    first-parent line is green. `check` and `status` list them with `problems`."""
+    """An error for each landing that relied on CI carried across a clean merge from main (`ci_gate`)
+    whose landed commit's CI failed, naming both sides of the merge (it, and the quests that landed
+    on main after its green head) and its fix-forward command, until a commit at or after it on
+    main's first-parent line is green. It reads the carried landings' own CI, newest first down to a
+    green one, and only past a red one main's CI, at most MAIN_WALK code commits. `check` and
+    `status` list them with `problems`."""
     if c.state.get("ci") != "github" or not shutil.which("gh"):
         return []
     later = c.state.get("ci_later", [])
+    tested = c.state.get("tested_docs", [])
     carried: dict[Path, list[tuple[str, Json]]] = {}
     for pid, p in c.quests.items():
         for record in p.get("landed", []):
@@ -301,40 +298,59 @@ def main_ci_problems(c: Campaign) -> list[tuple[str, str]]:
                 carried.setdefault(c.repo(p), []).append((pid, record))
     out: list[tuple[str, str]] = []
     for repo, all_landed in carried.items():
-        main = main_branch(repo)
-        head = rev(repo, main)
+        head = rev(repo, main_branch(repo))
         landings = [(pid, r) for pid, r in all_landed if ancestor(repo, r["commit"], head)]
-        if not landings:
-            continue
         landings.sort(key=lambda x: commit_depth(repo, x[1]["commit"]), reverse=True)
-        green = main_green(repo, head, landings[-1][1]["commit"], later)
+        red: dict[str, tuple[str, Json, str]] = {}
         for pid, record in landings:
-            landed = record["commit"]
-            if green and ancestor(repo, landed, green):
-                break  # main was green at or after it, and after every older one
-            state = ci_state(repo, landed, later)
+            state = ci_state(repo, record["commit"], later)
+            if state == "success":
+                break  # main was green there, after every older landing
             if state.startswith("failed"):
-                files = ",".join(c.quests[pid]["files"])
-                before = record["ci"]["commit"]
-                theirs = sorted(
-                    {
-                        qid
-                        for qid, q in c.quests.items()
-                        if qid != pid and c.repo(q) == repo
-                        for r in q.get("landed", [])
-                        if ancestor(repo, r["commit"], landed) and not ancestor(repo, r["commit"], before)
-                    }
-                )
-                side = f"main's side brought {', '.join(theirs)}" if theirs else "main's side landed no quest"
-                out.append(
-                    (
-                        "error",
-                        f"{pid}: CI on {main} at {landed[:12]}, where it landed on CI carried from "
-                        f"{before[:12]} across a merge from {main} ({side}), {state}: fix {main} forward "
-                        f"(`campaign new {pid}-fix --title \"Fix {main}'s CI after {pid}\" --files '{files}'`)",
-                    )
-                )
+                red[record["commit"]] = (pid, record, state)
+        if not red:
+            continue
+        oldest = list(red)[-1]
+        asked, unread = 0, ""
+        for k in git(repo, "rev-list", "--first-parent", head, "--not", f"{oldest}^").split():
+            if k in red:
+                out.append(("error", red_main(c, repo, red.pop(k))))
+            elif not all(is_meta(x) or doc_path(x, "", tested) for x in changed(repo, f"{k}^", k)):
+                if asked == MAIN_WALK:
+                    unread = k
+                    break
+                asked += 1
+                if ci_state(repo, k, later) == "success":
+                    red.clear()  # fixed forward: the older red landings are cleared too
+                    break
+        for left in red.values():
+            note = f"; main's CI not read past {unread[:12]} ({MAIN_WALK} commits), none green"
+            out.append(("error", red_main(c, repo, left) + note))
     return out
+
+
+def red_main(c: Campaign, repo: Path, found: tuple[str, Json, str]) -> str:
+    """The error for a carried landing (quest, record, CI state) whose CI on main failed: both sides
+    of its merge, and the fix."""
+    pid, record, state = found
+    main = main_branch(repo)
+    landed, before = record["commit"], record["ci"]["commit"]
+    theirs = sorted(
+        {
+            qid
+            for qid, q in c.quests.items()
+            if qid != pid and c.repo(q) == repo
+            for r in q.get("landed", [])
+            if ancestor(repo, r["commit"], landed) and not ancestor(repo, r["commit"], before)
+        }
+    )
+    side = f"main's side brought {', '.join(theirs)}" if theirs else "main's side landed no quest"
+    files = ",".join(c.quests[pid]["files"])
+    return (
+        f"{pid}: CI on {main} at {landed[:12]}, where it landed on CI carried from {before[:12]} across a "
+        f"merge from {main} ({side}), {state}: fix {main} forward "
+        f"(`campaign new {pid}-fix --title \"Fix {main}'s CI after {pid}\" --files '{files}'`)"
+    )
 
 
 def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
