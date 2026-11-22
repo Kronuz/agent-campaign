@@ -121,7 +121,9 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
   machine, sends `campaign message NAME:ID "text" --from WHO`. The quest cannot land until one of
   its journals answers it by its id (`msg-N`) or the lead closes it (`campaign message ID --close
   msg-N --reason R`); `NAME:` writes to that campaign's lead and never blocks a landing (more in
-  `references/host.md`).
+  `references/host.md`). The lead never hand-lists receivers: a change other campaigns must know (a
+  rule, a reserved decision, a format) goes to every other lead with `campaign message --all
+  "TEXT"`, and the tool itself tells them, once each, of every skill commit landed and installed.
 - **Docs areas** under `tested_docs` are separate quests from the start, chained with `--after`;
   docs of an in-flight format change stay in its quest.
 - **Scope changes:** a new ask goes into the quest file first, then to the contributor; superseded
