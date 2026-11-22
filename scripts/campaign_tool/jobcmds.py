@@ -38,7 +38,7 @@ from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, claim, finish, load_job,
 from .mail import announce, inbox, leave_message, mailbox, peers, send_message
 from .repo import ancestor, changed, ever_on, frozen, has_ref, is_meta, main_branch, rev, same_repo, toplevel
 from .reuse import submit, supersede
-from .reviews import landing_gaps
+from .reviews import EVIDENCE_GAPS, Gap, landing_gap_kinds
 from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
 from .status import JOB_MARKS
@@ -428,7 +428,6 @@ def job_ok_or_pending(jid: str) -> bool:
 
 
 LANDING_PRIORITY = 3  # a landing quest's reruns at a merge from main: above gate checks (2), so it never chases main
-VOIDED = ("criteria without evidence at ", "evidence jobs ran other code than ", "check ")  # what a merge voids
 
 
 def own_head(repo: Path, head: str, main: str) -> str:
@@ -446,7 +445,7 @@ def own_head(repo: Path, head: str, main: str) -> str:
     return ""
 
 
-def at_landing(c: Campaign, pid: str) -> list[str] | None:
+def at_landing(c: Campaign, pid: str) -> list[Gap] | None:
     """The gaps at the quest's branch head when they are only evidence a merge from main voided (its
     criteria and checks were met at its own commit below the merge); None when anything else is
     missing, or no merge from main is in the way. Its reruns run at LANDING_PRIORITY."""
@@ -461,11 +460,9 @@ def at_landing(c: Campaign, pid: str) -> list[str] | None:
         if not own:
             return None
         with frozen():
-            before = landing_gaps(c, pid, own, final=True, ci=False)
-            now = landing_gaps(c, pid, head, final=True, ci=False)
-        if not any(g.startswith(VOIDED) for g in before) and all(
-            g.startswith((f"{main} changed ", *VOIDED)) for g in now
-        ):
+            before = landing_gap_kinds(c, pid, own, final=True, ci=False)
+            now = landing_gap_kinds(c, pid, head, final=True, ci=False)
+        if not any(g.kind in EVIDENCE_GAPS for g in before) and all(g.kind in (*EVIDENCE_GAPS, "main") for g in now):
             return now
     return None
 

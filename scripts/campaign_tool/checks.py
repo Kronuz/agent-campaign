@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -111,7 +110,6 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
 
 
 GATE_PRIORITY = 2  # above light evidence (1), measurements (0) and deferred checks (-1); below LANDING_PRIORITY
-RERUN = re.compile(r"`campaign job rerun ([^`]+)`")
 
 
 def submit_checks(
@@ -169,8 +167,7 @@ def landing_reruns(c: Campaign, pid: str) -> str:
     if gaps is None:
         return ""
     p = c.quests[pid]
-    stale = [jid for g in gaps if (m := RERUN.search(g)) for jid in m.group(1).split()]
-    stale = [jid for jid in stale if not resolve_job(jid)["spec"].get("fails_without")]  # its mutant is not here
+    stale = [jid for g in gaps for jid in g.jobs if not resolve_job(jid)["spec"].get("fails_without")]  # no mutant here
     try:
         ids = rerun_jobs(stale, c=c) if stale else []
         ids += submit_checks(c, pid, gates(p), rev(c.repo(p), p["branch"]), priority=LANDING_PRIORITY)

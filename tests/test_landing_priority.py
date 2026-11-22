@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
-from harness import CampaignCase
+from harness import CampaignCase, campaign_module
 
 PROBE = "grep -q 2 b/util.py"
 
@@ -71,6 +73,27 @@ class LandingPriority(CampaignCase):
         self.assertEqual(self.priority(early), 3)
         go.touch()
         self.ok(self.home, "wait", blocker, early, "--timeout", "60")
+
+    def test_rewording_a_gap_leaves_the_priority_unchanged(self) -> None:
+        """The gaps' kinds decide landing priority; their wording is only shown."""
+        wt, probe = self.ready()
+        self.git(wt, "merge", "-q", "--no-edit", "main")
+        tool = campaign_module()
+        kinds = tool.jobcmds.landing_gap_kinds
+
+        def reworded(*args: Any, **kw: Any) -> list[Any]:
+            return [g._replace(text=f"gap {n}, said otherwise") for n, g in enumerate(kinds(*args, **kw))]
+
+        env = mock.patch.dict(os.environ, self.env, clear=True)
+        with env, mock.patch.object(tool.jobcmds, "landing_gap_kinds", reworded):
+            c = tool.find_campaign(self.home)
+            gaps = tool.at_landing(c, "b")
+            assert gaps is not None
+            self.assertTrue(all(g.text.endswith("said otherwise") for g in gaps))
+            self.assertIn("stale", [g.kind for g in gaps])
+            (rerun,) = tool.rerun_jobs([probe], c=c)
+        self.assertEqual(self.priority(rerun), 3)
+        self.ok(self.home, "wait", rerun, "--timeout", "60")
 
     def test_a_quest_with_other_gaps_keeps_its_priority(self) -> None:
         wt, probe = self.ready(criteria="\n- A2 the docs say so: a probe")  # A2 never met
