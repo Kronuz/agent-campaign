@@ -29,7 +29,8 @@ class FailsWithout(CampaignCase):
     def refused(self, wt: Path, jids: list[str], *whys: str) -> None:
         """Each of JIDS failed, and brief, status and land's gate all read A1 as without evidence."""
         brief = self.ok(wt, "brief").out
-        for jid, why in zip(jids, whys, strict=True):
+        self.assertEqual(len(jids), len(whys))
+        for jid, why in zip(jids, whys):
             self.assertEqual(self.job(jid)["state"], "failed", jid)
             self.assertIn(why, self.job(jid)["note"], jid)
             self.assertIn(f"{jid} failed: {why}", brief)
@@ -65,7 +66,9 @@ class FailsWithout(CampaignCase):
     def test_a_test_that_timed_out_or_was_interrupted_is_not_evidence(self) -> None:
         wt = self.quest_with_a_test()
         timeout = "1/1 Test #1: t ......***Timeout   1.09 sec"  # ctest: past the test's TIMEOUT
-        commands = [["--", f"echo '{timeout}'; exit 8"], ["--", "kill -INT $$"]]
+        # SIGINT at its default action, then sent to itself: a shell may ignore it (Linux bash -c does)
+        sigint = "python3 -c 'import os, signal; signal.signal(2, signal.SIG_DFL); os.kill(os.getpid(), 2)'"
+        commands = [["--", f"echo '{timeout}'; exit 8"], ["--", sigint]]
         whys = ["no test result (1/1 Test #1: t .", "exit 130: it was killed by SIGINT"]
         if shutil.which("ctest"):  # the real one, a test past its TIMEOUT
             slow = "add_test(t /bin/sleep 30)\\nset_tests_properties(t PROPERTIES TIMEOUT 1)\\n"
@@ -90,9 +93,7 @@ class FailsWithout(CampaignCase):
         jids = self.mutants(wt, *commands)
         self.assertTrue(all(self.job(j)["exit"] != 0 for j in jids), "ran no test, yet exited 0")
         self.refused(wt, jids, *["no test result ("] * len(jids))
-        for jid, line in zip(
-            jids, ("No tests were found", "***Not Run", "NO TESTS RAN", "Failed to import"), strict=False
-        ):
+        for jid, line in zip(jids, ("No tests were found", "***Not Run", "NO TESTS RAN", "Failed to import")):
             self.assertIn(line, self.job(jid)["note"], jid)
         (real,) = self.mutants(wt, ["--", "python3 app.py | grep -q 2"])  # main prints 1: the test fails
         self.assertEqual(self.job(real)["state"], "done")
