@@ -73,6 +73,10 @@ one commit from fresh contexts, compared by the material findings each alone mad
 harness's models for the tiers are in `references/harness.md`. Change a default on outcomes
 (`campaign usage`, criteria met, rework), not on price alone.
 
+**Quota never decides quality.** The tier, effort, reviews, lenses and checks follow from the work
+and its risk alone, never from quota left, burn rate or price: never downgrade a model, skip or
+shrink a review or check, or trim a criterion to save quota.
+
 ## Start a campaign
 
 1. In the home repository's main checkout: `campaign init --name NAME [--ci github]`. The owner
