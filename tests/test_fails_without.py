@@ -48,20 +48,41 @@ class FailsWithout(CampaignCase):
     def test_a_command_that_did_not_run_is_not_evidence(self) -> None:
         wt = self.quest_with_a_test()
         jids = self.mutants(wt, ["--", "exit 125"], ["--", "no-such-command-here"], ["--", "/etc/hosts"])
-        self.refused(wt, jids, "exit 125: the command did not run", "exit 127", "exit 126")
+        self.refused(wt, jids, "exited 125 (git bisect's skip", "exit 127", "exit 126")
         campaign = campaign_module()  # a record finished as "done" before 125 was read as not run
         old = {"id": "j", "spec": {"fails_without": campaign.FAILS_WITHOUT}, "state": {"state": "done", "exit": 125}}
         self.assertFalse(campaign.fails_without_met(old))
-        self.assertIn("checkout failed", campaign.fails_without_why(old))
+        self.assertIn("command's own refusal", campaign.fails_without_why(old))
+
+    def test_a_test_killed_from_outside_is_not_evidence_and_a_crash_is(self) -> None:
+        wt = self.quest_with_a_test()
+        jids = self.mutants(wt, ["--", "kill -KILL $$"], ["--", "kill -TERM $$"])
+        self.refused(wt, jids, "exit 137: it was killed by SIGKILL", "exit 143: it was killed by SIGTERM")
+        (crash,) = self.mutants(wt, ["--", "kill -SEGV $$"])  # a mutant that crashes its test is a kill
+        self.assertEqual(self.job(crash)["state"], "done", self.job(crash))
+        self.assertIn("A1  met", self.ok(self.home, "status", "fix").out)
 
     def test_a_ctest_run_that_ran_no_test_is_not_evidence(self) -> None:
         wt = self.quest_with_a_test()
-        commands = [["--", "echo 'No tests were found!!!'; exit 8"]]  # ctest --no-tests=error's output
-        if shutil.which("ctest"):  # the real one, its -R matching nothing
+        not_run = "1/1 Test #1: t ......***Not Run   0.00 sec"  # ctest: the test's executable was never built
+        unittest = "printf 'import unittest\\nclass T(unittest.TestCase):\\n def test_a(self): pass\\n' > t_test.py"
+        commands = [
+            ["--", "echo 'No tests were found!!!'; exit 8"],  # ctest --no-tests=error's output
+            ["--", f"echo '{not_run}'; exit 8"],
+            ["--", f"{unittest} && python3 -m unittest -k nothing t_test"],  # NO TESTS RAN, exit 5
+            ["--", "echo 'import nosuch' > bad_test.py && python3 -m unittest bad_test"],  # failed to import
+        ]
+        if shutil.which("ctest"):  # the real one: its -R matching nothing, and a test never built
             commands.append(["--", "mkdir -p e && cd e && ctest -R '^nothing$' --no-tests=error"])
+            missing = "mkdir -p m && cd m && echo 'add_test(t /nonexistent/t_bin)' > CTestTestfile.cmake"
+            commands.append(["--", f"{missing} && ctest -R '^t$'"])
         jids = self.mutants(wt, *commands)
         self.assertTrue(all(self.job(j)["exit"] != 0 for j in jids), "ran no test, yet exited 0")
-        self.refused(wt, jids, *["ctest ran no test"] * len(jids))
+        self.refused(wt, jids, *["no test ran ("] * len(jids))
+        for jid, line in zip(
+            jids, ("No tests were found", "***Not Run", "NO TESTS RAN", "Failed to import"), strict=False
+        ):
+            self.assertIn(line, self.job(jid)["note"], jid)
         (real,) = self.mutants(wt, ["--", "python3 app.py | grep -q 2"])  # main prints 1: the test fails
         self.assertEqual(self.job(real)["state"], "done")
         self.assertIn("A1  met", self.ok(self.home, "status", "fix").out)

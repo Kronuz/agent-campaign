@@ -258,8 +258,8 @@ def fails_without_why(j: Json) -> str:
     if state == "failed" and v < FAILS_WITHOUT:
         return f"{j['id']} exited {st.get('exit')}: its command had to exit 0 where the fix is missing"
     if state in ("done", "failed") and v >= FAILS_WITHOUT:
-        why = st.get("note") if state == "failed" else fails_without_miss(st)
-        return f"{j['id']} {state}: {why or fails_without_miss(st) or 'it did not fail without the fix'}"
+        why = (state == "failed" and st.get("note")) or fails_without_miss(st)
+        return f"{j['id']} {state}: {why or 'it did not fail without the fix'}"
     return f"{j['id']} {state}: no result yet" if state in ("queued", "running") else f"{j['id']} {state}"
 
 

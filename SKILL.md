@@ -234,7 +234,7 @@ Each criterion names its test or other evidence, and landing reads it from the r
 
 | Criterion | Its evidence |
 |---|---|
-| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it), or the one gate check its text names (`` the `unit` check ``), passed at the quest's code; with `--fails-without` tags, one of those's test also ran and failed: a failed `--build` (stage the mutant's build there), exit 124-127, or ctest's "No tests were found" shows nothing |
+| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it), or the one gate check its text names (`` the `unit` check ``), passed at the quest's code; with `--fails-without` tags, one of those's test also ran and failed: a failed `--build`, exit 124-127, SIGKILL or SIGTERM, or ctest's or unittest's "no test ran" lines show nothing; a build inside the command that fails, or another runner that runs no test, still reads as failing, so stage the build with `--build` |
 | `- A2 [artifact] ...` | a journal row naming a path committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
 | `- A3 [decision] ...` | a journal row naming an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | a journal row saying who checked what; shown as manual, never as automated proof |

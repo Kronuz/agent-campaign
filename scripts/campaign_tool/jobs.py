@@ -364,23 +364,36 @@ def finish(job: Json, code: int, state: str, note: str = "", fence: int = 0) -> 
 
 
 FAILS_WITHOUT = 2  # spec["fails_without"]: the command must fail; no field is a self-inverted command that exits 0
-NO_RUN = {125: "its checkout failed", 126: "it is not runnable", 127: "it was not found"}  # the command never ran
-NO_TESTS = re.compile(rb"^No tests were found", re.M)  # ctest's line when its run matched no test
+NO_RUN = {  # the command ran no test
+    125: "exited 125 (git bisect's skip / the command's own refusal)",
+    126: "exit 126: the command did not run (it is not runnable)",
+    127: "exit 127: the command did not run (it was not found)",
+}
+KILLS = {9: "SIGKILL", 15: "SIGTERM"}  # sent from outside (the OOM killer, an operator), unlike a crash
+NO_TEST_LINES = (  # a runner's line saying a test it was asked to run did not run
+    rb"^No tests were found",  # ctest: nothing matched
+    rb"^ *\d+/\d+ Test +#\d+: .*\*\*\*Not Run",  # ctest: a selected test's executable was never built
+    rb"^NO TESTS RAN",  # unittest: nothing matched (exit 5)
+    rb"^ImportError: Failed to import test module:",  # unittest: a test module that did not import
+)
+NO_TESTS = re.compile(b"|".join(NO_TEST_LINES), re.M)
 
 
-def ran_no_test(log: Path) -> bool:
-    """Whether a job's LOG shows a ctest run that ran no test: the one fact a fails-without record
-    has only in its log."""
+def ran_no_test(log: Path) -> str:
+    """The first line of a job's LOG saying a test runner ran no test (`NO_TEST_LINES`), or "": the
+    one fact a fails-without record has only in its log."""
     try:
-        return NO_TESTS.search(log.read_bytes()) is not None
+        found = NO_TESTS.search(log.read_bytes())
     except OSError:
-        return False
+        return ""
+    return " ".join(found.group().decode(errors="replace").split()) if found else ""
 
 
 def fails_without_miss(st: Json, log: Path | None = None) -> str:
     """Why a finished --fails-without attempt (ST, with its LOG once) shows nothing about the fix, or
     "" when it does: its build built, its command ran a test, and the test failed."""
     built, code = (st.get("build") or {}).get("exit"), st.get("exit")
+    signum = -code if isinstance(code, int) and code < 0 else code - 128 if isinstance(code, int) else 0
     if built not in (None, 0):
         return f"the mutant did not build: its build failed (exit {built}), so it shows nothing about the fix"
     if code == 0:
@@ -388,9 +401,11 @@ def fails_without_miss(st: Json, log: Path | None = None) -> str:
     if code == 124:
         return "it timed out, so it shows nothing about the fix"
     if code in NO_RUN:
-        return f"exit {code}: the command did not run ({NO_RUN[code]}), so it shows nothing about the fix"
-    if log is not None and ran_no_test(log):
-        return f"ctest ran no test (No tests were found; exit {code}), so it shows nothing about the fix"
+        return f"{NO_RUN[code]}, so it shows nothing about the fix"
+    if signum in KILLS:
+        return f"exit {code}: it was killed by {KILLS[signum]} from outside, so it shows nothing about the fix"
+    if log is not None and (line := ran_no_test(log)):
+        return f"no test ran ({line}; exit {code}), so it shows nothing about the fix"
     return ""
 
 
