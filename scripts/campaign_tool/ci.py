@@ -54,6 +54,12 @@ def runs_kept(runs: Any) -> float:
     return (15 if all_passed(runs) else 5) * ci_seconds() if done else ci_seconds()
 
 
+def ancestor_kept(runs: Any) -> float:
+    """Seconds an ancestor candidate's run list is kept: one with none had its runs long ago or
+    never will (CI skipped it), as final as a completed set."""
+    return runs_kept(runs) if runs else 5 * ci_seconds()
+
+
 def view_kept(view: Any) -> float:
     """Seconds a run's jobs are kept: for good once they all passed; a red run can be re-run."""
     jobs = (view or {}).get("jobs") if isinstance(view, dict) else None
@@ -154,7 +160,10 @@ def ci_commit(repo: Path, commit: str) -> str:
     first-parent ancestor that differs only in campaign files or documentation, which CI workflows
     skip (`paths-ignore`); "" when no remote-tracking ref holds COMMIT and no pushed ancestor of it
     has runs. Only pushed commits are asked, all at once."""
-    asked = [(k, gh_start(repo, ci_runs(k), runs_kept)) for k in ci_candidates(repo, commit)]
+    asked = [
+        (k, gh_start(repo, ci_runs(k), runs_kept if k == commit else ancestor_kept))
+        for k in ci_candidates(repo, commit)
+    ]
     for k, runs in asked:
         code, listed = runs.result()
         if code == 0 and listed:
@@ -199,7 +208,7 @@ def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
                     gh_start(repo, run_view(run), view_kept)
 
     for k in ci_candidates(repo, commit):
-        asked = gh_start(repo, ci_runs(k), runs_kept)
+        asked = gh_start(repo, ci_runs(k), runs_kept if k == commit else ancestor_kept)
         if jobs:
             asked.add_done_callback(views)
 
