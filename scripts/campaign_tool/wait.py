@@ -193,12 +193,24 @@ def wait_events(c: Campaign, timeout: float) -> int:
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
         if timeout and time.time() - start >= timeout:
-            print(f"nothing new after {timeout:g}s")
             code = 3
             break
         if any(j["state"].get("state") == "queued" for j in running):
             ensure_worker()
         watch(places(), tick)
+    listed = listing(heads, fresh=True)
+    now = time.time()
+    keys = {x["key"] for x in listed["items"]}
+    for key in [k for k in shown if k not in keys]:  # done, or gone: it fires anew if it comes back
+        del shown[key]
+    fired = due(listed["items"])  # printed first: what woke the lead is never past the SHOWN cut
+    listed["items"] = fired + [x for x in listed["items"] if x not in fired]
+    for x in listed["items"][:SHOWN]:  # only what is printed counts as shown
+        if code == 0 or x["key"] not in shown:
+            shown[x["key"]] = now
+    print(woken_by(moved, finished, [waiting[k]["id"] for k in arrived], fired, timeout if code == 3 else 0))
+    if code == 3:
+        print(f"nothing new after {timeout:g}s")
     for key in moved:
         name, branch = key.split(" ", 1)
         print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch)}")
@@ -210,16 +222,6 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
-    listed = listing(heads, fresh=True)
-    now = time.time()
-    keys = {x["key"] for x in listed["items"]}
-    for key in [k for k in shown if k not in keys]:  # done, or gone: it fires anew if it comes back
-        del shown[key]
-    fired = due(listed["items"])  # printed first: what woke the lead is never past the SHOWN cut
-    listed["items"] = fired + [x for x in listed["items"] if x not in fired]
-    for x in listed["items"][:SHOWN]:  # only what is printed counts as shown
-        if code == 0 or x["key"] not in shown:
-            shown[x["key"]] = now
     remember(heads, ended)
     with frozen():
         flight = [f"{name} ({journal_state(c, name, branch)})" for (name, branch) in branch_heads(c)]
@@ -231,6 +233,18 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for line in todo_lines(listed):
         print(line)
     return code
+
+
+def woken_by(moved: list[str], finished: list[str], messages: list[str], fired: list[Json], timeout: float) -> str:
+    """The first line of a wait's return: what woke it, and the to-do items that are new or due
+    again ("no new to-do" when the list printed below holds only reminders)."""
+    causes = [f"branch move {k.split(' ', 1)[0]}" for k in moved]
+    causes += [f"job end {j}" for j in finished] + [f"message {m}" for m in messages]
+    causes += [] if causes or not timeout else [f"timeout after {timeout:g}s"]
+    todo = ", ".join(f"{x['kind']} {x['quest']}".strip() for x in fired)
+    if todo:
+        return f"woken by: {'; '.join([*causes, f'to-do: {todo}'])}"
+    return f"woken by: {'; '.join(causes)} (no new to-do)"
 
 
 def state_stamp(c: Campaign) -> tuple[int, int]:

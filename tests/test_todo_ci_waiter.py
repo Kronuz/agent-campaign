@@ -120,3 +120,25 @@ class CiWaiter(CampaignCase):
         self.ok(self.home, "job", "cancel", jid)
         items = [x for x in self.todo(self.ok(self.home, "status").out) if "witness" in x]
         self.assertTrue(items and items[0].startswith("- resume heal's task witness: its jobs ended"), items)
+
+    # A3 (the lead's ruling on R2): each return's first line names what woke it
+
+    def test_each_return_names_what_woke_it(self) -> None:
+        (self.root / "gh-suites").write_text('{"check_suites": []}\n')  # no CI anywhere: nothing waits
+        other = self.started("other", files="app.py")
+        first = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
+        self.assertEqual(first.splitlines()[0], "woken by: to-do: resume other", first)
+        timed = self.run_cli(self.home, "wait", "--commits", "--timeout", "2")
+        self.assertEqual(timed.code, 3)
+        self.assertEqual(timed.out.splitlines()[0], "woken by: timeout after 2s (no new to-do)", timed.out)
+        waiter = subprocess.Popen(
+            [sys.executable, str(CAMPAIGN), "wait", "--commits", "--timeout", "30"],
+            cwd=self.home,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(1)
+        self.commit(other, {"app.py": "print(2)\n"})
+        out, _ = waiter.communicate(timeout=60)
+        self.assertEqual(out.splitlines()[0], "woken by: branch move other (no new to-do)", out)
