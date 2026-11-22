@@ -1,9 +1,10 @@
-"""Waiting: sleeping until a quest branch moves, a job ends or a message arrives."""
+"""Waiting: sleeping until a quest branch moves, a job ends, a message arrives or the lead has work."""
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import os
 import select as os_select
 import sys
@@ -11,8 +12,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .alarm import watch_calls
 from .campaign import Campaign, find_campaign
-from .core import FLIGHT, TERMINAL, Json, git, jobs_dir, read_json, write_json
+from .ci import forget_ci
+from .core import FLIGHT, TERMINAL, Json, git, jobs_dir, plural, read_json, write_json
 from .jobs import all_jobs, attempt_dir, job_summary, load_job, resolve_job
 from .journals import journal_state
 from .leads import watch_leads
@@ -20,6 +23,7 @@ from .mail import fetch_peers, inbox, mailbox, peers, push_outbox
 from .repo import common_dir, frozen, has_ref, rev
 from .runner import ensure_worker, reap
 from .state import branches
+from .todo import SHOWN, repeat_seconds, todo, todo_lines
 
 
 def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
@@ -82,14 +86,17 @@ def watch(paths: list[Path], timeout: float) -> None:
 
 def wait_events(c: Campaign, timeout: float) -> int:
     """Returns at the first commit on a quest branch in flight or job of this campaign that ended
-    since the lead last saw them (recorded in the home's .git), so nothing that happens
-    between two waits is missed; then lists what is still in flight, to wait for next."""
+    since the lead last saw them (recorded in the home's .git), so nothing that happens between two
+    waits is missed, or as soon as the lead's to-do list has an item it has not been shown, or one
+    shown CAMPAIGN_TODO_REPEAT seconds ago and still undone; then prints what is in flight and the
+    list."""
     seen_file = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-seen.json"
     records: Json = (read_json(seen_file) if seen_file.exists() else None) or {}
     recorded: Json | None = records.get(c.ident)
+    shown: dict[str, float] = {str(k): float(v) for k, v in dict((recorded or {}).get("todo") or {}).items()}
 
     def remember(heads: dict[str, str], ended: dict[str, Json]) -> None:
-        records[c.ident] = {"heads": heads, "jobs": sorted(ended), "messages": sorted(messages())}
+        records[c.ident] = {"heads": heads, "jobs": sorted(ended), "messages": sorted(messages()), "todo": shown}
         write_json(seen_file, records)
 
     def messages() -> dict[str, Json]:
@@ -106,6 +113,8 @@ def wait_events(c: Campaign, timeout: float) -> int:
 
     tick = float(os.environ.get("CAMPAIGN_WAIT_TICK", "5"))
     start = time.time()
+    repeat = repeat_seconds()
+    loaded = [state_stamp(c)]
 
     mine: list[Json] = []
 
@@ -116,10 +125,39 @@ def wait_events(c: Campaign, timeout: float) -> int:
         ended = {j["id"]: j for j in mine if j["state"].get("state") in TERMINAL}
         return heads, ended
 
-    def places() -> list[Path]:  # where a message, a job's end or a branch's move writes
+    made: list[Json] = [{"at": 0.0, "of": None, "list": {"items": []}}]
+    every = max(tick, float(os.environ.get("CAMPAIGN_TODO_TICK", "30")))
+
+    def listing(heads: dict[str, str], fresh: bool = False) -> Json:
+        """The to-do list, made again when the state, a job or a branch changed, else every EVERY
+        seconds (time alone moves a journal past the idle bound, or CI to its end); FRESH, made
+        from the state read again (what a return prints: a command may be writing it)."""
+        nonlocal c
+        last = made[0]
+        if fresh:  # as the writer leaves it: a command writes mail before the state
+            with open(Path(common_dir(c.home)) / "campaign.lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_SH)
+                loaded[0] = state_stamp(c)
+                c = Campaign(c.home, c.name)
+        elif state_stamp(c) != loaded[0]:  # the lead landed, started or set something
+            loaded[0] = state_stamp(c)
+            c = Campaign(c.home, c.name)
+        of = (loaded[0], sorted(heads.items()), sorted((j["id"], j["state"].get("state")) for j in mine))
+        if not fresh and of == last["of"] and time.time() - last["at"] < every:
+            return dict(last["list"])
+        forget_ci()  # CI that was running may have finished: asked again once its answer on disk expires
+        with frozen():
+            made[0] = {"at": time.time(), "of": of, "list": todo(c, all_jobs())}
+        return dict(made[0]["list"])
+
+    def due(items: list[Json]) -> list[Json]:
+        now = time.time()
+        return [x for x in items if now - shown.get(x["key"], -repeat) >= repeat]
+
+    def places() -> list[Path]:  # where a message, a job's end, a branch's move or a state change writes
         mail = mailbox(c, "")
         mail.mkdir(parents=True, exist_ok=True)
-        found = [mail, mail.parent, *(x for x in mail.parent.iterdir() if x.is_dir()), jobs_dir()]
+        found = [mail, mail.parent, *(x for x in mail.parent.iterdir() if x.is_dir()), jobs_dir(), c.path.parent]
         found += [j["dir"] for j in mine if j["state"].get("state") not in TERMINAL]
         for repo in {c.repo(p) for p in c.quests.values() if p["status"] in FLIGHT}:
             found.append(Path(common_dir(repo)) / "refs" / "heads" / "quest" / c.name)
@@ -133,24 +171,31 @@ def wait_events(c: Campaign, timeout: float) -> int:
         seen_heads = {str(k): str(v) for k, v in dict(recorded.get("heads") or {}).items()}
         seen_jobs = {str(x) for x in recorded.get("jobs") or []}
         seen_messages = {str(x) for x in recorded.get("messages") or []}
+    listed: Json = {"items": []}
+    code = 0
     while True:
         reap()
         exchange()
         watch_leads()
+        watch_calls()
         heads, ended = current()
         waiting = messages()
         moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
         finished = sorted(set(ended) - seen_jobs)
         arrived = sorted(set(waiting) - seen_messages)
-        if moved or finished or arrived:
+        listed = listing(heads)
+        if moved or finished or arrived or due(listed["items"]):
             break
         running = mine
-        if not heads and not peers(c) and not any(j["state"].get("state") not in TERMINAL for j in running):
+        idle = not any(j["state"].get("state") not in TERMINAL for j in running)
+        flying = any(p["status"] in FLIGHT for p in c.quests.values())  # by the state, not by branches mid-landing
+        if not flying and not peers(c) and idle and not listed["items"]:
             print("nothing to wait for: no quest in flight and no job of this campaign")
             return 0
         if timeout and time.time() - start >= timeout:
             print(f"nothing new after {timeout:g}s")
-            return 3
+            code = 3
+            break
         if any(j["state"].get("state") == "queued" for j in running):
             ensure_worker()
         watch(places(), tick)
@@ -165,6 +210,16 @@ def wait_events(c: Campaign, timeout: float) -> int:
     for jid in finished:
         s = job_summary(ended[jid])
         print(f"{jid}  {s['state']}" + ("" if s["exit"] is None else f" exit {s['exit']}") + f"  {s['what']}")
+    listed = listing(heads, fresh=True)
+    now = time.time()
+    keys = {x["key"] for x in listed["items"]}
+    for key in [k for k in shown if k not in keys]:  # done, or gone: it fires anew if it comes back
+        del shown[key]
+    fired = due(listed["items"])  # printed first: what woke the lead is never past the SHOWN cut
+    listed["items"] = fired + [x for x in listed["items"] if x not in fired]
+    for x in listed["items"][:SHOWN]:  # only what is printed counts as shown
+        if code == 0 or x["key"] not in shown:
+            shown[x["key"]] = now
     remember(heads, ended)
     with frozen():
         flight = [f"{name} ({journal_state(c, name, branch)})" for (name, branch) in branch_heads(c)]
@@ -172,8 +227,19 @@ def wait_events(c: Campaign, timeout: float) -> int:
         1 for j in all_jobs() if j["spec"].get("campaign") == c.ident and j["state"].get("state") not in TERMINAL
     )
     if flight or pending:
-        print(f"still in flight: {', '.join(flight) or 'no quest'}; {pending} job(s) pending; wait again after this")
-    return 0
+        print(f"still in flight: {', '.join(flight) or 'no quest'}; {plural(pending, 'job')} pending")
+    for line in todo_lines(listed):
+        print(line)
+    return code
+
+
+def state_stamp(c: Campaign) -> tuple[int, int]:
+    """When and how big state.json was written: whether a wait must read it again."""
+    try:
+        st = c.path.stat()
+    except OSError:
+        return (0, 0)
+    return (st.st_mtime_ns, st.st_size)
 
 
 def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
@@ -183,6 +249,7 @@ def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
         reap()
         ensure_worker()
         watch_leads()
+        watch_calls()
         jobs = {x: load_job(jobs_dir() / x) for x in ids}
         pending = [x for x, j in jobs.items() if j["state"].get("state") not in TERMINAL]
         if not pending or (any_one and len(pending) < len(ids)):
