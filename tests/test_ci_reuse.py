@@ -201,20 +201,25 @@ class CiReuse(CampaignCase):
         self.assertIn("failed: build", self.ok(self.home, "brief", "b").out)  # land's answer refreshed the host's
         self.assertEqual(log.read_text(), "")
 
-    def test_land_refuses_when_gh_fails_and_the_host_keeps_its_green(self) -> None:
+    def test_land_refuses_when_gh_fails(self) -> None:
         self.quest_green_at_head("10")
         self.env["CAMPAIGN_CI_SECONDS"] = "600"
         self.ok(self.home, "brief", "b")  # the host keeps this green
         (self.root / "gh.json").write_text("")  # GitHub fails every call now
         self.fails(self.home, "land", "b", match="gh failed")
-        self.assertNotIn("gh failed", self.ok(self.home, "brief", "b").out)  # the green was not overwritten
 
-    def test_a_reader_shows_the_last_good_answer_when_gh_fails(self) -> None:
+    def test_a_failed_ask_is_a_ci_gap_and_no_land_item(self) -> None:
         self.quest_green_at_head("10")
         self.env["CAMPAIGN_CI_SECONDS"] = "0"
-        self.ok(self.home, "brief", "b")  # a green, on disk but no longer counting
+
+        def land_items() -> list[str]:
+            items = json.loads(self.ok(self.home, "status", "--json").out)["todo"]["items"]
+            return [x["cmd"] for x in items if x.get("cmd", "").startswith("campaign land b")]
+
+        self.assertTrue(land_items())  # green: b is landable, and its answer is on disk
         (self.root / "gh.json").write_text("")  # GitHub fails every call now
-        self.assertNotIn("gh failed", self.ok(self.home, "brief", "b").out)
+        self.assertRegex(self.ok(self.home, "brief", "b").out, r"CI at [0-9a-f]{12}: gh failed")
+        self.assertEqual(land_items(), [])
 
     def test_a_running_carried_head_is_a_live_waiter(self) -> None:
         b, head = self.quest_green_at_head("10")
