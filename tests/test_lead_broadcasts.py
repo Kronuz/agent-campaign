@@ -55,9 +55,15 @@ class LeadBroadcasts(CampaignCase):
         homes = {"demo": self.home, **self.others}
         return {name: [m["text"] for m in self.lead_mail(home, name)] for name, home in homes.items()}
 
-    def land(self, subject: str, body: str = "") -> str:
+    def land(self, subject: str, body: str = "", by: tuple[Path, str, str] | None = None) -> str:
+        """A commit on the skill's main, recorded as landed by quest BY (home, campaign, quest): demo's tool."""
         self.commit(self.clone, {"SKILL.md": subject + "\n"}, subject + (f"\n\n{body}" if body else ""))
         self.git(self.clone, "push", "-q", "origin", "main")  # moves the clone's origin/main: landed
+        home, name, quest = by or (self.home, "demo", "tool")
+        path = home / ".campaign" / name / "state.json"
+        state = json.loads(path.read_text())
+        state["quests"][quest]["landed"].append({"commit": self.git(self.clone, "rev-parse", "HEAD"), "final": False})
+        path.write_text(json.dumps(state))
         return self.git(self.clone, "rev-parse", "--short", "HEAD")
 
     def install(self) -> None:
@@ -97,6 +103,7 @@ class LeadBroadcasts(CampaignCase):
         self.ok(self.home, "status")
 
         def killed_then_rerun(kill_at: int, sent: list[int], told: int) -> None:
+            kill_at += 1  # demo landed these: its record is the first write, and it is sent nothing
             died = subprocess.run(
                 [sys.executable, "-c", DIE_AT_RECORD, str(SKILL / "scripts"), str(kill_at)], cwd=self.home, env=self.env
             )
@@ -119,7 +126,7 @@ class LeadBroadcasts(CampaignCase):
         self.ok(self.home, "status")
         self.land("A change")
         died = subprocess.run(
-            [sys.executable, "-c", DIE_AT_RECORD, str(SKILL / "scripts"), "1"], cwd=self.home, env=self.env
+            [sys.executable, "-c", DIE_AT_RECORD, str(SKILL / "scripts"), "2"], cwd=self.home, env=self.env
         )
         self.assertEqual(died.returncode, -signal.SIGKILL)
         skill, self.env["CAMPAIGN_SKILL"] = self.env["CAMPAIGN_SKILL"], ""  # closed before any rerun
@@ -128,6 +135,43 @@ class LeadBroadcasts(CampaignCase):
         self.ok(self.home, "status")
         self.assertEqual(self.all_mail()["one"], [])  # its record in the state still names it
         self.assertEqual(len(self.all_mail()["two"]), 1)
+
+    def test_every_lead_but_the_one_that_landed_is_told_even_with_quests_in_the_skill_repo(self) -> None:
+        quest = ("--title", "t", "--risk", "low", "--files", "SKILL.md", "--check", "unit=true")
+        self.ok(self.others["one"], "new", "tool", *quest, "--repo", "../agent-campaign")  # a second sender
+        self.ok(self.home, "status")
+        short = self.land("Landed by one", by=(self.others["one"], "one", "tool"))
+        self.ok(self.others["two"], "status")
+        mail = self.all_mail()
+        self.assertEqual(mail["one"], [])  # it landed the commit
+        for name in ("demo", "two"):
+            self.assertEqual(len(mail[name]), 1, mail)
+            self.assertIn(
+                f"1 commit landed on agent-campaign's main, not installed here yet: agent-campaign:{short}",
+                mail[name][0],
+            )
+        self.ok(self.home, "status")
+        self.ok(self.others["one"], "brief")
+        self.assertEqual(self.all_mail(), mail)  # once each
+
+    def test_a_campaign_is_told_only_of_the_commits_in_the_range_it_did_not_land(self) -> None:
+        self.ok(self.home, "status")
+        first = self.land("Mine one")
+        self.commit(self.clone, {"SKILL.md": "theirs\n"}, "Theirs")
+        theirs = self.git(self.clone, "rev-parse", "--short", "HEAD")
+        self.git(self.clone, "push", "-q", "origin", "main")
+        self.land("Mine two")  # demo's records hold both of its commits, and not "Theirs"
+        self.ok(self.others["one"], "status")
+        mail = self.all_mail()
+        self.assertEqual(len(mail["demo"]), 1, mail)
+        self.assertIn(
+            f"1 commit landed on agent-campaign's main, not installed here yet: agent-campaign:{theirs} Theirs",
+            mail["demo"][0],
+        )
+        self.assertNotIn("Mine", mail["demo"][0])
+        self.assertEqual(len(mail["one"]), 1, mail)
+        self.assertIn("3 commits landed", mail["one"][0])
+        self.assertIn(f"agent-campaign:{first} Mine one", mail["one"][0])
 
     def test_only_the_installed_checkout_announces(self) -> None:
         self.ok(self.home, "status")
