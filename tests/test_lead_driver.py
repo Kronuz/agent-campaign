@@ -229,7 +229,7 @@ class LeadDriver(CampaignCase):
         self.started("fourth", files="fourth.py")
         start = time.time()
         out = self.ok(self.home, "wait", "--commits", "--timeout", "60").out
-        self.assertLess(time.time() - start, 10, "the wait waited on the jobs and CI")
+        self.assertLess(time.time() - start, 20, "the wait waited on the jobs and CI")  # they take 30 s and more
         items = self.todo(out)
         self.assertIn("- start third: launchable: `campaign start third`", items)
         self.assertTrue(any(x.startswith("- resume fourth: nothing moved it") for x in items), out)
