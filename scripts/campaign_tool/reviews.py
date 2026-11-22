@@ -13,7 +13,7 @@ from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
-from .ci import check_evidence, ci_covers, ci_state
+from .ci import check_evidence, ci_carried, ci_covers, ci_gate
 from .core import CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
 from .evidence import criteria_evidence, evidence_shape, job_problem
 from .jobs import job_summary, load_job, quest_jobs
@@ -305,9 +305,10 @@ def landing_gap_kinds(
         gaps.append(Gap("check", f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)"))
     gaps += [Gap("review", x) for x in review_gaps(c, pid, target, main_head)] if final else []
     if ci and c.state.get("ci") == "github":
-        state = ci_state(repo, target, c.state.get("ci_later", []))
-        if state != "success":
-            gaps.append(Gap("ci", f"CI at {target[:12]}: {state} (--no-ci REASON to land without it)"))
+        gate = ci_gate(c, p, target)
+        if gate.state != "success":
+            at = f"{gate.commit[:12]} (carried to {target[:12]} across clean merges)" if gate.carried else target[:12]
+            gaps.append(Gap("ci", f"CI at {at}: {gate.state} (--no-ci REASON to land without it)"))
     return gaps
 
 
@@ -341,7 +342,8 @@ def review_gaps(c: Campaign, pid: str, target: str, main_head: str) -> list[str]
             upstream = [x for x in changed(repo, acc.get("base", base), base) if not is_meta(x)]
             if moved_since:
                 gaps.append(f"{lens} was accepted at {acc['commit'][:12]}; changed since: {', '.join(moved_since[:8])}")
-            elif upstream and p["risk"] in ("high", "critical"):
+            elif upstream and p["risk"] in ("high", "critical") and acc["commit"] not in ci_carried(c, p, target):
+                # a clean merge from main keeps the review, as it keeps CI: main's CI runs after landing
                 gaps.append(
                     f"{lens}: main changed {plural(len(upstream), 'code file')} under this {p['risk']}-risk quest "
                     f"since its review (`git diff {acc.get('base', base)[:12]} {base[:12]}`); read them, then re-accept"

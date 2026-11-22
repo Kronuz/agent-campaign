@@ -8,11 +8,12 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from .campaign import Campaign, blockers, close_hunt, find_campaign, landing_record, writing
 from .checks import landing_reruns, submit_checks
-from .ci import check_evidence, ci_covers
+from .ci import check_evidence, ci_covers, ci_fresh, ci_landing, clean_merge
 from .core import (
     EXCLUDE_META,
     TERMINAL,
@@ -251,9 +252,10 @@ def cmd_task_merge(a: argparse.Namespace) -> int:
 
 def merge_main_into(c: Campaign, pid: str) -> str:
     """Merges main into the quest's branch in its worktree (a merge, never a rebase), and pushes the
-    branch to origin when there is one, so CI runs at the merge. A conflict refuses, leaving the
-    branch as it was. Returns what happened, "" when a plain land would not ask for the merge: main
-    is in the branch, or moved only in its campaign records."""
+    branch to origin when there is one, so CI runs at the merge; not with GitHub CI when the merge is
+    clean (`clean_merge`): CI at the branch's head carries, and a push would cancel its runs. A
+    conflict refuses, leaving the branch as it was. Returns what happened, "" when a plain land would
+    not ask for the merge: main is in the branch, or moved only in its campaign records."""
     p = c.quests[pid]
     repo = c.repo(p)
     main, branch = main_branch(repo), p["branch"]
@@ -283,7 +285,9 @@ def merge_main_into(c: Campaign, pid: str) -> str:
         )
     head = rev(wt, "HEAD")
     said = f"merged {main} into {branch} at {head[:12]}"
-    if git_ok(wt, "remote", "get-url", "origin"):
+    if c.state.get("ci") == "github" and clean_merge(repo, head):
+        said += f", not pushed: it is clean, so the land gate reads CI at {rev(repo, f'{head}^')[:12]}"
+    elif git_ok(wt, "remote", "get-url", "origin"):
         pushed = subprocess.run(
             ["git", "-C", str(wt), "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], capture_output=True, text=True
         )
@@ -292,6 +296,7 @@ def merge_main_into(c: Campaign, pid: str) -> str:
 
 
 def cmd_land(a: argparse.Namespace) -> int:
+    ci_fresh()  # the gate judges GitHub's answers now, not the host's cached ones
     with writing() as c, contextlib.ExitStack() as held:
         p = c.quest(a.id)
         repo = c.repo(p)
@@ -402,6 +407,7 @@ def cmd_land(a: argparse.Namespace) -> int:
             "from": main_head,
             "at": stamp(),
             **({"ci_skipped": a.no_ci} if a.no_ci and c.state.get("ci") else {}),
+            **({"ci": ci_landing(c, p, target)} if a.no_ci is None and c.state.get("ci") == "github" else {}),
         }
         write_json(c.path, c.state)
         before = rev(checkout, "HEAD")
@@ -434,8 +440,9 @@ def cmd_land(a: argparse.Namespace) -> int:
         record = landing_record(repo, main, c.state.pop("landing"))
         if record is None:
             die(f"{main} does not contain {target[:12]} after landing it")
+        warnings: list[str] = []  # main moved: from here a failed step warns, and the landing is recorded
         if not same_repo(repo, c.home):
-            land_journals(c, a.id)
+            warnings += after_landing("merging its journal", lambda: land_journals(c, a.id), undo=c.home)
         p["landed"].append(record)
         landed = record["commit"]
         filed: list[Json] = inbox(c, a.id) if final else []
@@ -447,7 +454,9 @@ def cmd_land(a: argparse.Namespace) -> int:
                     record["later"] = submit_checks(c, a.id, deferred(p), landed, priority=-1)
                 except CampaignError as e:
                     print(f"campaign: landed, but the deferred checks were not queued: {e}", file=sys.stderr)
-        kept = clean_quest(c, a.id, keep=True) if final and not a.keep else []
+        kept: list[str] = []
+        if final and not a.keep:
+            warnings += after_landing("cleaning up", lambda: kept.extend(clean_quest(c, a.id, keep=True)))
         p["updated"] = stamp()
         opened = unlocks(c, waited, f"{a.id} landed") if final else ""
         hunted = close_hunt(c, a.id, repo, landed) if final else ()
@@ -464,9 +473,23 @@ def cmd_land(a: argparse.Namespace) -> int:
     print(f"{a.id}: landed {target[:12]} on {main}{via}" + ("" if final else " (increment)"))
     for item in kept:
         print(f"kept {item} (`campaign clean {a.id}` once resolved)")
+    for warning in warnings:
+        print(f"campaign: warning: {a.id} landed, but {warning} (`campaign clean {a.id}` retries it)", file=sys.stderr)
     if opened:
         print(opened)
     return 0
+
+
+def after_landing(step: str, run: Callable[[], object], undo: Path | None = None) -> list[str]:
+    """Runs a step after main moved: its failure is a warning, never an abort that leaves the landing
+    unrecorded; a merge it left half done in UNDO is aborted."""
+    try:
+        run()
+    except (CampaignError, OSError, subprocess.SubprocessError) as e:
+        if undo is not None:
+            git(undo, "merge", "--abort", check=False)
+        return [f"{step} failed: {e}"]
+    return []
 
 
 def clean_quest(c: Campaign, pid: str, *, force: bool = False, keep: bool = False) -> list[str]:
@@ -521,7 +544,7 @@ def clean_quest(c: Campaign, pid: str, *, force: bool = False, keep: bool = Fals
         for owner, _ in places:
             if has_ref(owner, branch):
                 if force or ancestor(owner, branch, main_branch(owner)):
-                    git(owner, "branch", "-q", "-D" if force else "-d", branch)
+                    git(owner, "branch", "-q", "-D", branch)  # merged into main: -d would ask its upstream
                 else:
                     kept.append(f"{branch}{' (its journal, in the home)' if owner != repo else ''}: not merged")
     own = quest_slot(c, pid, repo)
@@ -538,6 +561,12 @@ def cmd_clean(a: argparse.Namespace) -> int:
         p = c.quest(a.id)
         if p["status"] not in ("landed", "dropped"):
             die(f"{a.id} is {p['status']}: clean only landed or dropped quests")
+        if p["status"] == "landed" and not same_repo(c.repo(p), c.home):
+            try:  # what a landing's failed journal merge left (merged ones are skipped)
+                land_journals(c, a.id)
+            except CampaignError:
+                git(c.home, "merge", "--abort", check=False)
+                raise
         for item in clean_quest(c, a.id, force=a.force):
             print(f"kept {item} (--force removes it)")
         p["updated"] = stamp()
