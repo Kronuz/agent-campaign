@@ -191,8 +191,14 @@ class CampaignCase(unittest.TestCase):
         self.env["CAMPAIGN_CLAUDE_LOGS"] = str(self.root / "claude")
         self.env["PATH"] = f"{self.root / 'bin'}:{self.env['PATH']}"
         (self.root / "bin").mkdir()
-        cmux = self.root / "bin" / "cmux"  # no test reaches the real cmux: this stub records and succeeds
-        cmux.write_text(f'#!/bin/sh\necho "$@" >> "{self.root / "cmux-stub-calls"}"\n')
+        cmux = self.root / "bin" / "cmux"  # no test reaches the real cmux: this stub refuses unless asked
+        cmux.write_text(
+            "#!/bin/sh\n"
+            '[ -n "$CAMPAIGN_TEST_CMUX" ] && exit 0\n'
+            f'echo "$*" >> "{self.root / "cmux-refused"}"\n'
+            'echo "real cmux reached from a test" >&2\n'
+            "exit 97\n"
+        )
         cmux.chmod(0o755)
         (self.root / "bin" / "quiet").symlink_to(QUIET)  # this checkout's quiet, not the installed one
         self.home = self.repo("app", {"app.py": "print(1)\n", "lib/util.py": "X = 1\n", "README.md": "app\n"})
@@ -200,6 +206,8 @@ class CampaignCase(unittest.TestCase):
         self.ok(self.home, "config", "suite=python3 app.py")
 
     def tearDown(self) -> None:
+        refused = self.root / "cmux-refused"
+        self.addCleanup(self.assertFalse, refused.exists(), "real cmux reached from a test")
         sids = set()
         for d in (self.root / "jobs").glob("*/state.json"):
             try:

@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -143,10 +144,6 @@ class SessionTitle(CampaignCase):
             self.title.keep_title(self.tool.find_campaign(self.home))
         self.assertFalse(self.calls.exists())
 
-    def test_the_harness_puts_a_stub_cmux_ahead_of_any_real_one(self) -> None:
-        found = shutil.which("cmux", path=self.env["PATH"])
-        self.assertEqual(found, str(self.root / "bin" / "cmux"))
-
     def test_the_cmux_call_is_not_repeated_once_the_title_is_set(self) -> None:
         self.write(("custom-title", "demo · lead"))
         with self.session():
@@ -167,6 +164,19 @@ class SessionTitle(CampaignCase):
                 self.assertIn("type /rename demo · lead", out.out, out.err)
         self.env["CLAUDE_CODE_SESSION_ID"] = "no-such-session"
         self.assertNotIn("/rename", self.run_cli(self.home, "status").out)
+
+
+class HarnessCmux(CampaignCase):
+    def test_the_stub_cmux_leads_the_path_and_refuses_unless_asked(self) -> None:
+        self.assertEqual(shutil.which("cmux", path=self.env["PATH"]), str(self.root / "bin" / "cmux"))
+
+        def run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(["cmux", "ping"], env=env, capture_output=True, text=True)
+
+        refused = run(self.env)
+        self.assertEqual((refused.returncode, refused.stderr.strip()), (97, "real cmux reached from a test"))
+        self.assertEqual(run({**self.env, "CAMPAIGN_TEST_CMUX": "1"}).returncode, 0)
+        (self.root / "cmux-refused").unlink()  # the refusal above was this test's own
 
 
 class Documented(unittest.TestCase):
