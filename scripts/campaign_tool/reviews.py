@@ -197,6 +197,12 @@ def waits_line(c: Campaign, unmet: list[str]) -> str:
     return f"land {', '.join(unmet)} first" + (f" ({'; '.join(dead)}: rewire it)" if dead else "")
 
 
+def main_moved(repo: Path, main_head: str, base: str) -> list[str]:
+    """The files main changed since a branch's merge base, its campaign records aside: what a landing
+    needs merged into the branch. `landing_gaps` refuses with them and `--merge-main` merges for them."""
+    return [x for x in changed(repo, base, main_head) if not is_meta(x)]
+
+
 def landing_gaps(
     c: Campaign, pid: str, target: str, *, final: bool, ci: bool, jobs: list[Json] | None = None
 ) -> list[str]:
@@ -212,7 +218,7 @@ def landing_gaps(
         gaps.append(waits_line(c, unmet))
     main_head = rev(repo, main)
     base = merge_base(repo, main_head, target)
-    moved = [x for x in changed(repo, base, main_head) if not is_meta(x)]
+    moved = main_moved(repo, main_head, base)
     if moved:
         gaps.append(
             f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} "
