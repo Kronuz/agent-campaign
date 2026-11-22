@@ -106,9 +106,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   `--close` ends it.
   `campaign worker --restart` (after updating the tool) re-executes the worker on the current code
   after its tick; jobs keep
-  running. Priorities: gate checks and
-  light `--quest` jobs of an active or in-review quest (the direct path) run at 1, other jobs and
-  measurements at 0, deferred checks and `--long` jobs at -1, using at most half the light slots;
+  running. Priorities: gate checks run at 2; light `--quest` jobs of an active or in-review quest
+  (the direct path) at 1; other jobs and measurements at 0; deferred checks and `--long` jobs at -1, using at most half the light slots;
   `--priority` overrides.
 - **Queue health.** `campaign status` prints the last hour's light slot-minutes used (by
   charged slots) against the slots, minutes drains held the host, minutes runnable work waited
@@ -256,7 +255,7 @@ landed journal.
   to share entries; jobs inherit the submitter's PATH, so a launcher found there is used.
 - **`pace [claude|copilot|codex]`** prints each quota window's use, its recent burn and whether
   it runs out before its reset, read from each harness's own records (`references/harness.md`).
-  It is information for decisions, never a reason to launch work. It does not see credits bought for Claude Code, so it can report a
+  It is information, never a reason to launch work or to lower a tier, effort, review or check (SKILL.md, "Quota never decides quality"). It does not see credits bought for Claude Code, so it can report a
   window as spent while those credits still cover it: ask the owner before stopping work for it.
 - **`report`** draws the owner's sidebar progress and notifications (cmux; elsewhere the terminal
   or desktop). `campaign` and `quiet` keep it current by themselves: every state change and

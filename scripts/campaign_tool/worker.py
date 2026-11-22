@@ -17,6 +17,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
+from .alarm import watch_calls
 from .core import ENTRY, HEAVY, LIGHT_RUN, SHORT_RUN, Json, atomic_write, jobs_dir, plural, sh, stamp
 from .disk import daily_prune
 from .jobs import all_jobs, claim, finish, load_job, slot_of
@@ -732,6 +733,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
             (home / "heartbeat").touch()
             reap_runners(runners)
             reap()
+            watch_calls()
             jobs = all_jobs()
             if not any(j["state"].get("state") in ("queued", "running") for j in jobs):
                 if daily_prune((home / "heartbeat").touch):
