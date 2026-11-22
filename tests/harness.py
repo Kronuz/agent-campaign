@@ -191,6 +191,9 @@ class CampaignCase(unittest.TestCase):
         self.env["CAMPAIGN_CLAUDE_LOGS"] = str(self.root / "claude")
         self.env["PATH"] = f"{self.root / 'bin'}:{self.env['PATH']}"
         (self.root / "bin").mkdir()
+        cmux = self.root / "bin" / "cmux"  # no test reaches the real cmux: this stub records and succeeds
+        cmux.write_text(f'#!/bin/sh\necho "$@" >> "{self.root / "cmux-stub-calls"}"\n')
+        cmux.chmod(0o755)
         (self.root / "bin" / "quiet").symlink_to(QUIET)  # this checkout's quiet, not the installed one
         self.home = self.repo("app", {"app.py": "print(1)\n", "lib/util.py": "X = 1\n", "README.md": "app\n"})
         self.ok(self.home, "init", "--name", "demo")

@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import stat
 import unittest
 from collections.abc import Iterator
@@ -116,7 +117,9 @@ class SessionTitle(CampaignCase):
         with self.session():
             line = self.title.keep_title(self.tool.find_campaign(self.home))
         self.assertIsNone(line)
-        self.assertEqual(self.calls.read_text().strip(), "workspace-action --action rename --title demo · lead")
+        self.assertEqual(
+            self.calls.read_text().strip(), "workspace-action --workspace ws --action rename --title demo · lead"
+        )
 
     def test_cmux_is_left_alone_outside_cmux_and_outside_the_leads_directory(self) -> None:
         self.write(("ai-title", "Generated"))
@@ -133,6 +136,16 @@ class SessionTitle(CampaignCase):
         with self.session():
             why = self.title.set_workspace_title(self.tool.find_campaign(self.home))
         self.assertEqual(why, "cmux failed: boom")
+
+    def test_a_surface_without_a_workspace_id_is_never_renamed(self) -> None:
+        self.write(("ai-title", "Generated"))
+        with self.session(env={"CMUX_WORKSPACE_ID": "", "CMUX_SURFACE_ID": "surface"}):
+            self.title.keep_title(self.tool.find_campaign(self.home))
+        self.assertFalse(self.calls.exists())
+
+    def test_the_harness_puts_a_stub_cmux_ahead_of_any_real_one(self) -> None:
+        found = shutil.which("cmux", path=self.env["PATH"])
+        self.assertEqual(found, str(self.root / "bin" / "cmux"))
 
     def test_the_cmux_call_is_not_repeated_once_the_title_is_set(self) -> None:
         self.write(("custom-title", "demo · lead"))

@@ -103,7 +103,7 @@ def title_check(c: Campaign) -> str | None:
 def set_workspace_title(c: Campaign) -> str:
     """Names the cmux workspace for the campaign's lead (it is the sender name of cmux messages); ""
     when set or when cmux is not here, else why it was not."""
-    ident = os.environ.get("CMUX_WORKSPACE_ID") or os.environ.get("CMUX_SURFACE_ID")
+    ident = os.environ.get("CMUX_WORKSPACE_ID")  # named explicitly: cmux's "current" workspace is not ours
     if not ident or not shutil.which("cmux"):
         return ""
     stamp = jobs_dir() / "titles" / re.sub(r"[^\w.-]", "_", ident)  # the title last set: no call to repeat it
@@ -114,7 +114,7 @@ def set_workspace_title(c: Campaign) -> str:
         pass
     try:
         done = subprocess.run(
-            ["cmux", "workspace-action", "--action", "rename", "--title", session_name(c)],
+            ["cmux", "workspace-action", "--workspace", ident, "--action", "rename", "--title", session_name(c)],
             capture_output=True,
             text=True,
             timeout=10,

@@ -103,7 +103,11 @@ class Sidebar(CampaignCase):
         self.assertIn("set-status|campaign-demo-a|a: active|--icon|hammer|", log)
         calls.write_text("")
         self.ok(self.home, "status")
-        self.assertEqual(calls.read_text(), "workspace-action|--action|rename|--title|demo · lead|\n", "named once")
+        self.assertEqual(
+            calls.read_text(),
+            "workspace-action|--workspace|ws-test|--action|rename|--title|demo · lead|\n",
+            "named once",
+        )
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")
