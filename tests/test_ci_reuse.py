@@ -192,7 +192,21 @@ class CiReuse(CampaignCase):
         self.runs[head] = [green, {**green, "databaseId": 2, "conclusion": "failure"}]  # a newer red rerun
         (self.root / "gh.json").write_text(json.dumps(self.runs))
         self.assertNotIn("CI at", self.ok(self.home, "brief", "b").out)  # brief keeps the cache
+        log = self.root / "gh.log"
+        log.write_text("")
         self.fails(self.home, "land", "b", match=f"CI at {head[:12]}: failed: build")
+        asked = log.read_text().splitlines()
+        self.assertEqual(sorted(asked), sorted(set(asked)))  # each question once per land
+        log.write_text("")
+        self.assertIn("failed: build", self.ok(self.home, "brief", "b").out)  # land's answer refreshed the host's
+        self.assertEqual(log.read_text(), "")
+
+    def test_a_failed_fresh_ask_keeps_the_hosts_good_answer(self) -> None:
+        self.quest_green_at_head("10")
+        self.env["CAMPAIGN_CI_SECONDS"] = "600"
+        self.ok(self.home, "brief", "b")  # the host keeps this green
+        (self.root / "gh.json").write_text("")  # GitHub fails every call now
+        self.ok(self.home, "land", "b")
 
     def test_a_running_carried_head_is_a_live_waiter(self) -> None:
         b, head = self.quest_green_at_head("10")

@@ -123,6 +123,9 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
             code, data = 124, f"gh took over {GH_TIMEOUT} s"
         except ValueError as e:
             code, data = 1, f"gh answered no JSON: {e}"
+        if code != 0 and (hit := gh_cached(path)) and int(hit.get("code", 0)) == 0:
+            _until[key] = float(hit["until"])  # a failed fresh ask keeps the good answer the host has
+            return 0, hit["data"]
         _until[key] = time.time() + (kept(data) if code == 0 else ci_seconds() / 2)
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"until": _until[key], "code": code, "data": data}))
