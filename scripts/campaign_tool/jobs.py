@@ -369,10 +369,11 @@ NO_RUN = {  # the command ran no test
     126: "exit 126: the command did not run (it is not runnable)",
     127: "exit 127: the command did not run (it was not found)",
 }
-KILLS = {9: "SIGKILL", 15: "SIGTERM"}  # sent from outside (the OOM killer, an operator), unlike a crash
-NO_TEST_LINES = (  # a runner's line saying a test it was asked to run did not run
+KILLS = {2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM"}  # sent from outside (the OOM killer, an operator), unlike a crash
+NO_TEST_LINES = (  # a runner's line saying a test it was asked to run gave no result
     rb"^No tests were found",  # ctest: nothing matched
     rb"^ *\d+/\d+ Test +#\d+: .*\*\*\*Not Run",  # ctest: a selected test's executable was never built
+    rb"^ *\d+/\d+ Test +#\d+: .*\*\*\*Timeout",  # ctest: a test past its TIMEOUT, no more than exit 124
     rb"^NO TESTS RAN",  # unittest: nothing matched (exit 5)
     rb"^ImportError: Failed to import test module:",  # unittest: a test module that did not import
 )
@@ -380,7 +381,7 @@ NO_TESTS = re.compile(b"|".join(NO_TEST_LINES), re.M)
 
 
 def ran_no_test(log: Path) -> str:
-    """The first line of a job's LOG saying a test runner ran no test (`NO_TEST_LINES`), or "": the
+    """The first line of a job's LOG saying a test runner gave no result (`NO_TEST_LINES`), or "": the
     one fact a fails-without record has only in its log."""
     try:
         found = NO_TESTS.search(log.read_bytes())
@@ -405,7 +406,7 @@ def fails_without_miss(st: Json, log: Path | None = None) -> str:
     if signum in KILLS:
         return f"exit {code}: it was killed by {KILLS[signum]} from outside, so it shows nothing about the fix"
     if log is not None and (line := ran_no_test(log)):
-        return f"no test ran ({line}; exit {code}), so it shows nothing about the fix"
+        return f"no test result ({line}; exit {code}), so it shows nothing about the fix"
     return ""
 
 
