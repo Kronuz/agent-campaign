@@ -105,3 +105,18 @@ class CiWaiter(CampaignCase):
         again = self.ok(self.home, "wait", "--commits", "--timeout", "30").out  # due again only past the bound
         self.assertGreater(time.time() - start, 20, "it fired again before its bound")
         self.assertTrue(any(x.startswith("- resume flakes") for x in self.todo(again)), again)
+
+    # A4: a task's State names jobs tagged with its quest only; they are queued, so it is waiting
+
+    def test_jobs_a_state_names_are_its_waiters_whatever_their_tag(self) -> None:
+        self.started("heal", files="heal/**")
+        self.ok(self.home, "start", "heal", "--task", "witness", "--files", "heal/**")
+        blocker = self.submit(self.home, "--", "sleep", "30")
+        jid = self.submit(self.wt("heal"), "--quest", "heal", "--after", blocker, "--", "true")  # no --task
+        path = self.wt("heal--witness") / ".campaign/demo/journal/heal--witness.md"
+        path.write_text(re.sub(r"^State:.*$", f"State: waiting on jobs {jid}", path.read_text(), count=1, flags=re.M))
+        items = [x for x in self.todo(self.ok(self.home, "status").out) if "witness" in x]
+        self.assertEqual(items, [], "a queued job its State names is a live waiter")
+        self.ok(self.home, "job", "cancel", jid)
+        items = [x for x in self.todo(self.ok(self.home, "status").out) if "witness" in x]
+        self.assertTrue(items and items[0].startswith("- resume heal's task witness: its jobs ended"), items)

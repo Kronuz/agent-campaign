@@ -126,7 +126,8 @@ def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
 def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
     """What moves each active or in-review quest, and each of its tasks (QUEST--TASK): "working" (its
     journal or a task's changed within CAMPAIGN_IDLE seconds, an hour: a contributor at work),
-    "waiting" (only a live waiter moves it: a job of its queued or running, or CI running at its
+    "waiting" (only a live waiter moves it: a job of its, or one its State names by id, queued or
+    running, or CI running at its
     head; or it says ready and only a dependency not yet landed holds it, since `after` orders the
     landing, never the work) or "lead" (nothing moves it unless the lead does: a journal that says
     it waits on the lead, whatever runs; else, with no waiter, one that waits on the owner (the lead
@@ -135,6 +136,7 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
         j for j in jobs if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
     ]
     busy = {str(j["spec"].get("quest")) + (f"--{j['spec']['task']}" if j["spec"].get("task") else "") for j in live}
+    pending = {j["id"] for j in jobs if j["state"].get("state") in ("queued", "running")}  # by id, any tag
     quiet_for = float(os.environ.get("CAMPAIGN_IDLE", "3600"))
     out: dict[str, tuple[str, str]] = {}
     for k, p in c.quests.items():
@@ -148,6 +150,7 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
                 continue
             age = min(journal_age(c, x) for x in (names if name == k else [name]))  # a task at work moves its quest
             moving = name in busy or (name == k and any(b.startswith(f"{k}--") for b in busy))
+            moving = moving or bool(set(JOB_ID.findall(state)) & pending)  # the jobs its State names
             if moving or (name == k and ci_waiting(c, p)):
                 out[name] = ("working" if age < quiet_for else "waiting", state)
             elif OWNER_WAIT.search(state):
@@ -187,6 +190,7 @@ def journal_age(c: Campaign, name: str) -> float:
 READY = re.compile(r"(?:ready|done)\b", re.I)
 OWNER_WAIT = re.compile(r"\b(?:blocked on|waiting on|waits on|waiting for|waits for) (?:the )?owner\b", re.I)
 LEAD_WAIT = re.compile(r"(?:blocked on|waiting on|waits on) (?:the )?(?:owner (?:and|or) (?:the )?)?lead\b", re.I)
+JOB_ID = re.compile(r"\b\d{6}-\d{6}-[0-9a-f]{6}\b")
 JOB_WAIT = re.compile(r"(?:waiting on|waits on) (?:the )?(?:jobs?|ci|queue)\b", re.I)
 
 
