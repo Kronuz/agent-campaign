@@ -201,8 +201,8 @@ def landed_by(info: Json, repo: Path) -> set[str]:
 
 def tell_local(name: str, info: Json, *, skill: Path, source: Path | None, seen: Json, now: Json, by: str) -> None:
     """Campaign NAME's lead gets one message per kind whose commit moved since it was last told (a
-    campaign never told starts from the commits seen before this change), naming the commits its own
-    landings do not contain: none left, nothing is sent."""
+    campaign never told starts from the commits seen before this change), naming, for a landing, the
+    commits its own landings do not contain (none left: nothing is sent); an install names them all."""
     path = notices() / f"{name}.json"
     record = read_json(path) or {}
     for kind in KINDS:
@@ -215,7 +215,8 @@ def tell_local(name: str, info: Json, *, skill: Path, source: Path | None, seen:
         held = [*inbox(c, "", settled_too=True), *c.state.get("messages", [])]
         if not any(m.get("notice") == key for m in held):
             repo = source if kind == LANDED and source else skill
-            if text := describe(kind, skill, repo, last, head, skip=landed_by(info, repo)):
+            skip = landed_by(info, repo) if kind == LANDED else ()
+            if text := describe(kind, skill, repo, last, head, skip=skip):
                 leave_message(c, "", text, by, notice=key)
         record[kind] = head
         write_json(path, record)

@@ -89,12 +89,12 @@ class LeadBroadcasts(CampaignCase):
         self.install()
         self.ok(self.home, "status")
         mail = self.all_mail()
-        self.assertEqual(mail["demo"], [])
+        self.assertEqual(len(mail["demo"]), 1, mail)  # it landed the commit; the install is news to it
         for name in self.others:
             self.assertEqual(len(mail[name]), 2, mail)
+        for name, text in {"demo": mail["demo"][0], **{n: mail[n][1] for n in self.others}}.items():
             self.assertIn(
-                f"campaign skill: agent-campaign:{short} installed here, 1 commit: agent-campaign:{short}",
-                mail[name][1],
+                f"campaign skill: agent-campaign:{short} installed here, 1 commit: agent-campaign:{short}", text, name
             )
         self.ok(self.others["one"], "status")
         self.assertEqual(self.all_mail(), mail)
@@ -102,25 +102,27 @@ class LeadBroadcasts(CampaignCase):
     def test_a_kill_between_sending_and_recording_neither_drops_nor_repeats(self) -> None:
         self.ok(self.home, "status")
 
-        def killed_then_rerun(kill_at: int, sent: list[int], told: int) -> None:
-            kill_at += 1  # demo landed these: its record is the first write, and it is sent nothing
+        def killed_then_rerun(kill_at: int, sent: list[int], told: int, demo: tuple[int, int] = (0, 0)) -> None:
+            # demo's record is the first write; for a landing of its own it is sent nothing
             died = subprocess.run(
                 [sys.executable, "-c", DIE_AT_RECORD, str(SKILL / "scripts"), str(kill_at)], cwd=self.home, env=self.env
             )
             self.assertEqual(died.returncode, -signal.SIGKILL)
             mail = self.all_mail()
-            self.assertEqual([len(mail[n]) for n in ("demo", "one", "two")], [0, *sent], mail)  # sent, then killed
+            self.assertEqual(
+                [len(mail[n]) for n in ("demo", "one", "two")], [demo[0], *sent], mail
+            )  # sent, then killed
             self.ok(self.home, "status")  # the rerun
             mail = self.all_mail()
-            self.assertEqual([len(mail[n]) for n in ("demo", "one", "two")], [0, told, told], mail)
+            self.assertEqual([len(mail[n]) for n in ("demo", "one", "two")], [demo[1], told, told], mail)
             self.assertEqual([len(set(mail[n])) for n in ("one", "two")], [told, told], mail)
 
         self.land("First change")
-        killed_then_rerun(1, [1, 0], 1)  # one told, not recorded: the rerun records it and tells two
+        killed_then_rerun(2, [1, 0], 1)  # one told, not recorded: the rerun records it and tells two
         self.land("Second change")
-        killed_then_rerun(2, [2, 2], 2)  # both told, two not recorded
+        killed_then_rerun(3, [2, 2], 2)  # both told, two not recorded
         self.install()
-        killed_then_rerun(1, [3, 2], 3)  # the install, as the landings
+        killed_then_rerun(2, [3, 2], 3, demo=(1, 1))  # the install: demo is told too, first
 
     def test_a_closed_notice_is_not_sent_again(self) -> None:
         self.ok(self.home, "status")
@@ -153,6 +155,16 @@ class LeadBroadcasts(CampaignCase):
         self.ok(self.home, "status")
         self.ok(self.others["one"], "brief")
         self.assertEqual(self.all_mail(), mail)  # once each
+
+    def test_a_lander_is_told_of_its_own_commit_when_it_is_installed(self) -> None:
+        self.ok(self.home, "status")
+        short = self.land("Mine")
+        self.ok(self.home, "status")
+        self.assertEqual(self.all_mail()["demo"], [])  # landed: it knows
+        self.install()
+        self.ok(self.home, "status")
+        (text,) = self.all_mail()["demo"]  # installed: its lead changes behaviour now
+        self.assertIn(f"agent-campaign:{short} installed here, 1 commit: agent-campaign:{short} Mine", text)
 
     def test_a_campaign_is_told_only_of_the_commits_in_the_range_it_did_not_land(self) -> None:
         self.ok(self.home, "status")
