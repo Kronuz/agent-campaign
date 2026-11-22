@@ -7,6 +7,7 @@ a session's name (references/harness.md, "Harness-specific mechanisms").
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .core import Json
+from .core import Json, jobs_dir
 
 if TYPE_CHECKING:  # annotations only: they import this module, so importing them here is a cycle
     from .campaign import Campaign
@@ -102,8 +103,15 @@ def title_check(c: Campaign) -> str | None:
 def set_workspace_title(c: Campaign) -> str:
     """Names the cmux workspace for the campaign's lead (it is the sender name of cmux messages); ""
     when set or when cmux is not here, else why it was not."""
-    if not (os.environ.get("CMUX_WORKSPACE_ID") or os.environ.get("CMUX_SURFACE_ID")) or not shutil.which("cmux"):
+    ident = os.environ.get("CMUX_WORKSPACE_ID") or os.environ.get("CMUX_SURFACE_ID")
+    if not ident or not shutil.which("cmux"):
         return ""
+    stamp = jobs_dir() / "titles" / re.sub(r"[^\w.-]", "_", ident)  # the title last set: no call to repeat it
+    try:
+        if stamp.read_text() == session_name(c):
+            return ""
+    except OSError:
+        pass
     try:
         done = subprocess.run(
             ["cmux", "workspace-action", "--action", "rename", "--title", session_name(c)],
@@ -113,11 +121,20 @@ def set_workspace_title(c: Campaign) -> str:
         )
     except (OSError, subprocess.SubprocessError) as e:
         return f"cmux failed: {e}"
-    return "" if done.returncode == 0 else f"cmux failed: {(done.stderr or done.stdout).strip()[:120]}"
+    if done.returncode != 0:
+        return f"cmux failed: {(done.stderr or done.stdout).strip()[:120]}"
+    with contextlib.suppress(OSError):
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(session_name(c))
+    return ""
 
 
 def keep_title(c: Campaign) -> str | None:
-    """What a lead's command calls: names the cmux workspace and returns title_check's line to print."""
-    if in_lead_directory(c):
-        set_workspace_title(c)
-    return title_check(c)
+    """What a lead's command calls: names the cmux workspace and returns title_check's line to print.
+    Never raises: a title is not worth a failed command."""
+    try:
+        if in_lead_directory(c):
+            set_workspace_title(c)
+        return title_check(c)
+    except Exception:
+        return None

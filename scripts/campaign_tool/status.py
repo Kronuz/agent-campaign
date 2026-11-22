@@ -58,6 +58,7 @@ from .state import (
     starved,
     unstarted_waits,
 )
+from .title import keep_title
 from .todo import todo, todo_lines
 from .worker import cpu_lines, health_lines, queue_health
 
@@ -627,6 +628,8 @@ def cmd_status(a: argparse.Namespace) -> int:
 def show_status(a: argparse.Namespace) -> int:
     c = find_campaign(Path.cwd())
     reap()
+    if not a.json and (line := keep_title(c)):
+        print(line)
     if not a.id and (a.brief or not a.json):  # in a quest's worktree, that quest
         a.id = here_quest(c, Path.cwd())
     pids = [a.id] if a.id else list(c.quests)

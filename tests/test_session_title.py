@@ -134,6 +134,27 @@ class SessionTitle(CampaignCase):
             why = self.title.set_workspace_title(self.tool.find_campaign(self.home))
         self.assertEqual(why, "cmux failed: boom")
 
+    def test_the_cmux_call_is_not_repeated_once_the_title_is_set(self) -> None:
+        self.write(("custom-title", "demo · lead"))
+        with self.session():
+            for _ in range(3):
+                self.title.keep_title(self.tool.find_campaign(self.home))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    def test_a_failure_inside_the_title_never_fails_the_caller(self) -> None:
+        with self.session(), mock.patch.object(self.title, "title_check", side_effect=RuntimeError("boom")):
+            self.assertIsNone(self.title.keep_title(self.tool.find_campaign(self.home)))
+
+    def test_brief_status_and_wait_print_the_line(self) -> None:
+        self.write(("ai-title", "Generated"))
+        self.env.update(CLAUDECODE="1", CLAUDE_CODE_SESSION_ID=SESSION, CAMPAIGN_CLAUDE_LOGS=str(self.logs))
+        for args in (("brief",), ("status",), ("wait", "--timeout", "1")):
+            with self.subTest(args=args):
+                out = self.run_cli(self.home, *args)
+                self.assertIn("type /rename demo · lead", out.out, out.err)
+        self.env["CLAUDE_CODE_SESSION_ID"] = "no-such-session"
+        self.assertNotIn("/rename", self.run_cli(self.home, "status").out)
+
 
 class Documented(unittest.TestCase):
     def read(self, rel: str) -> str:
