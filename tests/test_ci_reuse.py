@@ -201,12 +201,20 @@ class CiReuse(CampaignCase):
         self.assertIn("failed: build", self.ok(self.home, "brief", "b").out)  # land's answer refreshed the host's
         self.assertEqual(log.read_text(), "")
 
-    def test_a_failed_fresh_ask_keeps_the_hosts_good_answer(self) -> None:
+    def test_land_refuses_when_gh_fails_and_the_host_keeps_its_green(self) -> None:
         self.quest_green_at_head("10")
         self.env["CAMPAIGN_CI_SECONDS"] = "600"
         self.ok(self.home, "brief", "b")  # the host keeps this green
         (self.root / "gh.json").write_text("")  # GitHub fails every call now
-        self.ok(self.home, "land", "b")
+        self.fails(self.home, "land", "b", match="gh failed")
+        self.assertNotIn("gh failed", self.ok(self.home, "brief", "b").out)  # the green was not overwritten
+
+    def test_a_reader_shows_the_last_good_answer_when_gh_fails(self) -> None:
+        self.quest_green_at_head("10")
+        self.env["CAMPAIGN_CI_SECONDS"] = "0"
+        self.ok(self.home, "brief", "b")  # a green, on disk but no longer counting
+        (self.root / "gh.json").write_text("")  # GitHub fails every call now
+        self.assertNotIn("gh failed", self.ok(self.home, "brief", "b").out)
 
     def test_a_running_carried_head_is_a_live_waiter(self) -> None:
         b, head = self.quest_green_at_head("10")

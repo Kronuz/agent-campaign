@@ -69,17 +69,27 @@ def view_kept(view: Any) -> float:
     return 5 * ci_seconds() if jobs and all(x.get("status") == "completed" for x in jobs) else ci_seconds()
 
 
-def gh_cached(path: Path) -> Json:
-    """The answer on disk at PATH while it counts ({"until", "code", "data"}), else {}."""
+def gh_answer(path: Path) -> Json:
+    """The answer on disk at PATH ({"until", "code", "data"}), counting or not, else {}."""
     hit: Any = None
     with contextlib.suppress(OSError, ValueError):
         hit = json.loads(path.read_text())
-    if not isinstance(hit, dict) or "data" not in hit:
-        return {}
+    return hit if isinstance(hit, dict) and "data" in hit else {}
+
+
+def gh_cached(path: Path) -> Json:
+    """The answer on disk at PATH while it counts, else {}."""
+    hit = gh_answer(path)
     with contextlib.suppress(TypeError, ValueError):
-        if time.time() < float(hit.get("until", 0)):
+        if hit and time.time() < float(hit.get("until", 0)):
             return hit
     return {}
+
+
+def gh_good(path: Path) -> Json:
+    """The good answer on disk at PATH (gh succeeded), counting or not, else {}."""
+    hit = gh_answer(path)
+    return hit if hit.get("code", 0) == 0 else {}
 
 
 def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Future[tuple[int, Any]]:
@@ -103,7 +113,8 @@ def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Futur
 
 def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path, key: str) -> tuple[int, Any]:
     """Asks GitHub unless another process answered while this one waited for the key's lock, at
-    most LOCK_WAIT seconds: a hung call elsewhere holds no one past that."""
+    most LOCK_WAIT seconds: a hung call elsewhere holds no one past that. A failed ask never
+    replaces a good answer on disk."""
     path.parent.mkdir(exist_ok=True)
     prune_answers(path.parent)
     with open(path.with_suffix(".lock"), "w") as lock:
@@ -123,10 +134,12 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
             code, data = 124, f"gh took over {GH_TIMEOUT} s"
         except ValueError as e:
             code, data = 1, f"gh answered no JSON: {e}"
-        if code != 0 and (hit := gh_cached(path)) and int(hit.get("code", 0)) == 0:
-            _until[key] = float(hit["until"])  # a failed fresh ask keeps the good answer the host has
-            return 0, hit["data"]
-        _until[key] = time.time() + (kept(data) if code == 0 else ci_seconds() / 2)
+        failed = code != 0
+        _until[key] = time.time() + (ci_seconds() / 2 if failed else kept(data))
+        if failed and (good := gh_good(path)):
+            if _fresh[0]:
+                return code, data  # land judges GitHub's failure; the host keeps its good answer
+            code, data = 0, good["data"]  # a reader shows the last good answer meanwhile
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"until": _until[key], "code": code, "data": data}))
         tmp.replace(path)
