@@ -74,9 +74,8 @@ harness's models for the tiers are in `references/harness.md`. Change a default 
 (`campaign usage`, criteria met, rework), not on price alone.
 
 **Quota never decides quality.** The tier, effort, reviews, lenses and checks follow from the work
-and its risk alone, never from quota left, burn rate or price. When quota runs short, the lead
-slows the pace (fewer quests at once, a longer wait) and tells the owner; it never downgrades a
-model, skips a review or check, or trims a criterion to save quota.
+and its risk alone, never from quota left, burn rate or price: never downgrade a model, skip or
+shrink a review or check, or trim a criterion to save quota.
 
 ## Start a campaign
 
