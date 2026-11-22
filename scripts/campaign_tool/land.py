@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .campaign import Campaign, blockers, close_hunt, find_campaign, landing_record, writing
 from .checks import submit_checks
-from .ci import check_evidence, ci_covers, ci_landing, clean_merge
+from .ci import check_evidence, ci_covers, ci_fresh, ci_landing, clean_merge
 from .core import (
     EXCLUDE_META,
     TERMINAL,
@@ -296,6 +296,7 @@ def merge_main_into(c: Campaign, pid: str) -> str:
 
 
 def cmd_land(a: argparse.Namespace) -> int:
+    ci_fresh()  # the gate judges GitHub's answers now, not the host's cached ones
     with writing() as c, contextlib.ExitStack() as held:
         p = c.quest(a.id)
         repo = c.repo(p)

@@ -33,6 +33,7 @@ _gh: dict[str, Future[tuple[int, Any]]] = {}
 _until: dict[str, float] = {}  # when each answer in _gh stops counting
 _gh_lock = threading.Lock()
 _pruned = [False]
+_fresh = [False]  # set by ci_fresh: this process asks GitHub past the host's cached answers
 GH_TIMEOUT = 30  # seconds a gh call may take: past it, a failed answer
 LOCK_WAIT = 10  # seconds a process waits for another asking the same: then it asks too
 
@@ -89,7 +90,7 @@ def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Futur
     with _gh_lock:
         if key not in _gh:
             path = jobs_dir() / ".gh" / f"{key}.json"
-            if hit := gh_cached(path):
+            if not _fresh[0] and (hit := gh_cached(path)):
                 from concurrent.futures import Future  # noqa: PLC0415
 
                 _gh[key] = Future()
@@ -112,7 +113,7 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
                 break
             except OSError:
                 time.sleep(0.1)
-        if hit := gh_cached(path):
+        if not _fresh[0] and (hit := gh_cached(path)):
             _until[key] = float(hit["until"])
             return int(hit.get("code", 0)), hit["data"]
         try:
@@ -127,6 +128,16 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
         tmp.write_text(json.dumps({"until": _until[key], "code": code, "data": data}))
         tmp.replace(path)
         return code, data
+
+
+def ci_fresh() -> None:
+    """Has this process ask GitHub anew, once per question, past the answers the host keeps: what
+    `land` judges must not be a green run list that a newer red rerun has replaced. Its answers
+    refresh the host's."""
+    with _gh_lock:
+        _fresh[0] = True
+        _gh.clear()
+        _until.clear()
 
 
 def prune_answers(folder: Path) -> None:
@@ -481,10 +492,12 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
     if not shutil.which("gh") or not p.get("branch") or not has_ref(repo, p["branch"]):
         return False
     head = rev(repo, p["branch"])
-    if c.state.get("ci") == "github" and ci_state(repo, head, c.state.get("ci_later", [])).startswith("running: "):
-        return True
+    if c.state.get("ci") == "github" and ci_gate(c, p, head).state.startswith("running: "):
+        return True  # the gate's own read: a clean merge's carried head counts
     names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
-    return any(ci_job(repo, head, name).endswith(" is running") for name in names)
+    return any(
+        ci_gate(c, p, head, lambda k, n=name: ci_job(repo, k, n)).state.endswith(" is running") for name in names
+    )
 
 
 def forget_ci() -> None:

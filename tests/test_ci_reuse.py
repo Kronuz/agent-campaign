@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from harness import CampaignCase, campaign_module
 
@@ -181,6 +183,26 @@ class CiReuse(CampaignCase):
         self.assertIn("main's CI not read past", text)
         self.ci({landed: "success"})  # its rerun passed: no walk at all
         self.assertEqual(asked()[0], 1)
+
+    def test_land_reads_ci_past_the_hosts_cache(self) -> None:
+        _, head = self.quest_green_at_head("10")
+        self.env["CAMPAIGN_CI_SECONDS"] = "600"
+        self.assertNotIn("CI at", self.ok(self.home, "brief", "b").out)  # the host keeps this green
+        green = self.runs[head][0]
+        self.runs[head] = [green, {**green, "databaseId": 2, "conclusion": "failure"}]  # a newer red rerun
+        (self.root / "gh.json").write_text(json.dumps(self.runs))
+        self.assertNotIn("CI at", self.ok(self.home, "brief", "b").out)  # brief keeps the cache
+        self.fails(self.home, "land", "b", match=f"CI at {head[:12]}: failed: build")
+
+    def test_a_running_carried_head_is_a_live_waiter(self) -> None:
+        b, head = self.quest_green_at_head("10")
+        self.ci({head: ""})  # its CI runs again
+        self.commit(self.home, {"other/o.txt": "1\n"})
+        self.git(b, "merge", "-q", "--no-edit", "main")  # a clean merge, not pushed: no runs
+        tool = campaign_module()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            c = tool.Campaign(self.home)
+            self.assertTrue(tool.ci.ci_waiting(c, c.quests["b"]))
 
     def test_a_ci_criterion_counts_the_heads_ci_across_a_clean_merge(self) -> None:
         b, head = self.quest_green_at_head("10")
