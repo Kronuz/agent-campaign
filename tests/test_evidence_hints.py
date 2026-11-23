@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from harness import CampaignCase
@@ -57,22 +58,42 @@ class EvidenceHints(CampaignCase):
         self.assertIn("A1  met", self.ok(self.home, "status", "b").out)
         self.ok(self.home, "land", "b")
 
-    def test_a_fails_without_row_names_its_mutant_not_a_rerun_at_the_head(self) -> None:
+    def fails_quest(self) -> tuple[Path, str]:
+        """Quest fix prints two; refs/campaign/demo/fix-a1 names the code without the fix (main)."""
         wt = self.started("fix", files="app.py")
-        self.criterion("fix", "- A1 prints two: a probe\n- A2 prints two: a regression test")
-        mutant = self.git(self.home, "rev-parse", "main")  # the code without the fix
-        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", mutant)
+        self.criterion("fix", "- A1 prints two: a probe\n- A2 prints two: a probe\n- A3 prints two: a regression test")
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", self.git(self.home, "rev-parse", "main"))
         self.commit(wt, {"app.py": "print(2)\n"})
-        test = "python3 app.py | grep -q 2"
-        probe = self.submit(wt, "--quest", "fix", "--for", "A2", "--", test)
-        tags = ("--quest", "fix", "--for", "A2", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
-        pre = self.submit(wt, *tags, "--", test)
-        self.ok(self.home, "wait", probe, pre)
+        return wt, self.submit(wt, "--quest", "fix", "--for", "A3", "--", "python3 app.py | grep -q 2")
+
+    def pre_fix(self, wt: Path, cmd: str) -> str:
+        """A --fails-without job of CMD at the code without the fix."""
+        tags = ("--quest", "fix", "--for", "A3", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+        return self.submit(wt, *tags, "--", cmd)
+
+    def test_an_unfinished_fails_without_row_names_its_mutant_not_a_rerun_at_the_head(self) -> None:
+        wt, probe = self.fails_quest()
+        pre = self.pre_fix(wt, "sleep 60; python3 app.py | grep -q 2")
+        self.ok(self.home, "job", "cancel", pre)
+        self.wait_until(lambda: self.job(pre).get("state") not in ("queued", "running"))
+        self.ok(self.home, "wait", probe)
         self.commit(wt, {".campaign/demo/journal/fix.md": f"## Evidence\n\n| A1 | {probe}, {pre} |\n"})
-        self.verified("fix")
-        refused = self.fails(self.home, "land", "fix", match="evidence jobs ran other code")
-        self.assertIn(f"`campaign job rerun {pre} --commit refs/campaign/demo/fix-a1`", refused.text)
-        self.assertNotIn(f"`campaign job rerun {pre}`", refused.text)
+        out = self.ok(self.home, "brief", "fix").out  # the Evidence table holds each row's whole gap
+        self.assertIn(f"`campaign job rerun {pre} --commit refs/campaign/demo/fix-a1`", out)
+        self.assertNotIn(f"`campaign job rerun {pre}`", out)
+
+    def test_a_cited_fails_without_job_is_read_by_its_own_rule(self) -> None:
+        wt, probe = self.fails_quest()
+        caught = self.pre_fix(wt, "python3 app.py | grep -q 2")  # fails at the mutant, as it must
+        missed = self.pre_fix(wt, "python3 app.py")  # passes at the mutant: it tests nothing
+        self.run_cli(self.home, "wait", probe, caught, missed, "--timeout", "60")
+        rows = f"| A1 | {probe}, {caught} |\n| A2 | {probe}, {missed} |\n"
+        self.commit(wt, {".campaign/demo/journal/fix.md": f"## Evidence\n\n{rows}"})
+        out = self.ok(self.home, "brief", "fix").out
+        self.assertIn(f"| A1 | {probe}, {caught} |", out)
+        self.assertNotIn(f"| A2 | {probe}, {missed} |", out)
+        self.assertIn(f"{missed} failed: the test passed without the fix", out)
+        self.assertNotIn("ran other code", out)
 
     def test_a_bare_ci_citation_names_the_backtick_form(self) -> None:
         wt = self.started("fix", files="app.py")
