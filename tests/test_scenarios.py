@@ -154,7 +154,7 @@ class Scenarios(CampaignCase):
         self.assertEqual(view["status"], "active")
         self.assertEqual(view["journal"]["half"]["state"], "waiting on jobs (see Evidence)")
         self.assertEqual(view["journal"]["half"]["dirty"], 1)
-        again = self.ok(wt, "job", "submit", "--quest", "half", "--retries", "1", "--", "sleep 4").out
+        again = self.ok(wt, "job", "submit", "--quest", "half", "--retries", "1", "--", "sleep 4").err
         self.assertIn("reused", again)  # resuming does not duplicate the machine work
         self.ok(self.home, "wait", jid, "--timeout", "90", timeout=120)
         self.assertEqual(self.job(jid)["attempt"], 2)

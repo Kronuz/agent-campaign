@@ -31,12 +31,14 @@ from .core import (
     plural,
     read_json,
     stamp,
+    write_json,
 )
 from .evidence import criteria_for
 from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, claim, finish, load_job, matches_inputs, resolve_job, tag
 from .mail import announce, inbox, leave_message, mailbox, peers, send_message
-from .repo import ever_on, has_ref, main_branch, rev, same_repo, toplevel
+from .repo import ancestor, changed, ever_on, frozen, has_ref, is_meta, main_branch, rev, same_repo, toplevel
 from .reuse import submit, supersede
+from .reviews import EVIDENCE_GAPS, Gap, landing_gap_kinds
 from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
 from .status import JOB_MARKS
@@ -291,7 +293,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     jid, reused = submit(spec, force=a.force)
     if c is not None and ids:
         tag(jid, c.ident, a.quest, ids, a.fails_without)
-    print(jid + (f" (reused: {resolve_job(jid)['spec'].get('what', '')})" if reused else ""))
+    print(jid)  # only the id: scripts capture it
+    if reused:  # a queued job asked for at a higher priority moves up, never down
+        old = lift_queued(jid, int(spec["priority"]))
+        said = f"reused {jid}" if old is None else f"reused queued job {jid}, priority {old} -> {spec['priority']}"
+        print(said, file=sys.stderr)
     if not reused:
         supersede([jid])
     if a.sync:
@@ -427,24 +433,74 @@ def job_ok_or_pending(jid: str) -> bool:
     return False
 
 
+LANDING_PRIORITY = 3  # a landing quest's reruns at a merge from main: above gate checks (2), so it never chases main
+
+
+def own_head(repo: Path, head: str, main: str) -> str:
+    """The quest's own last commit under HEAD's merges from MAIN and campaign-record commits; "" when
+    HEAD holds no merge from main above it."""
+    own, merged = head, False
+    while not ancestor(repo, own, main):  # on main: the walk left the quest's own commits
+        parents = git(repo, "rev-list", "--parents", "-n1", own).split()[1:]
+        if len(parents) == 2 and ancestor(repo, parents[1], main):
+            own, merged = parents[0], True
+        elif len(parents) == 1 and all(is_meta(x) for x in changed(repo, parents[0], own)):
+            own = parents[0]
+        else:
+            return own if merged else ""
+    return ""
+
+
+def at_landing(c: Campaign, pid: str) -> list[Gap] | None:
+    """The gaps at the quest's branch head when they are only evidence a merge from main voided (its
+    criteria and checks were met at its own commit below the merge); None when anything else is
+    missing, or no merge from main is in the way. Its reruns run at LANDING_PRIORITY."""
+    p = c.quests.get(pid)
+    if p is None or p.get("status") not in ("active", "review") or not p.get("branch"):
+        return None
+    with contextlib.suppress(CampaignError):
+        repo = c.repo(p)
+        main = main_branch(repo)
+        head = rev(repo, p["branch"])
+        own = own_head(repo, head, main)
+        if not own:
+            return None
+        with frozen():
+            before = landing_gap_kinds(c, pid, own, final=True, ci=False)
+            now = landing_gap_kinds(c, pid, head, final=True, ci=False)
+        if not any(g.kind in EVIDENCE_GAPS for g in before) and all(g.kind in (*EVIDENCE_GAPS, "main") for g in now):
+            return now
+    return None
+
+
 def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
     by default the head of their quest's branch, in whichever of the job's repositories holds it
     (its own or a `--ref`'s), else of their repository."""
-    specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, a.jobs)}
-    if not a.commit and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):
+    rerun_jobs(a.jobs, a.commit, a.minutes)
+    return 0
+
+
+def rerun_jobs(
+    jobs: list[str], at: str | None = None, minutes: int | None = None, c: Campaign | None = None
+) -> list[str]:
+    """`job rerun`: returns the new (or reused) job ids. A quest's light evidence rerun at its head
+    while it is `at_landing` runs at LANDING_PRIORITY; every other job keeps its priority."""
+    specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, jobs)}
+    if not at and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):
         die(
             f"{', '.join(old)} must fail at the code without the fix: at the quest's head they run the fix; "
             "name that code with --commit"
         )
-    if a.minutes is not None and a.minutes <= 0:
+    if minutes is not None and minutes <= 0:
         die("--minutes is a positive number")
-    for jid, spec in specs.items() if a.minutes else ():  # a job that timed out, given the time it needs
+    minutes = minutes or 0  # 0: each job keeps its own
+    for jid, spec in specs.items() if minutes else ():  # a job that timed out, given the time it needs
         heavy = spec["level"] in HEAVY
         cap = SHORT_RUN if heavy else LIGHT_RUN if LONG_RUN.search(spec["cmd"]) else 0
-        if cap and a.minutes > cap and not spec.get("long"):
+        if cap and minutes > cap and not spec.get("long"):
             die(f"{jid}: a {spec['level']} job lasts at most {cap} minutes: one job per row, or submit it --long")
-        spec["minutes"] = a.minutes
+        spec["minutes"] = minutes
     order: list[str] = []
 
     def visit(jid: str) -> None:  # a job after its prerequisites, so a rerun chain keeps its order
@@ -456,13 +512,13 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
 
     for jid in specs:
         visit(jid)
-    c: Campaign | None = None
-    with contextlib.suppress(CampaignError):
-        c = find_campaign(Path.cwd())
+    if c is None:
+        with contextlib.suppress(CampaignError):
+            c = find_campaign(Path.cwd())
 
     def quest_code(spec: Json) -> tuple[str, Path | None, list[str]]:
         """The quest's branch, its repository and every branch its code is on (its tasks', main)."""
-        if a.commit or not spec.get("quest") or c is None:
+        if at or not spec.get("quest") or c is None:
             return "", None, []
         with contextlib.suppress(CampaignError):
             quest = c.quest(spec["quest"])
@@ -492,8 +548,12 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
                     f"moving it to {branch} would drop that change. Pass --commit {x[:12]} to keep it, or "
                     f"--commit {branch} to move it"
                 )
+    landing = {
+        q for q in {s.get("quest") for s in specs.values()} if not at and c and q and at_landing(c, q) is not None
+    }
     renamed: dict[str, str] = {}
     queued: list[str] = []
+    ids: list[str] = []
     for jid in order:
         spec = specs[jid]
         branch, home, _ = quest_code(spec)
@@ -505,7 +565,7 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
                     r["commit"], commit = rev(Path(r["repo"]), branch), spec["commit"]
             spec["refs"] = refs
             branch = ""  # the job's own repository does not hold the quest's branch
-        commit = commit or rev(Path(spec["repo"]), a.commit or branch or "HEAD")
+        commit = commit or rev(Path(spec["repo"]), at or branch or "HEAD")
         if spec.get("quest"):  # an evidence job's outside scripts as they are now
             spec["scripts"] = script_digests(spec["cmd"], spec["repo"])
         what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
@@ -518,7 +578,18 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
             cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
             what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
         )
+        lifted = (
+            c is not None
+            and spec.get("quest") in landing
+            and spec.get("campaign") == c.ident
+            and spec["level"] not in HEAVY
+            and int(spec.get("priority", 0)) >= 1
+        )  # the quest's own direct-path evidence and gate checks; measurements and deferred work keep theirs
+        if lifted:
+            spec["priority"] = max(int(spec["priority"]), LANDING_PRIORITY)
         new, reused = submit(spec)
+        if lifted and reused:  # a rerun queued before the quest reached landing moves up with it
+            lift_queued(new, int(spec["priority"]))
         for t in resolve_job(jid).get("tags", []):  # the rerun proves what the job proved
             tag(new, t["campaign"], t["quest"], t["for"], t["fails_without"])
         renamed[jid] = new
@@ -530,9 +601,21 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}{moved}")
         if not reused:
             queued.append(new)
+        ids.append(new)
     supersede(queued)
     ensure_worker()
-    return 0
+    return ids
+
+
+def lift_queued(jid: str, priority: int) -> int | None:
+    """Raises a still-queued job's priority to PRIORITY, never lowering it; returns the priority it
+    had when raised, else None."""
+    d = jobs_dir() / jid
+    spec, state = read_json(d / "spec.json"), read_json(d / "state.json")
+    if not (spec and state and state.get("state") == "queued" and int(spec.get("priority", 0)) < priority):
+        return None
+    write_json(d / "spec.json", {**spec, "priority": priority})
+    return int(spec.get("priority", 0))
 
 
 def cmd_job_cancel(a: argparse.Namespace) -> int:

@@ -11,7 +11,7 @@ import subprocess
 import time
 from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from .ci import check_evidence, ci_carried, ci_covers, ci_gate
 from .core import FAILED, CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
@@ -203,73 +203,112 @@ def main_moved(repo: Path, main_head: str, base: str) -> list[str]:
     return [x for x in changed(repo, base, main_head) if not is_meta(x)]
 
 
+class Gap(NamedTuple):
+    """What keeps a quest from landing: code decides by its KIND (needs, main, files, journal, tasks,
+    criteria, messages, stale, check, review, ci), people read its TEXT, and a "stale" gap's JOBS are
+    the evidence jobs to rerun."""
+
+    kind: str
+    text: str
+    jobs: tuple[str, ...] = ()
+
+
+EVIDENCE_GAPS = ("criteria", "stale", "check")  # what a merge from main can void
+
+
 def landing_gaps(
     c: Campaign, pid: str, target: str, *, final: bool, ci: bool, jobs: list[Json] | None = None
 ) -> list[str]:
     """What keeps a quest from landing TARGET, each with what to do about it; empty when it can
     land. `land` refuses with these and `status` lists them."""
+    return [g.text for g in landing_gap_kinds(c, pid, target, final=final, ci=ci, jobs=jobs)]
+
+
+def landing_gap_kinds(
+    c: Campaign, pid: str, target: str, *, final: bool, ci: bool, jobs: list[Json] | None = None
+) -> list[Gap]:
+    """`landing_gaps` with each gap's kind, for code that acts on them."""
     warm_fingerprint()
     p = c.quests[pid]
     repo = c.repo(p)
     main = main_branch(repo)
-    gaps: list[str] = []
+    gaps: list[Gap] = []
     unmet = [d for d in p["needs"] + (p["after"] if final else []) if not c.met(d)]
     if unmet:
-        gaps.append(waits_line(c, unmet))
+        gaps.append(Gap("needs", waits_line(c, unmet)))
     main_head = rev(repo, main)
     base = merge_base(repo, main_head, target)
     moved = main_moved(repo, main_head, base)
     if moved:
         gaps.append(
-            f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} "
-            f"into it (`campaign land {pid} --merge-main`)"
+            Gap(
+                "main",
+                f"{main} changed {plural(len(moved), 'file')} since {p['branch']} branched (e.g. {moved[0]}): merge {main} "
+                f"into it (`campaign land {pid} --merge-main`)",
+            )
         )
     paths = changed(repo, base, target)
     owned = [x for x in paths if lead_file(x)]
     if owned:
-        gaps.append(f"{p['branch']} edits the lead's files: {', '.join(owned)}")
+        gaps.append(Gap("files", f"{p['branch']} edits the lead's files: {', '.join(owned)}"))
     apart = not same_repo(repo, c.home)
     if apart:
         meta = [x for x in paths if is_meta(x)]
         if meta:
             gaps.append(
-                f"{p['branch']} adds campaign files to {repo.name} ({', '.join(meta[:4])}): its journal lives in the home (`campaign get {pid} journal`)"
+                Gap(
+                    "files",
+                    f"{p['branch']} adds campaign files to {repo.name} ({', '.join(meta[:4])}): its journal lives in the home (`campaign get {pid} journal`)",
+                )
             )
-        gaps += journal_gaps(c, pid)
+        gaps += [Gap("journal", x) for x in journal_gaps(c, pid)]
     stray = outside(paths, p["files"])
     if stray:
         gaps.append(
-            f"{p['branch']} changes files outside its file set ({', '.join(p['files'])}): {', '.join(stray[:8])}"
+            Gap(
+                "files",
+                f"{p['branch']} changes files outside its file set ({', '.join(p['files'])}): {', '.join(stray[:8])}",
+            )
         )
     for task, t in sorted(p.get("tasks", {}).items()) if final else []:
         if t.get("status") != "dropped" and has_ref(repo, t["branch"]) and not ancestor(repo, t["branch"], target):
             gaps.append(
-                f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)"
+                Gap(
+                    "tasks",
+                    f"task {task} is not merged into {target[:12]}: merge {t['branch']}, or drop it (`campaign set {pid} --task {task} status=dropped reason=R`)",
+                )
             )
     carried = (landing_journals(c, pid) if apart else journals_at(c, repo, target, pid)) if final else {}
     rows = criteria_evidence(c, pid, [target], carried, jobs, ci=ci) if final else {}
     unproven = [x for x, r in rows.items() if not any(e["met"] for e in r)]
     if unproven:
         gaps.append(
-            f"criteria without evidence at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)"
+            Gap(
+                "criteria",
+                f"criteria without evidence at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)",
+            )
         )
     unanswered = [m["id"] for m in inbox(c, pid) if not answered(m, carried.values())] if final else []
     if unanswered:
         gaps.append(
-            f"unanswered messages: {', '.join(unanswered)}: answer each in a journal by its id, or close it (`campaign message {pid} --close MSG --reason R`)"
+            Gap(
+                "messages",
+                f"unanswered messages: {', '.join(unanswered)}: answer each in a journal by its id, or close it (`campaign message {pid} --close MSG --reason R`)",
+            )
         )
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
     if stale:
-        gaps.append(f"evidence jobs ran other code than {target[:12]}: {rerun_hint(repo, stale)}")
+        text = f"evidence jobs ran other code than {target[:12]}: {rerun_hint(repo, stale)}"
+        gaps.append(Gap("stale", text, tuple(stale)))
     for missing in check_evidence(c, p, target, ci=ci and ci_covers(c))[0]:
         name, _, why = missing.partition(": ")
-        gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
-    gaps += review_gaps(c, pid, target, main_head) if final else []
+        gaps.append(Gap("check", f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)"))
+    gaps += [Gap("review", x) for x in review_gaps(c, pid, target, main_head)] if final else []
     if ci and c.state.get("ci") == "github":
         gate = ci_gate(c, p, target)
         if gate.state != "success":
             at = f"{gate.commit[:12]} (carried to {target[:12]} across clean merges)" if gate.carried else target[:12]
-            gaps.append(f"CI at {at}: {gate.state} (--no-ci REASON to land without it)")
+            gaps.append(Gap("ci", f"CI at {at}: {gate.state} (--no-ci REASON to land without it)"))
     return gaps
 
 

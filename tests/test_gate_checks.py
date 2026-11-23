@@ -58,6 +58,6 @@ class GateChecks(CampaignCase):
         self.commit(wt, {"app.py": "print(2)\n"})
         gate = self.verify("fix")
         self.ok(self.home, "wait", gate, "--timeout", "60")
-        out = self.ok(wt, "job", "submit", "--quest", "fix", "--", "python3", str(script)).out
-        self.assertEqual(out.split()[0], gate)
-        self.assertIn("(reused", out)
+        r = self.ok(wt, "job", "submit", "--quest", "fix", "--", "python3", str(script))
+        self.assertEqual(r.out.split(), [gate])  # stdout is only the id
+        self.assertIn(f"reused {gate}", r.err)
