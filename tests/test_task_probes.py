@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from harness import CampaignCase
@@ -53,4 +54,5 @@ class TaskProbes(CampaignCase):
         spec = json.loads(specs[plain].read_text())  # submitted first, as when both share one second
         spec["submitted"] = times[probe] - 1
         specs[plain].write_text(json.dumps(spec))
+        shutil.rmtree(self.root / "jobs" / ".index")  # it keeps a finished job's spec
         self.ok(self.home, "task", "merge", "fix", "lib")
