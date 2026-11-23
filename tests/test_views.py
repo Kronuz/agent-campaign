@@ -77,6 +77,7 @@ class Sidebar(CampaignCase):
         fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
         fake.chmod(0o755)
         self.env["CMUX_WORKSPACE_ID"] = "ws-test"
+        self.env["CMUX_SURFACE_ID"] = "surface-test"  # the lead: only a lead's session names its workspace
         self.ok(
             self.home,
             "new",
