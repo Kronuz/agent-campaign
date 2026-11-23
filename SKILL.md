@@ -118,7 +118,9 @@ shrink a review or check, or trim a criterion to save quota.
   its assignment, tier and effort chosen for that step, on a branch off the quest branch. `campaign
   task merge ID T` merges it once its own tests (its `none` and `light` jobs, `--task T`) pass at
   its head; its `strict` and `exclusive` jobs are measurements the quest's landing checks, so they
-  never hold a merge. The quest branch takes `main` daily. Disjoint tasks run at once.
+  never hold a merge. A probe that must fail (a mutant probe) goes in as `--task T --fails-without`:
+  it passes when its command fails and never holds the merge. The quest branch takes `main` daily.
+  Disjoint tasks run at once.
 - **Increments:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest file's "May
   land early" allows (behavior-preserving refactors, tests, unused internal APIs, code behind a
   disabled switch). Never early: bytes on disk or the wire, public API, user-visible behavior, or

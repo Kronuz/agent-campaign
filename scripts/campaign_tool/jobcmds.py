@@ -199,8 +199,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     p: Json = {}
     if (a.criteria or a.fails_without or a.task) and not a.quest:
         die("--for, --fails-without and --task name a quest's: add --quest ID")
-    if a.fails_without and not a.criteria:
-        die("--fails-without needs --for: the criteria whose test fails without the fix")
+    if a.fails_without and not (a.criteria or a.task):
+        die("--fails-without needs --for (the criteria whose test fails without the fix) or --task (a task's probe)")
     if a.fails_without:
         spec["fails_without"] = FAILS_WITHOUT
     ids: list[str] = []

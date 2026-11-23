@@ -488,7 +488,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--fails-without",
         action="store_true",
-        help="--for a test run where the fix is missing: the job passes when CMD exits nonzero (not 124, 126, 127)",
+        help="--for a test run where the fix is missing, or --task a probe that must fail: "
+        "the job passes when CMD exits nonzero (not 124, 126, 127)",
     )
     p.add_argument("--repo", metavar="PATH", help="repository (default: this one, or the quest's)")
     p.add_argument("--commit", metavar="REF", help="the commit to run (default: HEAD, or the quest's branch)")

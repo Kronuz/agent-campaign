@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .ci import check_evidence, ci_carried, ci_covers, ci_gate
-from .core import CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
+from .core import FAILED, CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
 from .evidence import criteria_evidence, evidence_shape, job_problem, rerun_hint
 from .jobs import job_summary, load_job, quest_jobs
 from .journals import id_ranges, journal_gaps, journal_state, journals_at, landing_journals
@@ -369,7 +369,16 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
         test = j["spec"].get("level", "light") in ("none", "light") and not j["spec"].get("fails_without")
         return test and j["state"].get("state") != "cancelled" and (not commit or ancestor(repo, commit, head))
 
-    newest = {evidence_shape(j["spec"]): j for j in own if counts(j)}  # a later mutant run hides nothing
+    def probe(j: Json) -> bool:
+        """A probe that must fail (`--task T --fails-without`, no `--for`): its command tests no head."""
+        return bool(j["spec"].get("fails_without")) and not j.get("tags") and j["state"].get("state") != "cancelled"
+
+    newest: dict[str, Json] = {}
+    for j in own:  # a later mutant run hides nothing; a later probe withdraws its command's runs
+        if counts(j):
+            newest[evidence_shape(j["spec"])] = j
+        elif probe(j):
+            newest.pop(evidence_shape(j["spec"]), None)
     if not newest:
         return [
             f"no jobs of its own at its head: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"
@@ -383,7 +392,9 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
         if twin is None:
             gaps.append(f"{j['id']} ran other code than {head[:12]}: `campaign job rerun {j['id']}`")
         elif state != "done":
-            gaps.append(f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}")
+            out = f"`campaign job rerun {twin['id']}`, or, if it must fail, submit it again with --fails-without"
+            gap = f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}"
+            gaps.append(gap + (f" ({out})" if state in FAILED else ""))
     return gaps
 
 
