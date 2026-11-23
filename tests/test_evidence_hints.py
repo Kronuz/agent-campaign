@@ -41,7 +41,7 @@ class EvidenceHints(CampaignCase):
 
     def test_a_ci_row_carries_across_a_clean_merge_from_main(self) -> None:
         self.ok(self.home, "config", "ci=github")
-        self.commit(self.home, {"README.md": "app\n\nmore\n"})
+        self.commit(self.home, {"other/o.txt": "0\n"})
         b = self.started("b", files="lib/**")
         self.criterion("b", "- A1 CI builds it: the build job")
         head = self.commit(
@@ -50,9 +50,11 @@ class EvidenceHints(CampaignCase):
         self.verified("b")
         self.ci({head: "success"})
         self.assertIn("A1  met", self.ok(self.home, "status", "b").out)
-        self.commit(self.home, {"README.md": "app, changed on main\n\nmore\n"})
+        self.commit(self.home, {"other/o.txt": "1\n"})  # code, not docs: the head's CI is not the merge's own
         self.git(b, "merge", "-q", "--no-edit", "main")  # clean, not pushed: CI never runs at the merge
         merge = self.git(b, "rev-parse", "HEAD")
+        code = [x for x in self.git(b, "diff", "--name-only", head, merge).split() if not x.startswith(".campaign/")]
+        self.assertEqual(code, ["other/o.txt"])
         self.assertNotIn(merge, self.runs)
         self.assertIn("A1  met", self.ok(self.home, "status", "b").out)
         self.ok(self.home, "land", "b")
