@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from harness import CampaignCase
@@ -39,4 +40,17 @@ class TaskProbes(CampaignCase):
         self.assertIn(hint, self.ok(self.home, "brief", "fix").out)
         again = self.submit(task, "--quest", "fix", "--task", "lib", "--fails-without", "--", PROBE)
         self.ok(self.home, "wait", again, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+
+    def test_a_probe_withdraws_an_earlier_run_whose_id_sorts_after_it(self) -> None:
+        task = self.task()
+        probe = self.submit(task, "--quest", "fix", "--task", "lib", "--fails-without", "--", PROBE)
+        self.ok(self.home, "wait", probe, "--timeout", "60")
+        plain = self.submit(task, "--quest", "fix", "--task", "lib", "--", PROBE)
+        self.run_cli(self.home, "wait", plain, "--timeout", "60")
+        specs = {jid: self.root / "jobs" / jid / "spec.json" for jid in (probe, plain)}
+        times = {jid: json.loads(path.read_text())["submitted"] for jid, path in specs.items()}
+        spec = json.loads(specs[plain].read_text())  # submitted first, as when both share one second
+        spec["submitted"] = times[probe] - 1
+        specs[plain].write_text(json.dumps(spec))
         self.ok(self.home, "task", "merge", "fix", "lib")
