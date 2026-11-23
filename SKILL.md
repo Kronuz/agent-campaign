@@ -140,10 +140,10 @@ shrink a review or check, or trim a criterion to save quota.
 
 ## Direct path first
 
-A **task**'s gate is its own jobs, never a review. A **quest**'s gate, once, when the feature is done: the suite
-and CI, the review its risk needs, and the measurements its criteria name. Findings and slow rows
-become tasks on the quest branch; nothing reruns but what they change. Sanitizers and the platform
-matrix are CI's. Gate checks queued by `verify` run first, at priority 2, ahead of the quest's other light evidence (1).
+A **task**'s gate is its own jobs, never a review. A **quest**'s gate, once, when the feature is done: its targeted
+tests and CI, the review its risk needs, and the measurements its criteria name. Findings and slow rows become
+tasks on the quest branch; nothing reruns but what they change. The full suite, sanitizers and the platform matrix
+are CI's: `check` flags a local gate check CI already runs. `verify`'s gate checks run first (priority 2).
 
 Crash matrices, fuzzing, soaks, mutant batches and full sanitizer sweeps are **milestone checks**
 (`--later`): queued at low priority on the landed code, run once per milestone on `main`, green
