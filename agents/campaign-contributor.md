@@ -40,6 +40,7 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   round of code is done and only jobs remain (`git -C <worktree> push -u origin HEAD`), not at
   each commit: a push cancels the branch's CI run in progress, and the runners are shared and
   scarce. If the push is refused, report "not pushed" and the lead pushes. Never push `main`, land, or touch another worktree or
-  the campaign state. Leave nothing running when you finish.
+  the campaign state. Never run `campaign land` in any form, `--merge-main` included (it lands when
+  the gate passes): take main with `git -C <worktree> merge`. Leave nothing running when you finish.
 - Run git as `git -C <path> ...`, never `cd ... && git`: Claude Code stops for approval on each.
 - Final message, under 250 words: State, each criterion with its evidence, Blocked on.

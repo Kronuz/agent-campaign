@@ -9,7 +9,7 @@ import fcntl
 import hashlib
 import os
 import shutil
-from collections.abc import Generator
+from collections.abc import Collection, Generator
 from pathlib import Path
 from typing import Any
 
@@ -102,9 +102,8 @@ def origin(repo: Path) -> str:
 
 
 def skill_clone(info: Json, project: str, origins: dict[str, str]) -> Path | None:
-    """The campaign's clone of the skill's repository (its home, or a quest's repository), or None:
-    a campaign with one is a sender, which lands the skill's changes, so it is never told of them.
-    ORIGINS caches each repository's `origin` across commands."""
+    """The campaign's clone of the skill's repository (its home, or a quest's repository), or None: a
+    source to describe the skill's commits from. ORIGINS caches each repository's `origin` across commands."""
     home = Path(info["home"])
     repos = [home, *(resolved(home / q["repo"]) for q in info["state"].get("quests", {}).values() if q.get("repo"))]
     for repo in dict.fromkeys(repos):
@@ -178,16 +177,32 @@ def broadcast_skill(skill: Path) -> None:
     if seen.get("skill") == str(skill):  # else a first look, or another install: a baseline, sent to nobody
         by = f"campaign {', '.join(clones)}" if clones else "campaign"
         for name, info in registered.items():
-            if name not in clones:
-                tell_local(name, info, skill=skill, source=source, seen=seen, now=now, by=by)
+            tell_local(name, info, skill=skill, source=source, seen=seen, now=now, by=by)
         if source is not None and now[LANDED]:
             tell_far(registered, list(clones), skill=skill, source=source, seen=seen, head=now[LANDED])
     write_json(notices() / "seen.json", {**now, "source": str(source or ""), "origins": origins})
 
 
+def landed_by(info: Json, repo: Path) -> set[str]:
+    """The commits of REPO that campaign INFO's own landings contain: each record's commit, and for a
+    fast-forward landing (a single parent) the commits it brought in from the record's `from`."""
+    own: set[str] = set()
+    for q in info["state"].get("quests", {}).values():
+        for record in q.get("landed", []):
+            commit = record.get("commit")
+            if not commit:
+                continue
+            own.add(commit)
+            parents = git(repo, "rev-list", "--first-parent", "--parents", "-n1", commit, check=False).split()[1:]
+            if len(parents) == 1 and record.get("from"):
+                own.update(git(repo, "rev-list", "--first-parent", f"{record['from']}..{commit}", check=False).split())
+    return own
+
+
 def tell_local(name: str, info: Json, *, skill: Path, source: Path | None, seen: Json, now: Json, by: str) -> None:
     """Campaign NAME's lead gets one message per kind whose commit moved since it was last told (a
-    campaign never told starts from the commits seen before this change)."""
+    campaign never told starts from the commits seen before this change), naming, for a landing, the
+    commits its own landings do not contain (none left: nothing is sent); an install names them all."""
     path = notices() / f"{name}.json"
     record = read_json(path) or {}
     for kind in KINDS:
@@ -199,8 +214,10 @@ def tell_local(name: str, info: Json, *, skill: Path, source: Path | None, seen:
         key = f"skill {kind} {head}"
         held = [*inbox(c, "", settled_too=True), *c.state.get("messages", [])]
         if not any(m.get("notice") == key for m in held):
-            text = describe(kind, skill, source if kind == LANDED and source else skill, last, head)
-            leave_message(c, "", text, by, notice=key)
+            repo = source if kind == LANDED and source else skill
+            skip = landed_by(info, repo) if kind == LANDED else ()
+            if text := describe(kind, skill, repo, last, head, skip=skip):
+                leave_message(c, "", text, by, notice=key)
         record[kind] = head
         write_json(path, record)
 
@@ -224,16 +241,20 @@ def tell_far(registered: Json, senders: list[str], *, skill: Path, source: Path,
             write_json(path, record)
 
 
-def describe(kind: str, skill: Path, repo: Path, old: str, new: str) -> str:
+def describe(kind: str, skill: Path, repo: Path, old: str, new: str, *, skip: Collection[str] = ()) -> str:
     """The lead's message for a move of KIND from OLD to NEW in REPO: each commit's repository-prefixed
-    hash and subject, with its `Leads:` trailer (what changes for a lead) when it has one."""
+    hash and subject, with its `Leads:` trailer (what changes for a lead) when it has one; "" when
+    every commit is in SKIP (the receiver's own)."""
     name = origin(skill).rpartition("/")[2].rpartition(":")[2] or skill.name
-    fmt = "%h%x1f%s%x1f%(trailers:key=Leads,valueonly,separator=%x20)"
+    fmt = "%h%x1f%s%x1f%(trailers:key=Leads,valueonly,separator=%x20)%x1f%H"
     listing = git(repo, "log", "--first-parent", "--reverse", f"--format={fmt}", f"{old}..{new}", check=False)
-    rows = [line.split("\x1f") for line in listing.splitlines() if line.count("\x1f") == 2]
+    rows = [line.split("\x1f") for line in listing.splitlines() if line.count("\x1f") == 3]
+    if rows and all(row[3] in skip for row in rows):
+        return ""
+    rows = [row for row in rows if row[3] not in skip]
     items = [
         f"{name}:{h} {subject}" + (f" (for leads: {leads.strip()})" if leads.strip() else "")
-        for h, subject, leads in rows
+        for h, subject, leads, _ in rows
     ]
     if len(items) > LISTED:
         items = [*items[:LISTED], f"and {len(items) - LISTED} more (git log {old[:12]}..{new[:12]})"]
