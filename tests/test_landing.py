@@ -320,7 +320,7 @@ class DirectPath(CampaignCase):
         self.assertIn("deferred checks: 1 done, 1 failed", status)
         self.assertNotIn("not in a journal yet", status)  # a landed quest's failures are history
         # removing the red deferred check on the record drops its run too; the other one stays
-        self.ok(self.home, "set", "fast", "--later", "other-platform=echo other", "--weaken", "CI runs the soak")
+        self.ok(self.home, "set", "fast", "--later", "soak=", "--weaken", "CI runs the soak")
         self.assertEqual(len(self.quest("fast")["landed"][0]["later"]), 1)
         self.ok(self.home, "check")
         self.ok(
