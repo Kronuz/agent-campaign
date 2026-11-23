@@ -50,19 +50,29 @@ def job_for_check(
     """The job of a quest check at COMMIT's code. The build-test needs the exact code, documentation
     aside, unless CI at the exact commit (CI) tests the merge with main; every other check counts
     across merges from main that touch none of the quest's FILES."""
-    nothing: Json = {}
-    spec: Json = {
-        "repo": str(repo),
-        "commit": commit,
-        "refs": nothing,
-        "cmd": check["cmd"],
-        "cwd": "",
-        "level": check["level"],
-        "env": nothing,
-        **({"inputs": check["inputs"]} if check.get("inputs") else {}),
-    }
+    spec = check_spec(repo, commit, check)
     exact = build_test(check)
     return job_at(spec, commit, tested, exact=exact, merged=ci or not exact, files=files)
+
+
+def check_spec(repo: Path, commit: str, check: Json) -> Json:
+    """A quest check's job identity at COMMIT: the spec `verify` queues and `brief` and `land` look up,
+    with the bytes of the scripts it names outside the checkout (as job submit)."""
+    from .jobcmds import PATH_TOKEN, script_digests  # noqa: PLC0415  # jobcmds imports this module
+
+    cmd = check["cmd"]
+    named = any(Path(x).expanduser().is_file() for x in PATH_TOKEN.findall(cmd))  # spares the git call
+    return {
+        "repo": str(repo),
+        "commit": commit,
+        "refs": {},
+        "cmd": cmd,
+        "cwd": "",
+        "level": check["level"],
+        "env": {},
+        "scripts": script_digests(cmd, str(repo)) if named else {},
+        **({"inputs": check["inputs"]} if check.get("inputs") else {}),
+    }
 
 
 def build_test(check: Json) -> bool:
