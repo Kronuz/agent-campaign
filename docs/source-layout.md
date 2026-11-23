@@ -37,7 +37,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   relations between quests. Boundary: state.json and what follows from it alone (dependencies,
   file-set overlaps, checks, lenses). Opened alone to add a quest field or change a rule between
   quests.
-- `mail.py` (258 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
+- `mail.py` (300 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
   outboxes between machines. Boundary: how a message is stored, delivered and closed. Opened alone
   when a message is lost, repeated or never wakes its reader.
 - `alarm.py` (111 lines): The owner's alarm: a lead whose session holds one tool call unanswered (a
@@ -59,7 +59,8 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `campaign.py` (494 lines): The `Campaign`: its state loaded and saved by the one writer, the
   overview, what moves each quest in flight, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
   Opened alone to change how state is written, locked or summarized in the sidebar.
-- `leads.py` (258 lines): Lead notices across campaigns: noting a lead, redelivering stuck messages,
+- `leads.py` (274 lines): Lead notices across campaigns: noting a lead (only from the home, and only
+  when no live lead is recorded), redelivering stuck messages,
   telling peers and dependents. Boundary: notices that open other campaigns on the machine. Opened
   alone when a lead is not told about another campaign's work or a dropped dependency.
 - `broadcast.py` (282 lines): Broadcasts to every other campaign's lead: the skill's own changes (a
@@ -80,7 +81,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `map.py` (324 lines): The campaign map (MAP.md): goals, milestones, and quests with their intent,
   result and criteria. Boundary: the map command and the file it writes. Opened alone to change how
   the map is drawn.
-- `title.py` (140 lines): Session titles: a lead's session name leading with its campaign, checked
+- `title.py` (134 lines): Session titles: a lead's session name leading with its campaign, checked
   against the harness's own record, and the cmux workspace named the same. Boundary: reading a
   harness's record of a session's name and the one line that says how to fix it. Opened alone when a
   harness changes where or how it records a session's name.
