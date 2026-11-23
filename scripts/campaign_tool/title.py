@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .core import Json, jobs_dir
+from .leads import in_lead_directory
 from .mail import recorded_lead
 
 if TYPE_CHECKING:  # annotations only: they import this module, so importing them here is a cycle
@@ -73,16 +74,6 @@ def title_in(lines: list[str]) -> tuple[str, str] | None:
         if kind in TITLE_TYPES:
             return str(kind), str(record.get("customTitle" if kind == "custom-title" else "aiTitle", ""))
     return None
-
-
-def in_lead_directory(c: Campaign) -> bool:
-    """Whether the current directory is in the home checkout: a quest's worktree is not the lead's
-    session, and its agent's commands say nothing of the lead's title."""
-    try:
-        Path.cwd().resolve().relative_to(c.home.resolve())
-    except ValueError:
-        return False
-    return True
 
 
 def title_check(c: Campaign) -> str | None:

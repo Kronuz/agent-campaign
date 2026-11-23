@@ -30,8 +30,18 @@ from .mail import (
 from .state import campaigns, changes, consumed, cross_overlaps, overlap
 
 
+def in_lead_directory(c: Campaign) -> bool:
+    """Whether the current directory is in the home checkout: a quest's worktree is not the lead's
+    session, and its agent's commands say nothing of the lead or its title."""
+    try:
+        Path.cwd().resolve().relative_to(c.home.resolve())
+    except (ValueError, OSError):  # OSError: run from a removed directory
+        return False
+    return True
+
+
 def note_lead() -> None:
-    """Records the cmux surface of whoever runs `campaign` in a campaign's checkouts as its lead, so a
+    """Records the cmux surface of whoever runs `campaign` in a campaign's home as its lead, so a
     message can wake that lead (`wake_lead`), when none is recorded or cmux no longer lists the
     recorded one: any other session looking in leaves the lead where it is. Jobs and workers run
     detached and are not leads."""
@@ -41,6 +51,8 @@ def note_lead() -> None:
     try:
         c = find_campaign(Path.cwd())
     except (CampaignError, OSError):  # OSError: run from a removed directory
+        return
+    if not in_lead_directory(c):
         return
     entry = leads() / c.name
     seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}

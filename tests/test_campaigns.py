@@ -568,6 +568,13 @@ class LeadClaim(CampaignCase):
         self.assertEqual(self.recorded(), "site-core", "a lead whose surface is gone is replaced")
         self.assertTrue(self.renamed("site-core"))
 
+    def test_a_session_outside_the_home_never_becomes_the_lead(self) -> None:
+        self.live("contributor")
+        wt = self.started("fix", files="app.py")
+        self.session("contributor", "brief", cwd=wt)
+        self.assertFalse(self.lead.exists(), "a quest worktree's session became the lead")
+        self.assertFalse(self.renamed("contributor"))
+
     def test_a_message_from_a_session_looking_in_reaches_the_lead(self) -> None:
         self.live("lead", "site-core")
         self.session("lead", "status")
