@@ -227,6 +227,7 @@ def lead_file(path: str) -> bool:
 
 _cat: dict[str, tuple[int, subprocess.Popen[bytes]]] = {}
 _trees: dict[tuple[str, str], str] = {}
+READER_EXIT = 2.0  # seconds an idle `git cat-file` gets to exit once its stdin closes
 
 
 def read_object(repo: Path, name: str) -> tuple[str, str, bytes] | None:
@@ -258,13 +259,19 @@ def read_object(repo: Path, name: str) -> tuple[str, str, bytes] | None:
 
 @atexit.register
 def close_readers() -> None:
-    """Ends the `git cat-file` processes this process started."""
+    """Ends the `git cat-file` processes this process started: one that exited is no error, one
+    that does not exit within READER_EXIT seconds of its stdin closing is killed."""
     for pid, proc in _cat.values():
         if pid == os.getpid():
             for pipe in (proc.stdin, proc.stdout):
                 if pipe:
-                    pipe.close()
-            proc.wait()
+                    with contextlib.suppress(OSError):  # git exited: flushing an unsent request fails
+                        pipe.close()
+            try:
+                proc.wait(READER_EXIT)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
     _cat.clear()
 
 
