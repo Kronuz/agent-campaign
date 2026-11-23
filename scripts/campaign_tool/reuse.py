@@ -58,17 +58,19 @@ def job_for_check(
 def check_spec(repo: Path, commit: str, check: Json) -> Json:
     """A quest check's job identity at COMMIT: the spec `verify` queues and `brief` and `land` look up,
     with the bytes of the scripts it names outside the checkout (as job submit)."""
-    from .jobcmds import script_digests  # noqa: PLC0415  # jobcmds imports this module
+    from .jobcmds import PATH_TOKEN, script_digests  # noqa: PLC0415  # jobcmds imports this module
 
+    cmd = check["cmd"]
+    named = any(Path(x).expanduser().is_file() for x in PATH_TOKEN.findall(cmd))  # spares the git call
     return {
         "repo": str(repo),
         "commit": commit,
         "refs": {},
-        "cmd": check["cmd"],
+        "cmd": cmd,
         "cwd": "",
         "level": check["level"],
         "env": {},
-        "scripts": script_digests(check["cmd"], str(repo)),
+        "scripts": script_digests(cmd, str(repo)) if named else {},
         **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
 
