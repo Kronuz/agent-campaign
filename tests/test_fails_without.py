@@ -76,26 +76,40 @@ class FailsWithout(CampaignCase):
             whys.append("no test result (1/1 Test #1: t .")
         self.refused(wt, self.mutants(wt, *commands), *whys)
 
+    def test_a_unittest_fixture_error_is_not_evidence(self) -> None:
+        wt = self.quest_with_a_test()  # setUpClass or setUpModule raises: "Ran 0 tests", errors=1, exit 1
+        head = "import unittest\\n"
+        test = "class T(unittest.TestCase):\\n def test_a(self): pass\\n"
+        cls = "class T(unittest.TestCase):\\n @classmethod\\n def setUpClass(cls): raise RuntimeError\\n"
+        cls += " def test_a(self): pass\\n"
+        module = "def setUpModule(): raise RuntimeError\\n"
+        jids = self.mutants(
+            wt,
+            ["--", f"printf '{head}{cls}' > c_test.py && python3 -m unittest c_test"],
+            ["--", f"printf '{head}{module}{test}' > m_test.py && python3 -m unittest m_test"],
+        )
+        self.refused(wt, jids, "no test result (Ran 0 tests in; exit 1)", "no test result (Ran 0 tests in; exit 1)")
+
     def test_a_ctest_run_that_ran_no_test_is_not_evidence(self) -> None:
         wt = self.quest_with_a_test()
         not_run = "1/1 Test #1: t ......***Not Run   0.00 sec"  # ctest: the test's executable was never built
         unittest = "printf 'import unittest\\nclass T(unittest.TestCase):\\n def test_a(self): pass\\n' > t_test.py"
-        commands = [
-            ["--", "echo 'No tests were found!!!'; exit 8"],  # ctest --no-tests=error's output
-            ["--", f"echo '{not_run}'; exit 8"],
-            ["--", f"{unittest} && python3 -m unittest -k nothing t_test; exit 5"],  # 3.12+ exits 5 itself
-            ["--", "echo 'import nosuch' > bad_test.py && python3 -m unittest bad_test"],  # failed to import
+        cases = [  # each command, and the exact line its note names
+            ("echo 'No tests were found!!!'; exit 8", "(No tests were found; exit 8)"),  # --no-tests=error's
+            (f"echo '{not_run}'; exit 8", "***Not Run; exit 8)"),
+            (f"{unittest} && python3 -m unittest -k nothing t_test; exit 5", "(Ran 0 tests in; exit 5)"),
+            ("echo 'import nosuch' > bad_test.py && python3 -m unittest bad_test", "test module:; exit 1)"),
         ]
         if shutil.which("ctest"):  # the real one: its line, whatever its version exits, then forced nonzero
-            commands.append(["--", "mkdir -p e && cd e && ctest -R '^nothing$'; exit 8"])
+            cases.append(("mkdir -p e && cd e && ctest -R '^nothing$'; exit 8", "(No tests were found; exit 8)"))
             missing = "mkdir -p m && cd m && echo 'add_test(t /nonexistent/t_bin)' > CTestTestfile.cmake"
-            commands.append(["--", f"{missing} && ctest -R '^t$'; exit 8"])
+            cases.append((f"{missing} && ctest -R '^t$'; exit 8", "***Not Run; exit 8)"))
         own = [["--", "mkdir -p o && cd o && ctest -R '^nothing$' --no-tests=error"]] if shutil.which("ctest") else []
-        jids = self.mutants(wt, *commands, *own)  # OWN: a ctest's own exit, 0 on some versions
-        self.refused(wt, jids, *["no test result ("] * len(commands), *[""] * len(own))
-        for jid, line in zip(jids, ("No tests were found", "***Not Run", "Ran 0 tests", "Failed to import")):
+        jids = self.mutants(wt, *(["--", cmd] for cmd, _ in cases), *own)  # OWN: a ctest's own exit, 0 on some
+        self.refused(wt, jids, *["no test result ("] * len(cases), *[""] * len(own))
+        for jid, (_, line) in zip(jids, cases):
             self.assertIn(line, self.job(jid)["note"], jid)
-        for jid in jids[len(commands) :]:  # not evidence by either rule: it passed, or it ran no test
+        for jid in jids[len(cases) :]:  # not evidence by either rule: it passed, or it ran no test
             note = self.job(jid)["note"]
             self.assertTrue(note.startswith(("the test passed without the fix", "no test result (No tests")), note)
         (real,) = self.mutants(wt, ["--", "python3 app.py | grep -q 2"])  # main prints 1: the test fails

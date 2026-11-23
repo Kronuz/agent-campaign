@@ -374,7 +374,7 @@ NO_TEST_LINES = (  # a runner's line saying a test it was asked to run gave no r
     rb"^No tests were found",  # ctest: nothing matched
     rb"^ *\d+/\d+ Test +#\d+: .*\*\*\*Not Run",  # ctest: a selected test's executable was never built
     rb"^ *\d+/\d+ Test +#\d+: .*\*\*\*Timeout",  # ctest: a test past its TIMEOUT, no more than exit 124
-    rb"^Ran 0 tests in ",  # unittest: nothing matched (exit 0 before Python 3.12, then 5)
+    rb"^Ran 0 tests in ",  # unittest: no test method ran (none matched, or a setUpClass/setUpModule error)
     rb"^ImportError: Failed to import test module:",  # unittest: a test module that did not import
 )
 NO_TESTS = re.compile(b"|".join(NO_TEST_LINES), re.M)
