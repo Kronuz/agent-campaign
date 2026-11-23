@@ -45,7 +45,7 @@ class CheckSpec(CampaignCase):
         self.ok(self.home, "wait", first, "--timeout", "60")
         self.assertIn("ready to land", self.ok(self.home, "brief", "fix").out)
         self.script.write_text("print('split, changed')\n")
-        self.assertIn("check split is not green: no job", self.ok(self.home, "brief", "fix").out)
+        self.assertRegex(self.ok(self.home, "brief", "fix").out, r"check split is not green at \w+: no job")
         self.fails(self.home, "land", "fix", match="no job")
         (second,) = self.jobs(self.ok(self.home, "verify", "fix").out).values()
         self.assertNotEqual(second.split()[0], first)
