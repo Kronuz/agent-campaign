@@ -48,6 +48,12 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
 | Contributor (`campaign-contributor` agent) | One quest or task, by its assignment | its branch and journal |
 | Reviewer (`campaign-reviewer` agent) | One quest through one lens, from a fresh context | one review file |
 
+**Session names.** Every session's title leads with its campaign and role, so messages and the
+owner's session list name the campaign: start the lead with `claude -n '<campaign> · lead'` (in
+cmux: `cmux new-workspace --name '<campaign> · lead' --cwd HOME --command "claude -n '<campaign> ·
+lead'"`; other harnesses: `references/harness.md`); a lead's `campaign brief`, `status` and `wait`
+name its cmux workspace and print the `/rename` to type when the session's title is not that.
+
 A contributor's **assignment** names the kind of work; each but implementation has a method in
 `references/assignments/<name>.md`. The lead names the assignment, the model tier and the effort
 at every launch, choosing by the work, never by habit:
