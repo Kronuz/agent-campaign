@@ -46,6 +46,7 @@ from .state import (
     declare_inputs,
     deferred,
     dependents,
+    edit_checks,
     follow,
     gates,
     lens_floor,
@@ -309,10 +310,8 @@ def cmd_set(a: argparse.Namespace) -> int:
                     f"needs, after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, "
                     "--later and --inputs"
                 )
-        if a.check:
-            p["checks"] = [placed(x, p["risk"]) for x in a.check] + deferred(p)
-        if a.later:
-            p["checks"] = gates(p) + [parse_check(x, later=True) for x in a.later if x]
+        dropped = edit_checks(p, a.check, a.later)
+        if a.check or a.later:
             kept = {x["cmd"] for x in deferred(p)}  # a removed deferred check's runs stop counting
             for record in p["landed"]:
                 runs = [load_job(jobs_dir() / j) for j in record.get("later", [])]
@@ -387,6 +386,8 @@ def cmd_set(a: argparse.Namespace) -> int:
         )
         if any(x == "status=blocked" for x in a.assignments):
             notify(f"Blocked: {a.id}", p.get("reason", ""))
+    if dropped:
+        print(f"dropped: {', '.join(dropped)}")
     print(f"{a.id}: {p['status']}")
     if opened:
         print(opened)

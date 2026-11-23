@@ -140,7 +140,7 @@ def parser() -> argparse.ArgumentParser:
         "set",
         "change a quest's fields",
         "Sets a quest's fields: title, status, risk, reason, until, repo, milestone, needs, after, provides, "
-        "consumes, files, lenses, and with --check or --later its checks. A dropped status needs reason=R; a "
+        "consumes, files, lenses, and with --check or --later its checks by name. A dropped status needs reason=R; a "
         "park, status=blocked, also until=IDS (quests to land, PLAN decision ids, or owner): unmet needs block a "
         "quest without one. "
         "Lowering the risk, removing a lens, or removing, changing, deferring or narrowing the inputs of a check "
@@ -152,15 +152,25 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="ID", help="the quest")
     p.add_argument("--task", metavar="TASK", help="one of the quest's tasks")
     p.add_argument("assignments", nargs="*", metavar="KEY=VALUE", help="the fields to set (lists comma-separated)")
-    p.add_argument("--check", action="append", default=[], metavar=check, help="replace the gate checks")
     p.add_argument(
-        "--later", action="append", default=[], metavar=check, help="replace the deferred checks ('' clears them)"
+        "--check",
+        action="append",
+        default=[],
+        metavar=check,
+        help="add or replace check NAME, keep the others; NAME= removes it",
+    )
+    p.add_argument(
+        "--later",
+        action="append",
+        default=[],
+        metavar=check,
+        help="the same for a deferred check ('' removes them all)",
     )
     p.add_argument("--inputs", action="append", default=[], metavar="NAME=GLOBS", help=INPUTS_HELP)
     p.add_argument(
         "--weaken",
         metavar="REASON",
-        help="needed to lower the risk, remove a lens, or remove, change, defer or narrow a check: recorded, voids acceptances",
+        help="needed to lower the risk, remove a lens, or remove (printed), change, defer or narrow a check: recorded, voids acceptances",
     )
     p.set_defaults(fn=cmd_set)
 

@@ -234,10 +234,10 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
   owner.
 - **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
   what is still disputed, never another text round.
-- **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
-  lowers its risk, removes a lens, or removes, changes, defers or scopes a check; it is kept in its
-  history, shown by `campaign status ID`, and voids its acceptances. The review a risk needs (a code
-  review for high and critical, a design review for critical) cannot be removed.
+- **What a quest must pass changes only on the record:** `set ID --check NAME=CMD` (`--later`)
+  edits NAME alone, `NAME=` drops it; `--weaken REASON` lowers the risk, removes a lens, or drops
+  (naming it), changes, defers or scopes a check; `campaign status ID` shows it, and it voids the
+  acceptances. The review a risk needs (code at high and critical, design at critical) stays.
 - **System review on events, not on a calendar:** when `campaign check` reports two quests
   changing one file or one contract, ask one reviewer (lens `system`) that specific question.
 
