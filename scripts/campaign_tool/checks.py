@@ -15,12 +15,12 @@ from .ci import ci_covers
 from .core import CI_CHECK, HEAVY, Json, die, jobs_dir, plural, read_json, stamp
 from .disk import disk_floor, disk_warning, prune_plan
 from .evidence import criteria_for
-from .jobcmds import PARALLEL, ctest_warning, quest_slot, script_digests
+from .jobcmds import PARALLEL, ctest_warning, quest_slot
 from .jobs import all_jobs, load_job, matches_inputs, tag
 from .journals import journal_place
 from .leads import stuck_warnings
 from .repo import frozen, has_ref, main_branch, rev, same_repo
-from .reuse import build_test, docs_note, job_at, submit
+from .reuse import build_test, check_spec, docs_note, job_at, submit
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, deferred, gates, locate, select, validate
 from .status import print_problem, problems
@@ -122,14 +122,8 @@ def submit_checks(
         if check["cmd"].startswith(CI_CHECK):
             continue  # GitHub runs it when the branch is pushed
         spec: Json = {
-            "repo": str(repo),
-            "commit": commit,
-            "refs": {},
-            "cwd": "",
-            "cmd": check["cmd"],
-            "level": check["level"],
+            **check_spec(repo, commit, check),
             "minutes": check["minutes"],
-            "env": {},
             "quest": qid,
             "campaign": c.ident,
             "what": f"{qid} {'deferred ' if check.get('later') else ''}check {check['name']} at {commit[:12]}",
@@ -137,8 +131,6 @@ def submit_checks(
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
             "priority": priority,
             "retries": 1,
-            "scripts": script_digests(check["cmd"], str(repo)),  # the bytes of its outside scripts, as job submit
-            **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
         exact = build_test(check)
         earlier = None if force else job_at(spec, commit, exact=exact, merged=ci_covers(c) or not exact)

@@ -50,19 +50,27 @@ def job_for_check(
     """The job of a quest check at COMMIT's code. The build-test needs the exact code, documentation
     aside, unless CI at the exact commit (CI) tests the merge with main; every other check counts
     across merges from main that touch none of the quest's FILES."""
-    nothing: Json = {}
-    spec: Json = {
+    spec = check_spec(repo, commit, check)
+    exact = build_test(check)
+    return job_at(spec, commit, tested, exact=exact, merged=ci or not exact, files=files)
+
+
+def check_spec(repo: Path, commit: str, check: Json) -> Json:
+    """A quest check's job identity at COMMIT: the spec `verify` queues and `brief` and `land` look up,
+    with the bytes of the scripts it names outside the checkout (as job submit)."""
+    from .jobcmds import script_digests  # noqa: PLC0415  # jobcmds imports this module
+
+    return {
         "repo": str(repo),
         "commit": commit,
-        "refs": nothing,
+        "refs": {},
         "cmd": check["cmd"],
         "cwd": "",
         "level": check["level"],
-        "env": nothing,
+        "env": {},
+        "scripts": script_digests(check["cmd"], str(repo)),
         **({"inputs": check["inputs"]} if check.get("inputs") else {}),
     }
-    exact = build_test(check)
-    return job_at(spec, commit, tested, exact=exact, merged=ci or not exact, files=files)
 
 
 def build_test(check: Json) -> bool:
