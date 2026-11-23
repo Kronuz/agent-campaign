@@ -221,7 +221,9 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         if a.priority is None and not a.long and a.level == "light" and p["status"] in ("active", "review"):
             spec["priority"] = 1  # direct-path evidence, as verify's gate checks; measurements keep 0
     if a.unversioned or not git_ok(repo, "rev-parse", "--git-dir"):
-        spec.update(repo="", commit="", refs={}, cwd=str(Path(a.cwd or cwd).resolve()))
+        here = toplevel(repo) if git_ok(repo, "rev-parse", "--git-dir") else repo  # a ref names its own commit
+        spec.update(repo="", commit="", cwd=str(Path(a.cwd or cwd).resolve()))
+        spec["refs"] = dict(parse_ref(here, x) for x in a.ref)
     else:
         top = toplevel(repo)
         invoking = top
