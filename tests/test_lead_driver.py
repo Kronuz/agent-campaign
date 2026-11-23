@@ -464,11 +464,15 @@ class LeadDriver(CampaignCase):
         first = subprocess.Popen(
             [sys.executable, str(CAMPAIGN), "status"], cwd=self.home, env=self.env, stdout=subprocess.PIPE, text=True
         )
-        time.sleep(4)
+        calls = self.root / "gh-calls"
+        deadline = time.time() + 60
+        while not calls.exists() and time.time() < deadline:  # the first process's gh call has begun
+            time.sleep(0.1)
         (self.root / "gh-sleep").unlink()  # GitHub answers at once for everyone else
         start = time.time()
         self.ok(self.home, "status")
-        self.assertLess(time.time() - start, 20, "one hung gh call held another process")
+        # waiting out LOCK_WAIT (10 s) passes, waiting out the hung call (GH_TIMEOUT, 30 s) fails
+        self.assertLess(time.time() - start, 27, "one hung gh call held another process")
         first.communicate(timeout=120)
 
     # A5: a quest that waits on the owner is the lead's to park, never to resume
