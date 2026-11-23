@@ -541,13 +541,17 @@ class LeadClaim(CampaignCase):
     def recorded(self) -> str:
         return str(json.loads(self.lead.read_text())["surface"])
 
+    def called(self) -> str:
+        """The fake cmux's calls; none made leaves no file."""
+        return self.calls.read_text() if self.calls.exists() else ""
+
     def renamed(self, surface: str) -> bool:
-        return f"workspace-action|--workspace|ws-{surface}|--action|rename|" in self.calls.read_text()
+        return f"workspace-action|--workspace|ws-{surface}|--action|rename|" in self.called()
 
     def sent(self, surface: str, nid: str) -> bool:
         return any(
             line.startswith(f"agent|message|{surface}|") and f"campaign demo: {nid} for the lead" in line
-            for line in self.calls.read_text().splitlines()
+            for line in self.called().splitlines()
         )
 
     def announced(self, nid: str) -> Any:
@@ -581,8 +585,8 @@ class LeadClaim(CampaignCase):
         self.session("site-core", "status")  # the site-core sequence: a command in the home, then a message
         out = self.session("site-core", "message", "demo:", "Python spike landed", "--from", "site-core")
         self.assertIn("msg-1 for the lead", out)
-        self.assertTrue(self.sent("lead", "msg-1"), self.calls.read_text())
-        self.assertIn("from site-core: Python spike landed", self.calls.read_text())
+        self.assertTrue(self.sent("lead", "msg-1"), self.called())
+        self.assertIn("from site-core: Python spike landed", self.called())
         self.assertEqual(self.announced("msg-1")["announced"]["surface"], "lead")
 
     def test_a_new_lead_is_sent_every_open_message(self) -> None:
