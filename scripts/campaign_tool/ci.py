@@ -14,13 +14,13 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .core import CI_CHECK, Json, git, jobs_dir, pool
 from .jobs import job_summary
 from .journals import checkouts
-from .repo import _heads, changed, has_ref, is_meta, on_commits, rev, warm_status
-from .reuse import doc_path, job_for_check
+from .repo import _heads, ancestor, changed, has_ref, is_meta, main_branch, on_commits, rev, warm_status
+from .reuse import CARRY_DEPTH, doc_path, from_main, job_for_check
 from .state import branches, gates
 
 if TYPE_CHECKING:  # imported when used: concurrent.futures imports logging, a sixth of a command's start
@@ -34,6 +34,7 @@ _gh: dict[str, Future[tuple[int, Any]]] = {}
 _until: dict[str, float] = {}  # when each answer in _gh stops counting
 _gh_lock = threading.Lock()
 _pruned = [False]
+_fresh = [False]  # set by ci_fresh: this process asks GitHub past the host's cached answers
 GH_TIMEOUT = 30  # seconds a gh call may take: past it, a failed answer
 LOCK_WAIT = 10  # seconds a process waits for another asking the same: then it asks too
 
@@ -90,7 +91,7 @@ def gh_start(repo: Path, args: list[str], kept: Callable[[Any], float]) -> Futur
     with _gh_lock:
         if key not in _gh:
             path = jobs_dir() / ".gh" / f"{key}.json"
-            if hit := gh_cached(path):
+            if not _fresh[0] and (hit := gh_cached(path)):
                 from concurrent.futures import Future  # noqa: PLC0415
 
                 _gh[key] = Future()
@@ -113,7 +114,7 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
                 break
             except OSError:
                 time.sleep(0.1)
-        if hit := gh_cached(path):
+        if not _fresh[0] and (hit := gh_cached(path)):
             _until[key] = float(hit["until"])
             return int(hit.get("code", 0)), hit["data"]
         try:
@@ -128,6 +129,16 @@ def gh_ask(repo: Path, args: list[str], kept: Callable[[Any], float], path: Path
         tmp.write_text(json.dumps({"until": _until[key], "code": code, "data": data}))
         tmp.replace(path)
         return code, data
+
+
+def ci_fresh() -> None:
+    """Has this process ask GitHub anew, once per question, past the answers the host keeps: what
+    `land` judges must not be a green run list that a newer red rerun has replaced. Its answers
+    refresh the host's."""
+    with _gh_lock:
+        _fresh[0] = True
+        _gh.clear()
+        _until.clear()
 
 
 def prune_answers(folder: Path) -> None:
@@ -148,6 +159,17 @@ def gh_json(repo: Path, args: list[str], kept: Callable[[Any], float]) -> tuple[
 def ci_runs(commit: str) -> list[str]:
     """The `gh` arguments listing the CI runs at COMMIT: one query serves every question about them."""
     return ["run", "list", "--commit", commit, "--json", "databaseId,status,conclusion,name", "--limit", "50"]
+
+
+def newest(runs: Any) -> list[Json]:
+    """Each workflow's newest run at a commit (the highest id: a rerun or a dispatch after a red run
+    speaks), in listed order."""
+    out: dict[str, Json] = {}
+    for run in runs if isinstance(runs, list) else []:
+        name = str(run.get("name"))
+        if name not in out or run.get("databaseId", 0) > out[name].get("databaseId", 0):
+            out[name] = run
+    return list(out.values())
 
 
 def all_passed(items: Any) -> bool:
@@ -204,7 +226,7 @@ def ci_warm(repo: Path, commit: str, jobs: bool) -> None:
     def views(asked: Future[tuple[int, Any]]) -> None:
         with contextlib.suppress(Exception):  # ci_jobs asks again, and reports what fails
             code, runs = asked.result()
-            for run in runs if code == 0 and isinstance(runs, list) else []:
+            for run in newest(runs) if code == 0 else []:
                 if isinstance(run, dict) and "databaseId" in run:
                     gh_start(repo, run_view(run), view_kept)
 
@@ -251,7 +273,7 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     code, listed = gh_json(repo, ci_runs(commit), runs_kept)
     if code != 0:
         return f"gh failed: {listed}"
-    runs = [r for r in listed or [] if r.get("name") not in later]
+    runs = [r for r in newest(listed) if r.get("name") not in later]
     if not runs:
         unlisted = "" if listed else unlisted_ci(repo, head)
         if unlisted.startswith("stuck since "):
@@ -306,6 +328,173 @@ def unlisted_ci(repo: Path, commit: str) -> str:
     return "running" if age < QUEUE_LIMIT else f"stuck since {since}"
 
 
+def ci_run_ids(repo: Path, commit: str, later: list[str]) -> list[int]:
+    """The ids of the gating CI runs (`ci_state`'s) at COMMIT."""
+    code, listed = gh_json(repo, ci_runs(ci_commit(repo, commit)), runs_kept)
+    runs = newest(listed) if code == 0 else []
+    return [r["databaseId"] for r in runs if r.get("name") not in later and "databaseId" in r]
+
+
+class CiGate(NamedTuple):
+    state: str  # ci_state's answer
+    commit: str  # the commit whose runs gave it
+    carried: bool  # an ancestor's, across clean merges from main (`ci_carried`)
+
+
+def clean_merge(repo: Path, commit: str) -> bool:
+    """Whether COMMIT is a two-parent merge git completed alone: no conflict, even a resolved one, and
+    no edit beside it (its tree is the one `git merge-tree` writes for its parents)."""
+
+    def ask() -> bool:
+        parents = git(repo, "rev-parse", f"{commit}^@").split()
+        if len(parents) != 2:
+            return False
+        merged = subprocess.run(
+            ["git", "-C", str(repo), "merge-tree", "--write-tree", *parents], capture_output=True, text=True
+        )
+        return merged.returncode == 0 and merged.stdout.split()[:1] == [git(repo, "rev-parse", f"{commit}^{{tree}}")]
+
+    clean: bool = on_commits(("clean-merge", str(repo), commit), ask)
+    return clean
+
+
+def ci_carried(c: Campaign, p: Json, commit: str) -> list[str]:
+    """The quest's own commits before merges from main whose CI speaks for COMMIT, nearest first: its
+    first-parent ancestors across clean merges from main (`clean_merge`) and documentation-only
+    commits, once at least one such merge is crossed."""
+    repo = c.repo(p)
+    main_head = rev(repo, main_branch(repo))
+    line = on_commits(
+        ("first-parents", str(repo), commit),
+        lambda: git(repo, "rev-list", "--first-parent", f"--max-count={CARRY_DEPTH + 1}", commit).split(),
+    )
+    tested = c.state.get("tested_docs", [])
+    out: list[str] = []
+    merged = False
+    for newer, older in zip(line, line[1:]):
+        if clean_merge(repo, newer) and from_main(repo, newer, main_head):
+            merged = True
+        elif not all(is_meta(x) or doc_path(x, "", tested) for x in changed(repo, older, newer)):
+            break
+        if merged:
+            out.append(older)
+    return out
+
+
+def decided(state: str) -> bool:
+    """Whether a `ci_state` or `ci_job` answer is final: green, or failed."""
+    return state == "success" or state.startswith("failed:") or state.endswith(" failed")
+
+
+def ci_gate(c: Campaign, p: Json, target: str, ask: Callable[[str], str] | None = None) -> CiGate:
+    """CI's verdict on landing TARGET (ASK's, default `ci_state`): its own runs once finished, else the
+    first finished runs at a commit `ci_carried` finds; the landed main runs CI after
+    (`main_ci_problems`). Undecided, the nearest runs say why."""
+    repo = c.repo(p)
+    later = c.state.get("ci_later", [])
+    question = ask or (lambda k: ci_state(repo, k, later))
+    own = CiGate(question(target), ci_commit(repo, target), False)
+    if decided(own.state):
+        return own
+    waiting = own
+    for k in ci_carried(c, p, target):
+        gate = CiGate(question(k), ci_commit(repo, k), True)
+        if decided(gate.state):
+            return gate
+        if waiting.state.startswith("no CI"):
+            waiting = gate
+    return waiting
+
+
+def ci_landing(c: Campaign, p: Json, target: str) -> Json:
+    """The CI runs a landing of TARGET relies on, for its record."""
+    gate = ci_gate(c, p, target)
+    runs = ci_run_ids(c.repo(p), gate.commit, c.state.get("ci_later", []))
+    return {"commit": gate.commit, "runs": runs, **({"carried": True} if gate.carried else {})}
+
+
+def commit_depth(repo: Path, commit: str) -> int:
+    """How many commits COMMIT's history holds: a later commit on one line holds more."""
+    count: str = on_commits(("count", str(repo), commit), lambda: git(repo, "rev-list", "--count", commit))
+    return int(count)
+
+
+MAIN_WALK = 20  # main's code commits whose CI main_ci_problems reads, at most, looking for a green one
+
+
+def main_ci_problems(c: Campaign) -> list[tuple[str, str]]:
+    """An error for each landing that relied on CI carried across a clean merge from main (`ci_gate`)
+    whose landed commit's CI failed, naming both sides of the merge (it, and the quests that landed
+    on main after its green head) and its fix-forward command, until a commit at or after it on
+    main's first-parent line is green. It reads the carried landings' own CI, newest first down to a
+    green one, and only past a red one main's CI, at most MAIN_WALK code commits. `check` and
+    `status` list them with `problems`."""
+    if c.state.get("ci") != "github" or not shutil.which("gh"):
+        return []
+    later = c.state.get("ci_later", [])
+    tested = c.state.get("tested_docs", [])
+    carried: dict[Path, list[tuple[str, Json]]] = {}
+    for pid, p in c.quests.items():
+        for record in p.get("landed", []):
+            if record.get("ci", {}).get("carried"):
+                carried.setdefault(c.repo(p), []).append((pid, record))
+    out: list[tuple[str, str]] = []
+    for repo, all_landed in carried.items():
+        head = rev(repo, main_branch(repo))
+        landings = [(pid, r) for pid, r in all_landed if ancestor(repo, r["commit"], head)]
+        landings.sort(key=lambda x: commit_depth(repo, x[1]["commit"]), reverse=True)
+        red: dict[str, tuple[str, Json, str]] = {}
+        for pid, record in landings:
+            state = ci_state(repo, record["commit"], later)
+            if state == "success":
+                break  # main was green there, after every older landing
+            if state.startswith("failed"):
+                red[record["commit"]] = (pid, record, state)
+        if not red:
+            continue
+        oldest = list(red)[-1]
+        asked, unread = 0, ""
+        for k in git(repo, "rev-list", "--first-parent", head, "--not", f"{oldest}^").split():
+            if k in red:
+                out.append(("error", red_main(c, repo, red.pop(k))))
+            elif not all(is_meta(x) or doc_path(x, "", tested) for x in changed(repo, f"{k}^", k)):
+                if asked == MAIN_WALK:
+                    unread = k
+                    break
+                asked += 1
+                if ci_state(repo, k, later) == "success":
+                    red.clear()  # fixed forward: the older red landings are cleared too
+                    break
+        for left in red.values():
+            note = f"; main's CI not read past {unread[:12]} ({MAIN_WALK} commits), none green"
+            out.append(("error", red_main(c, repo, left) + note))
+    return out
+
+
+def red_main(c: Campaign, repo: Path, found: tuple[str, Json, str]) -> str:
+    """The error for a carried landing (quest, record, CI state) whose CI on main failed: both sides
+    of its merge, and the fix."""
+    pid, record, state = found
+    main = main_branch(repo)
+    landed, before = record["commit"], record["ci"]["commit"]
+    theirs = sorted(
+        {
+            qid
+            for qid, q in c.quests.items()
+            if qid != pid and c.repo(q) == repo
+            for r in q.get("landed", [])
+            if ancestor(repo, r["commit"], landed) and not ancestor(repo, r["commit"], before)
+        }
+    )
+    side = f"main's side brought {', '.join(theirs)}" if theirs else "main's side landed no quest"
+    files = ",".join(c.quests[pid]["files"])
+    return (
+        f"{pid}: CI on {main} at {landed[:12]}, where it landed on CI carried from {before[:12]} across a "
+        f"merge from {main} ({side}), {state}: fix {main} forward "
+        f"(`campaign new {pid}-fix --title \"Fix {main}'s CI after {pid}\" --files '{files}'`)"
+    )
+
+
 def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     """The GitHub CI jobs of every run at COMMIT (name, status, conclusion), or why there are none."""
     if not shutil.which("gh"):
@@ -315,7 +504,7 @@ def ci_jobs(repo: Path, commit: str) -> list[Json] | str:
     if code != 0:
         return f"gh failed: {runs}"
     found: list[Json] = []
-    for code, view in [x.result() for x in [gh_start(repo, run_view(run), view_kept) for run in runs or []]]:
+    for code, view in [x.result() for x in [gh_start(repo, run_view(run), view_kept) for run in newest(runs)]]:
         if code != 0:
             return f"gh failed: {view}"
         found += (view or {}).get("jobs", [])
@@ -352,10 +541,12 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
     if not shutil.which("gh") or not p.get("branch") or not has_ref(repo, p["branch"]):
         return False
     head = rev(repo, p["branch"])
-    if c.state.get("ci") == "github" and ci_state(repo, head, c.state.get("ci_later", [])).startswith("running: "):
-        return True
+    if c.state.get("ci") == "github" and ci_gate(c, p, head).state.startswith("running: "):
+        return True  # the gate's own read: a clean merge's carried head counts
     names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
-    return any(ci_job(repo, head, name).endswith(" is running") for name in names)
+    return any(
+        ci_gate(c, p, head, lambda k, n=name: ci_job(repo, k, n)).state.endswith(" is running") for name in names
+    )
 
 
 def ci_stuck(c: Campaign, p: Json) -> str:
@@ -382,8 +573,9 @@ def forget_ci() -> None:
 def ci_covers(c: Campaign) -> bool:
     """Whether a gate check's job at an ancestor counts across merges from main, the one rule every
     command shares (`verify`, `job rerun`, `brief`, `status`, `land`, `land --record`): landing needs
-    CI green at the exact commit, and CI tests the merge with main. The build-test (a gate check
-    without inputs) otherwise needs the exact code. `land --no-ci` waives the CI gate, not this."""
+    CI green at the commit or across clean merges from main (`ci_gate`), and CI tests main's landed
+    code after (`main_ci_problems`). The build-test (a gate check without inputs) otherwise needs the
+    exact code. `land --no-ci` waives the CI gate, not this."""
     return c.state.get("ci") == "github"
 
 
@@ -397,9 +589,10 @@ def check_evidence(c: Campaign, p: Json, target: str, ci: bool | None = None) ->
         missing.append("build-test: every gate check declares inputs; one without them must pass at the exact code")
     for check in gates(p):
         if check["cmd"].startswith(CI_CHECK):
-            state = ci_job(repo, target, check["cmd"][len(CI_CHECK) :].strip())
+            name = check["cmd"][len(CI_CHECK) :].strip()
+            state, at, _ = ci_gate(c, p, target, lambda k, name=name: ci_job(repo, k, name))
             if state == "success":
-                evidence.append({"check": check["name"], "ci": check["cmd"], "commit": target, "state": "done"})
+                evidence.append({"check": check["name"], "ci": check["cmd"], "commit": at, "state": "done"})
             else:
                 missing.append(f"{check['name']}: {state}")
             continue

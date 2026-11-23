@@ -449,6 +449,7 @@ def landing_record(repo: Path, main: str, intent: Json) -> Json | None:
         **({"criteria": intent["criteria"]} if intent.get("criteria") else {}),
         **({"from": intent["from"]} if intent.get("from") else {}),
         **({"ci_skipped": intent["ci_skipped"]} if intent.get("ci_skipped") else {}),
+        **({"ci": intent["ci"]} if intent.get("ci") else {}),
     }
 
 

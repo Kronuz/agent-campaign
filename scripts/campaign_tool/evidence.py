@@ -9,7 +9,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .ci import ci_covers, ci_job, ci_state
+from .ci import ci_covers, ci_gate, ci_job
 from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, jobs_dir, section, table_cells
 from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
 from .journals import decisions
@@ -290,18 +290,19 @@ def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None =
     return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}
 
 
-def ci_row(c: Campaign, repo: Path, commits: list[str], ci: bool) -> Json:
-    """A [ci] criterion's evidence: the land gate's CI check, green at one of COMMITS, or waived by
-    `land --no-ci` (CI false)."""
+def ci_row(c: Campaign, p: Json, commits: list[str], ci: bool) -> Json:
+    """A [ci] criterion's evidence: the land gate's CI check (`ci_gate`), green at one of COMMITS, or
+    waived by `land --no-ci` (CI false)."""
     if not ci:
         return {"journal": "ci", "evidence": "CI waived by --no-ci", "met": True, "why": []}
     if not ci_covers(c):
         return {"journal": "ci", "evidence": "", "met": False, "why": ["the campaign runs no CI (`config ci=github`)"]}
     why = ""
     for k in commits:
-        why = ci_state(repo, k, c.state.get("ci_later", []))
+        why, at, carried = ci_gate(c, p, k)
         if why == "success":
-            return {"journal": "ci", "evidence": f"CI green at {k[:12]}", "met": True, "why": []}
+            via = f" (carried to {k[:12]} across clean merges)" if carried else ""
+            return {"journal": "ci", "evidence": f"CI green at {at[:12]}{via}", "met": True, "why": []}
     return {
         "journal": "ci",
         "evidence": "",
@@ -334,7 +335,7 @@ def criteria_evidence(
         journals, {x: w for x, w in wanted.items() if x not in tags and w["kind"] != "ci"}, proof(c, repo, commits)
     )
     named = {x: named_check(c, p, w["whole"], commits) for x, w in wanted.items() if w["kind"] == "job"}
-    ran = ci_row(c, repo, commits, ci) if any(w["kind"] == "ci" for w in wanted.values()) else {}
+    ran = ci_row(c, p, commits, ci) if any(w["kind"] == "ci" for w in wanted.values()) else {}
     return {
         x: [tagged_row(repo, commits, tags[x], named.get(x))]
         if x in tags
