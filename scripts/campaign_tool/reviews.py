@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from .ci import check_evidence, ci_carried, ci_covers, ci_gate
 from .core import CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
-from .evidence import criteria_evidence, evidence_shape, job_problem
+from .evidence import criteria_evidence, evidence_shape, job_problem, rerun_hint
 from .jobs import job_summary, load_job, quest_jobs
 from .journals import id_ranges, journal_gaps, journal_state, journals_at, landing_journals
 from .mail import answered, inbox
@@ -260,7 +260,7 @@ def landing_gaps(
         )
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
     if stale:
-        gaps.append(f"evidence jobs ran other code than {target[:12]}: `campaign job rerun {' '.join(stale)}`")
+        gaps.append(f"evidence jobs ran other code than {target[:12]}: {rerun_hint(repo, stale)}")
     for missing in check_evidence(c, p, target, ci=ci and ci_covers(c))[0]:
         name, _, why = missing.partition(": ")
         gaps.append(f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)")
