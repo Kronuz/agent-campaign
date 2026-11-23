@@ -30,3 +30,5 @@ not the story.
 - Final message: the verdict and one line per blocking finding.
 - Run git as `git -C <path> ...` and never put `cd` in a command that runs git: Claude Code stops
   for the owner's approval on every `cd ... && git`, which stalls the campaign.
+- A session of your own (not a subagent) is titled `<campaign> · reviewer <quest> <lens>` (launched
+  with `claude -n` or the harness's equivalent); if it is not, say so in your review's notes.
