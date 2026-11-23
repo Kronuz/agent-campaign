@@ -345,10 +345,8 @@ def live_task(t: Json) -> bool:
 
 
 def task_jobs(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[Json]:
-    """A task's own jobs (`job submit --quest ID --task T`), oldest first: by submit time, since ids
-    of one second sort by their random suffix."""
-    own = [j for j in quest_jobs(jobs, c.ident, pid) if j["spec"].get("task") == task]
-    return sorted(own, key=lambda j: float(j["spec"].get("submitted", 0)))
+    """A task's own jobs (`job submit --quest ID --task T`), oldest first."""
+    return [j for j in quest_jobs(jobs, c.ident, pid) if j["spec"].get("task") == task]
 
 
 def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
