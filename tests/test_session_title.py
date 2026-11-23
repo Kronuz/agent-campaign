@@ -33,11 +33,14 @@ class SessionTitle(CampaignCase):
         cmux = self.root / "bin" / "cmux"
         cmux.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n')
         cmux.chmod(cmux.stat().st_mode | stat.S_IXUSR)
+        (self.root / "leads").mkdir(exist_ok=True)
+        (self.root / "leads" / "demo").write_text(json.dumps({"surface": "surface-lead", "workspace": "ws"}))
 
     @contextlib.contextmanager
     def session(self, cwd: Path | None = None, env: dict[str, str] | None = None) -> Iterator[None]:
         """The environment of a Claude Code session in cmux (a key set to "" is removed)."""
-        now = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": SESSION, "CMUX_WORKSPACE_ID": "ws"} | (env or {})
+        now = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": SESSION, "CMUX_WORKSPACE_ID": "ws"}
+        now = now | {"CMUX_SURFACE_ID": "surface-lead"} | (env or {})
         kept = {**self.env, **{k: v for k, v in now.items() if v}}
         for key in [k for k, v in now.items() if not v]:
             kept.pop(key, None)
@@ -131,6 +134,14 @@ class SessionTitle(CampaignCase):
         with self.session(cwd=worktree):
             self.title.keep_title(self.tool.find_campaign(self.home))
         self.assertFalse(self.calls.exists())
+
+    def test_only_the_recorded_lead_names_its_workspace(self) -> None:
+        self.write(("custom-title", "demo · lead"))
+        with self.session(env={"CMUX_SURFACE_ID": "surface-looking-in", "CMUX_WORKSPACE_ID": "ws-other"}):
+            self.assertEqual(self.title.set_workspace_title(self.tool.find_campaign(self.home)), "")
+        with self.session(env={"CMUX_SURFACE_ID": ""}):
+            self.title.keep_title(self.tool.find_campaign(self.home))
+        self.assertFalse(self.calls.exists(), "a session that is not the recorded lead renamed its workspace")
 
     def test_a_failing_cmux_is_reported_not_raised(self) -> None:
         (self.root / "bin" / "cmux").write_text("#!/bin/sh\necho boom >&2\nexit 3\n")

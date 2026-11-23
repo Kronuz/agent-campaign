@@ -420,7 +420,7 @@ def cmd_message(a: argparse.Namespace) -> int:
     then = "its journal answers it by that id, or the lead closes it" if pid else "the lead closes it"
     print(f"{nid} for {whom}: {then}")
     message = read_json(mailbox(c, pid) / f"{nid}.json") or {}
-    why = announce(c, mailbox(c, pid) / f"{nid}.json", message, whom) if message else "the message is gone"
+    why = announce(c, mailbox(c, pid) / f"{nid}.json", message, whom, shown=True) if message else "the message is gone"
     if why and name and name != (here.name if here else ""):
         print(f"campaign: {nid} waits in {c.name}'s mailbox unannounced ({why}); it is retried", file=sys.stderr)
     return 0

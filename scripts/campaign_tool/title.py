@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .core import Json, jobs_dir
+from .mail import recorded_lead
 
 if TYPE_CHECKING:  # annotations only: they import this module, so importing them here is a cycle
     from .campaign import Campaign
@@ -102,9 +103,11 @@ def title_check(c: Campaign) -> str | None:
 
 def set_workspace_title(c: Campaign) -> str:
     """Names the cmux workspace for the campaign's lead (it is the sender name of cmux messages); ""
-    when set or when cmux is not here, else why it was not."""
+    when set, when cmux is not here or when this session is not the recorded lead (`note_lead`), else
+    why it was not."""
     ident = os.environ.get("CMUX_WORKSPACE_ID")  # named explicitly: cmux's "current" workspace is not ours
-    if not ident or not shutil.which("cmux"):
+    surface = os.environ.get("CMUX_SURFACE_ID", "")
+    if not ident or not surface or surface != recorded_lead(c.name) or not shutil.which("cmux"):
         return ""
     stamp = jobs_dir() / "titles" / re.sub(r"[^\w.-]", "_", ident)  # the title last set: no call to repeat it
     try:

@@ -237,9 +237,11 @@ contracts; it closes once that quest lands or drops, or yours order `--after NAM
 Messages wait in the home's `.git` (`campaign-mail/<campaign>/`), so any agent can leave one
 without being the campaign's one writer. A new one notifies the owner and wakes the lead's
 `campaign wait`; `campaign brief` lists it for the quest's contributor and the lead. Landing
-moves a quest's answered and closed messages into its state. In cmux, every `campaign` command (but
-`job`) records the lead's surface, and messages from other surfaces go there via `cmux agent
-message`; `check` and `wait` notify the owner of one undelivered over 15 minutes.
+moves a quest's answered and closed messages into its state. In cmux, a `campaign` command (but
+`job`) records its surface as the lead's when none is recorded or cmux no longer lists the recorded
+one, and only that surface names its workspace `<campaign> · lead`. Messages reach the lead
+through `cmux agent message`, but for one the lead's own command printed or sent; a new lead is
+sent every open message; `check` and `wait` notify the owner of one undelivered over 15 minutes.
 
 A campaign on another machine is reached as a peer: `campaign config peers=NAME=URL,...`, where
 URL is a repository both machines can push to and fetch from. A message to `NAME:ID` or `NAME:`

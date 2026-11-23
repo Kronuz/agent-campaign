@@ -44,16 +44,45 @@ def campaigns_led_by(surface: str, but: str = "") -> list[str]:
     return [n for n in names if n != but and recorded_lead(n) == surface]
 
 
-def wake_lead(c: Campaign, whom: str, nid: str, text: str, by: str) -> str:
+def live_surfaces() -> set[str] | None:
+    """The surfaces cmux lists in every window, or None when cmux is absent or does not answer."""
+    exe = shutil.which("cmux")
+    if not exe:
+        return None
+    try:
+        args = [exe, "--json", "--id-format", "uuids", "tree", "--all"]
+        done = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        tree: Any = json.loads(done.stdout) if done.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if not isinstance(tree, dict) or not isinstance(tree.get("windows"), list):
+        return None
+    found: set[str] = set()
+    for window in tree["windows"]:
+        for space in window.get("workspaces", []) if isinstance(window, dict) else []:
+            for pane in space.get("panes", []) if isinstance(space, dict) else []:
+                if isinstance(pane, dict):
+                    found.update(str(s.get("id")) for s in pane.get("surfaces", []) if isinstance(s, dict))
+    return found
+
+
+def lead_gone(surface: str) -> bool:
+    """Whether cmux answers and no longer lists SURFACE; a cmux that does not answer keeps the lead."""
+    live = live_surfaces()
+    return live is not None and surface not in live
+
+
+def wake_lead(c: Campaign, whom: str, nid: str, text: str, by: str, *, shown: bool = False) -> str:
     """Wakes the campaign's lead in cmux with the message (an idle session reads it at once; a busy
-    one at its next step); "" once woken, else why it was not."""
+    one at its next step); "" once woken, else why it was not. SHOWN: the running command printed
+    the message or was given it, so it needs no cmux message when its session is the lead."""
     surface = recorded_lead(c.name)
     if not shutil.which("cmux"):
         return "no cmux here"
     if not surface:
         return f"no lead of {c.name} recorded in cmux"
-    if surface == os.environ.get("CMUX_SURFACE_ID"):
-        return ""  # the lead itself: its own commands show the message
+    if shown and surface == os.environ.get("CMUX_SURFACE_ID"):
+        return ""
     body = f"campaign {c.name}: {nid} for {whom}, from {by}: {text} (close or answer it by that id)"
     try:
         done = subprocess.run(
@@ -77,9 +106,10 @@ INBOX_STALE = 15 * 60  # seconds a message to a lead waits undelivered before th
 REANNOUNCE = float(os.environ.get("CAMPAIGN_REANNOUNCE", "300"))  # seconds between tries to wake a lead
 
 
-def announce(c: Campaign, path: Path, message: Json, whom: str) -> str:
-    """Wakes the lead with the message at PATH and records the try in it; "" once woken, else why not."""
-    why = wake_lead(c, whom, str(message["id"]), str(message["text"]), str(message["by"]))
+def announce(c: Campaign, path: Path, message: Json, whom: str, *, shown: bool = False) -> str:
+    """Wakes the lead with the message at PATH and records the try in it; "" once woken, else why not.
+    SHOWN as in `wake_lead`."""
+    why = wake_lead(c, whom, str(message["id"]), str(message["text"]), str(message["by"]), shown=shown)
     if why == "no cmux here":
         return why  # nothing to retry outside cmux
     record = {k: v for k, v in message.items() if k not in ("announced", "unannounced")}
@@ -116,10 +146,18 @@ def mailbox(c: Campaign, pid: str) -> Path:
 
 
 def leave_message(
-    c: Campaign, pid: str, text: str, by: str, origin: str = "", *, wake: bool = True, **extra: Any
+    c: Campaign,
+    pid: str,
+    text: str,
+    by: str,
+    origin: str = "",
+    *,
+    wake: bool = True,
+    shown: bool = False,
+    **extra: Any,
 ) -> str:
-    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies. EXTRA holds what
-    closes a message the tool leaves by itself (`settled`)."""
+    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies. SHOWN as in
+    `wake_lead`; EXTRA holds what closes a message the tool leaves by itself (`settled`)."""
     folder = mailbox(c, pid)
     folder.mkdir(parents=True, exist_ok=True)
     record = c.quests[pid] if pid else c.state
@@ -139,7 +177,7 @@ def leave_message(
             tmp.unlink(missing_ok=True)
     notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
     if wake:
-        announce(c, folder / f"msg-{n}.json", message, pid or "the lead")
+        announce(c, folder / f"msg-{n}.json", message, pid or "the lead", shown=shown)
     return f"msg-{n}"
 
 

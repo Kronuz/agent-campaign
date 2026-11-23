@@ -20,6 +20,7 @@ from .mail import (
     announce,
     campaigns_led_by,
     inbox,
+    lead_gone,
     leads,
     leave_message,
     mailbox,
@@ -30,8 +31,10 @@ from .state import campaigns, changes, consumed, cross_overlaps, overlap
 
 
 def note_lead() -> None:
-    """Records the cmux surface of whoever runs `campaign` in a campaign's checkouts, so a message
-    can wake that lead (`wake_lead`). Jobs and workers run detached and are not leads."""
+    """Records the cmux surface of whoever runs `campaign` in a campaign's checkouts as its lead, so a
+    message can wake that lead (`wake_lead`), when none is recorded or cmux no longer lists the
+    recorded one: any other session looking in leaves the lead where it is. Jobs and workers run
+    detached and are not leads."""
     surface = os.environ.get("CMUX_SURFACE_ID", "")
     if not surface:
         return
@@ -41,8 +44,9 @@ def note_lead() -> None:
         return
     entry = leads() / c.name
     seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}
-    if recorded_lead(c.name) == surface or (recorded_lead(c.name) and campaigns_led_by(surface, but=c.name)):
-        return  # another campaign's lead looking in keeps this campaign's lead where it is
+    lead = recorded_lead(c.name)
+    if lead == surface or (lead and (campaigns_led_by(surface, but=c.name) or not lead_gone(lead))):
+        return
     with contextlib.suppress(OSError):
         leads().mkdir(parents=True, exist_ok=True)
         entry.write_text(json.dumps(seen) + "\n")
@@ -190,7 +194,7 @@ def unlocks(c: Campaign, before: dict[str, Json], event: str) -> str:
             c.state.setdefault("messages", []).append({**m, "closed": "superseded"})
             c.closing.append(mailbox(c, "") / f"{m['id']}.json")
     text = f"{event}: unlocks " + "; ".join(items.values())
-    leave_message(c, "", text, "campaign", settles={"start": sorted(items)}, items=items)
+    leave_message(c, "", text, "campaign", shown=True, settles={"start": sorted(items)}, items=items)
     return line
 
 
