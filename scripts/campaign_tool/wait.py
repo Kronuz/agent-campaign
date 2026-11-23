@@ -23,6 +23,7 @@ from .mail import fetch_peers, inbox, mailbox, peers, push_outbox
 from .repo import common_dir, frozen, has_ref, rev
 from .runner import ensure_worker, reap
 from .state import branches
+from .title import keep_title
 from .todo import SHOWN, repeat_seconds, todo, todo_lines
 
 
@@ -269,6 +270,9 @@ def wait_for(ids: list[str], any_one: bool, timeout: float) -> int:
 
 def cmd_wait(a: argparse.Namespace) -> int:
     reap()
+    with contextlib.suppress(Exception):  # waiting outside a campaign has no title to keep
+        if line := keep_title(find_campaign(Path.cwd())):
+            print(line)
     if a.commits:
         return wait_events(find_campaign(Path.cwd()), a.timeout)
     if a.jobs:

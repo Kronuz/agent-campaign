@@ -80,6 +80,10 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `map.py` (324 lines): The campaign map (MAP.md): goals, milestones, and quests with their intent,
   result and criteria. Boundary: the map command and the file it writes. Opened alone to change how
   the map is drawn.
+- `title.py` (140 lines): Session titles: a lead's session name leading with its campaign, checked
+  against the harness's own record, and the cmux workspace named the same. Boundary: reading a
+  harness's record of a session's name and the one line that says how to fix it. Opened alone when a
+  harness changes where or how it records a session's name.
 - `status.py` (738 lines): Status and brief: the problems status reports, a quest as status shows
   it, and both commands' output. Boundary: what the lead and agents read about the campaign's
   present. Opened alone to add a problem status reports or change what status or brief prints.
