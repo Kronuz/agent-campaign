@@ -9,7 +9,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .ci import ci_covers, ci_gate, ci_named
+from .ci import ci_covers, ci_gate, ci_job
 from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, git, jobs_dir, section, table_cells
 from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
 from .journals import decisions
@@ -65,28 +65,16 @@ def proof(c: Campaign, p: Json, commits: list[str]) -> Callable[[str, str], list
     """What keeps an Evidence row's text from proving a criterion of a kind, at one of these commits:
     a job criterion needs a job that passed at the code; an artifact one a `path` in the commit; a
     decision one an id from PLAN.md's Decisions table; a manual one only a non-empty row. Every job a row
-    names must have passed, whatever its kind, a `--fails-without` one by its own rule beside one that
-    passed (as `tagged_row` reads it), and a `ci:JOB` by the land gate's rule (`ci_named`)."""
+    names must have passed, whatever its kind, and a `ci:JOB` by the land gate's rule (`ci_named`)."""
     repo = c.repo(p)
     job = job_problem(repo, commits)
     recorded = decisions(c)
 
-    def ci_state(name: str) -> str:
-        first = "no commit"
-        for i, k in enumerate(commits):
-            state = ci_named(c, p, k, name).state
-            if state == "success":
-                return state
-            first = first if i else state
-        return first
-
     def check(kind: str, text: str) -> list[str]:
-        named = list(dict.fromkeys(JOB_ID.findall(text)))
-        inverted = [x for x in named if inverted_job(x)]
-        why = [w for x in named if (w := fails_problem(repo, x) if x in inverted else job(x))]
-        cited = [x for x in named if x not in inverted]
+        cited = list(dict.fromkeys(JOB_ID.findall(text)))
+        why = [w for w in map(job, cited) if w]
         for name in dict.fromkeys(CI_CITE.findall(text)):
-            state = ci_state(name.strip())
+            state = ci_named(c, p, commits, name.strip())
             if state == "success":
                 cited.append(f"ci:{name}")
             else:
@@ -97,9 +85,7 @@ def proof(c: Campaign, p: Json, commits: list[str]) -> Callable[[str, str], list
             if commits and not any(quoted(repo, k, path, quote) for k in commits):
                 why.append(f'"{quote[:60]}" is not in {path} at {commits[0][:12]}')
         bare = QUOTE.sub("", text)  # what a quote says is never a path
-        if kind == "job" and not cited and inverted:
-            why.append("names only --fails-without jobs: a job criterion also needs a job that passed at the code")
-        elif kind == "job" and not cited:
+        if kind == "job" and not cited:
             why.append(
                 "names no job (a job criterion needs a job id or a `ci:JOB`; tag it [manual] or [artifact] otherwise)"
             )
@@ -163,20 +149,17 @@ def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
     return problem
 
 
-def inverted_job(jid: str) -> bool:
-    """Whether JID is a job of this machine submitted `--fails-without`."""
-    d = jobs_dir() / jid
-    return (d / "spec.json").exists() and bool(load_job(d)["spec"].get("fails_without"))
-
-
-def fails_problem(repo: Path | None, jid: str) -> str:
-    """What is wrong with a cited `--fails-without` job as evidence; "" when `fails_without_met`."""
-    job = load_job(jobs_dir() / jid)
-    if not job["spec"].get("commit"):
-        return f"{jid} is unversioned"
-    if repo is not None and not same_repo(Path(job["spec"]["repo"]), repo):
-        return f"{jid} ran in {job['spec']['repo']}, not the quest's repository"
-    return "" if fails_without_met(job) else fails_without_gap(repo, job)
+def ci_named(c: Campaign, p: Json, commits: list[str], name: str) -> str:
+    """ "success" when CI job NAME passed at one of COMMITS by the land gate's rule (`ci_gate`: its own
+    runs, else those of a commit before clean merges from main); else why not, at the first."""
+    repo = c.repo(p)
+    first = "no commit"
+    for i, k in enumerate(commits):
+        state = ci_gate(c, p, k, lambda x: ci_job(repo, x, name)).state
+        if state == "success":
+            return state
+        first = state if i == 0 else first
+    return first
 
 
 def rerun_hint(repo: Path, jids: Collection[str]) -> str:
@@ -287,7 +270,7 @@ def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | N
     check, repo = checks[names[0]], c.repo(p)
     for k in commits:
         if check["cmd"].startswith(CI_CHECK):
-            if ci_named(c, p, k, check["cmd"][len(CI_CHECK) :].strip()).state == "success":
+            if ci_named(c, p, [k], check["cmd"][len(CI_CHECK) :].strip()) == "success":
                 return {"journal": "checks", "evidence": check["cmd"], "met": True, "why": []}
             continue
         job = job_for_check(repo, k, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
@@ -305,15 +288,6 @@ def fails_without_met(j: Json) -> bool:
     if st.get("state") != "done":
         return False
     return j["spec"].get("fails_without", 0) < FAILS_WITHOUT or st.get("exit") not in (0, 124, *NO_RUN)
-
-
-def fails_without_gap(repo: Path | None, j: Json) -> str:
-    """Why a `--fails-without` job does not count; one that never finished names its rerun at its
-    pre-fix code (`rerun_hint`), never at the head."""
-    why = fails_without_why(j)
-    if j["state"].get("state") in ("done", "failed", "queued", "running"):
-        return why
-    return f"{why}: rerun it at its pre-fix code, {rerun_hint(repo or Path(j['spec']['repo']), [j['id']])}"
 
 
 def fails_without_why(j: Json) -> str:
@@ -348,7 +322,7 @@ def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None =
             why.append(f"{j['id']} ran other code" if state == "done" else f"{j['id']} {state}")
     fails = [j["id"] for j in entry["fails"] if fails_without_met(j)]
     if entry["fails"] and not fails:
-        why += [fails_without_gap(repo, j) for j in entry["fails"]]
+        why += [fails_without_why(j) for j in entry["fails"]]
     text = ", ".join(passed) + (f"; fails without: {', '.join(fails)}" if fails else "")
     met = bool(passed) and (bool(fails) or not entry["fails"])
     return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}

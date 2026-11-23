@@ -485,12 +485,6 @@ def ci_job(repo: Path, commit: str, name: str) -> str:
     return "success"
 
 
-def ci_named(c: Campaign, p: Json, commit: str, name: str) -> CiGate:
-    """CI job NAME's verdict on COMMIT by the land gate's rule (`ci_gate`: across clean merges from main)."""
-    repo = c.repo(p)
-    return ci_gate(c, p, commit, lambda k: ci_job(repo, k, name))
-
-
 def ci_waiting(c: Campaign, p: Json) -> bool:
     """Whether CI at the quest's head is queued or running, the landing's or a `ci:` check's: a live
     waiter, which moves the quest without the lead."""
@@ -501,7 +495,9 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
     if c.state.get("ci") == "github" and ci_gate(c, p, head).state.startswith("running: "):
         return True  # the gate's own read: a clean merge's carried head counts
     names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
-    return any(ci_named(c, p, head, name).state.endswith(" is running") for name in names)
+    return any(
+        ci_gate(c, p, head, lambda k, n=name: ci_job(repo, k, n)).state.endswith(" is running") for name in names
+    )
 
 
 def forget_ci() -> None:
@@ -533,7 +529,7 @@ def check_evidence(c: Campaign, p: Json, target: str, ci: bool | None = None) ->
     for check in gates(p):
         if check["cmd"].startswith(CI_CHECK):
             name = check["cmd"][len(CI_CHECK) :].strip()
-            state, at, _ = ci_named(c, p, target, name)
+            state, at, _ = ci_gate(c, p, target, lambda k, name=name: ci_job(repo, k, name))
             if state == "success":
                 evidence.append({"check": check["name"], "ci": check["cmd"], "commit": at, "state": "done"})
             else:
