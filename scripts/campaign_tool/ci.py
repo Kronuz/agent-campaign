@@ -35,7 +35,7 @@ _gh_lock = threading.Lock()
 _pruned = [False]
 _fresh = [False]  # set by ci_fresh: this process asks GitHub past the host's cached answers
 GH_TIMEOUT = 30  # seconds a gh call may take: past it, a failed answer
-LOCK_WAIT = 10  # seconds a process waits for another asking the same: then it asks too
+LOCK_WAIT = 1000  # seconds a process waits for another asking the same: then it asks too
 
 
 def ci_seconds() -> float:
