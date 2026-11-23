@@ -324,7 +324,8 @@ def parser() -> argparse.ArgumentParser:
         "--merge-main",
         action="store_true",
         help="merge main into the quest's branch first (never a rebase), push it, and land when the evidence "
-        "carries; a conflict or voided evidence refuses with the gap",
+        "carries; a conflict or voided evidence refuses with the gap, and when voided evidence is all the quest "
+        "lacks, its reruns are queued at landing priority, ahead of the queue",
     )
     p.add_argument(
         "--record", metavar="REF", help="record a landing that already happened (with --reason; unchecked gates kept)"

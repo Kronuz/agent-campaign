@@ -49,7 +49,8 @@ class ReadSets(CampaignCase):
         def run(name: str) -> tuple[str, bool]:
             mode.write_text(name)
             out = self.ok(wt, "job", "submit", "--quest", "rs", "--sync", "--fresh", "--", f"sh tools/run.sh {name}")
-            return out.out.split()[0], "(reused" in out.out
+            jid = out.out.split()[0]
+            return jid, f"reused {jid}" in out.err
 
         jobs = {name: run(name)[0] for name in ("kill", "none", "ok")}
         reads = {n: json.loads((self.root / "jobs" / j / "reads.json").read_text()) for n, j in jobs.items()}
@@ -149,7 +150,7 @@ class FalseReuse(CampaignCase):
         self.ok(self.checkout, "job", "submit", "--quest", "rs", "--sync", *extra, "--", cmd)
         self.commit(self.checkout, broken)
         r = self.run_cli(self.checkout, "job", "submit", "--quest", "rs", "--sync", *extra, "--", cmd)
-        self.assertNotIn("(reused", r.out)
+        self.assertNotIn(f"reused {r.out.split()[0]}", r.err)
         self.assertNotEqual(r.code, 0, "the change breaks the command")
 
     def test_a_file_only_looked_up(self) -> None:
@@ -394,9 +395,9 @@ class Identity(CampaignCase):
     def test_identical_jobs_are_reused_and_force_reruns(self) -> None:
         jid = self.submit(self.home, "--", "true")
         self.ok(self.home, "wait", jid)
-        again = self.ok(self.home, "job", "submit", "--", "true").out
-        self.assertEqual(again.split()[0], jid)
-        self.assertIn("reused", again)
+        again = self.ok(self.home, "job", "submit", "--", "true")
+        self.assertEqual(again.out, f"{jid}\n")
+        self.assertIn(f"reused {jid}", again.err)
         forced = self.submit(self.home, "--force", "--", "true")
         self.assertNotEqual(forced, jid)
 
