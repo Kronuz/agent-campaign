@@ -15,7 +15,7 @@ from pathlib import Path
 from style import mark, paint, styled
 
 from .campaign import Campaign, ended_at_head, find_campaign, in_flight, overview, park_met, sidebar, unattended
-from .ci import ci_covers, warm_views
+from .ci import ci_covers, main_ci_problems, warm_views
 from .core import CI_CHECK, FAILED, FLIGHT, STATUSES, Json, git, jobs_dir, plural
 from .evidence import criteria, criteria_evidence, evidence_table, replaced_citations, stray_rows
 from .jobs import all_jobs, job_summary, load_job, quest_jobs
@@ -254,6 +254,7 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
     for j in jobs:
         if j["state"].get("state") == "interrupted" and j["spec"].get("campaign") == c.ident:
             out.append(("warning", f"job {j['id']} ({j['spec'].get('what')}) was interrupted and not retried"))
+    out += main_ci_problems(c)
     return out
 
 
