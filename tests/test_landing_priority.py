@@ -120,3 +120,31 @@ class LandingPriority(CampaignCase):
         self.assertEqual(len(set(ran.values()) & {probe, timing, theirs, loose}), 0)
         self.assertEqual({j: self.priority(r) for j, r in ran.items()}, {probe: 3, timing: 0, theirs: 1, loose: 0})
         self.ok(self.home, "wait", *ran.values(), "--timeout", "60")
+
+    def queued(self) -> tuple[Path, str]:
+        """A job held queued at priority 1 behind a blocker in the only slot; touching the path frees it."""
+        self.env["CAMPAIGN_LIGHT_JOBS"] = "1"
+        go = self.root / "go"
+        blocker = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        self.wait_until(lambda: self.job(blocker)["state"] == "running")
+        return go, self.submit(self.home, "--priority", "1", "--", "echo gate")
+
+    def test_a_reused_queued_submit_moves_up_never_down(self) -> None:
+        go, jid = self.queued()
+        self.assertEqual(self.submit(self.home, "--priority", "5", "--", "echo gate"), jid)
+        self.assertEqual(self.priority(jid), 5)
+        self.assertEqual(self.submit(self.home, "--priority", "2", "--", "echo gate"), jid)
+        self.assertEqual(self.priority(jid), 5)  # never lowered
+        go.touch()
+        self.ok(self.home, "wait", jid, "--timeout", "60")
+
+    def test_a_reused_submit_says_so_on_stderr_and_prints_only_the_id(self) -> None:
+        go, jid = self.queued()
+        up = self.ok(self.home, "job", "submit", "--priority", "5", "--", "echo gate")
+        self.assertEqual(up.out, f"{jid}\n")
+        self.assertIn(f"reused queued job {jid}, priority 1 -> 5\n", up.err)
+        same = self.ok(self.home, "job", "submit", "--priority", "2", "--", "echo gate")
+        self.assertEqual(same.out, f"{jid}\n")
+        self.assertIn(f"\nreused {jid}\n", "\n" + same.err)
+        go.touch()
+        self.ok(self.home, "wait", jid, "--timeout", "60")

@@ -291,7 +291,11 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     jid, reused = submit(spec, force=a.force)
     if c is not None and ids:
         tag(jid, c.ident, a.quest, ids, a.fails_without)
-    print(jid + (f" (reused: {resolve_job(jid)['spec'].get('what', '')})" if reused else ""))
+    print(jid)  # only the id: scripts capture it
+    if reused:  # a queued job asked for at a higher priority moves up, never down
+        old = lift_queued(jid, int(spec["priority"]))
+        said = f"reused {jid}" if old is None else f"reused queued job {jid}, priority {old} -> {spec['priority']}"
+        print(said, file=sys.stderr)
     if not reused:
         supersede([jid])
     if a.sync:
@@ -601,12 +605,15 @@ def rerun_jobs(
     return ids
 
 
-def lift_queued(jid: str, priority: int) -> None:
-    """Raises a still-queued job's priority to PRIORITY."""
+def lift_queued(jid: str, priority: int) -> int | None:
+    """Raises a still-queued job's priority to PRIORITY, never lowering it; returns the priority it
+    had when raised, else None."""
     d = jobs_dir() / jid
     spec, state = read_json(d / "spec.json"), read_json(d / "state.json")
-    if spec and state and state.get("state") == "queued" and int(spec.get("priority", 0)) < priority:
-        write_json(d / "spec.json", {**spec, "priority": priority})
+    if not (spec and state and state.get("state") == "queued" and int(spec.get("priority", 0)) < priority):
+        return None
+    write_json(d / "spec.json", {**spec, "priority": priority})
+    return int(spec.get("priority", 0))
 
 
 def cmd_job_cancel(a: argparse.Namespace) -> int:
