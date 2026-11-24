@@ -12,7 +12,9 @@ lead-driver did not measurably reduce it. Active and review quests in both campa
 Single days before ranged from 210 to 260 and the two whole days after were 380 and 136, so the
 difference is far inside the noise. Under the two other attributions of agent time the after
 window is worse, +7% and +13%, and the hours inside idle stretches of 4 h or more rose 25%
-(157.5 to 197.4 per 24 h).
+(157.5 to 197.4 per 24 h). The largest confounder is the leads themselves: on the first day
+after the install both were nearly absent (3.3 and 5.2 active hours, against 13 to 21 before),
+and that day was the worst of both windows.
 
 ## Windows
 
@@ -116,7 +118,14 @@ attribution:
 | xapiand | before | 362 | 120.7 | 165.6 | 151.9 | 109.5 | 22.8 | 6.0 |
 | xapiand | after | 112 | 49.8 | 153.6 | 150.6 | 134.2 | 21.3 | 4.3 |
 
-LEAD_HOURS
+Each lead's active hours, the replay's measure (gaps between its transcript's main-thread lines,
+each capped at 5 minutes), against both campaigns' active and review hours with nothing moving:
+
+| Day | B-3 | B-2 | B-1 | A+1 | A+2 | A+3 (6 h) |
+|---|---|---|---|---|---|---|
+| detent lead active (h) | 12.8 | 19.9 | 15.1 | 3.3 | 16.3 | 3.9 |
+| xapiand lead active (h) | 19.7 | 20.7 | 19.5 | 5.2 | 22.1 | 5.0 |
+| Both campaigns, nothing moving (h) | 209.8 | 259.6 | 234.5 | 379.7 | 136.0 | 4.7 |
 
 What the numbers say:
 1. The headline total is flat, and the daily spread is far larger than the change. The after
@@ -125,11 +134,17 @@ What the numbers say:
    stretches of an hour or more, and after the install there are fewer stretches, each longer.
    lead-driver lists a quest with nothing moving it at once and again after 30 minutes undone, so
    it should have shortened these. It did not: the lead was told, and the quest still sat.
-3. A+1, the day after the install, is the worst day of both windows (379.7). Only one other
-   install fell in it (ci-reuse-disjoint-merge, 2026-11-22 00:26). Over the after window, xapiand's
+3. A+1, the day after the install, is the worst day of both windows (379.7), and on it both
+   leads were nearly absent: 3.3 and 5.2 active hours, against 13 to 21 on every before day.
+   lead-driver wakes a lead that is waiting; it cannot act for a lead that is not running. Only
+   one other install fell in A+1 (ci-reuse-disjoint-merge, 2026-11-22 00:26). Over the after window, xapiand's
    most idle active quests were ninja-only, split-datetime, turn-log-parity, split-xapiand-tests
    and schema-split, 25 to 29 h each (`per_quest` in `measure.json`).
-4. Blocked quests with nothing moving them rose from 288.8 to 408.1 quest-hours per 24 h. lead-driver
+4. A+2 is the one after day with both leads present as before (16.3 and 22.1 h), and it is the
+   lowest whole day of both windows: 136.0, against 210 to 260 before (42% under the before
+   mean). That is one day, and 6 of the after window's 9 other installs fell inside it, so it is
+   a lead, not a measurement.
+5. Blocked quests with nothing moving them rose from 288.8 to 408.1 quest-hours per 24 h. lead-driver
    adds a "park" item that marks a quest waiting on the owner as blocked, so some idle time moved
    out of active into blocked. That shift would lower the active figure without moving any quest,
    and the active figure did not fall either.
@@ -141,19 +156,22 @@ What the numbers say:
    the size measured, 3.5 quest-hours per 24 h, is far below what these windows resolve.
 2. Other changes were installed inside both windows (dotfiles log, `campaign: install` and
    `Bump the campaign skill` commits):
-   - Before: 25 installs, among them v3's restructure into features built by tasks (2026-11-20
-     04:56 and 05:55), evidence by inputs (11:38), reliable delivery of messages to the lead
-     (16:33, 18:03), drains taking turns with light work (01:24, 23:47), split-big-files
+   - Before: 23 skill installs and auto mode letting contributors push (2026-11-20 13:14).
+     Among them: drains taking turns with light work (2026-11-20 01:24), v3's quests as features
+     built by tasks (04:56, 05:55), evidence by inputs (11:38), reliable delivery of messages to
+     the lead (16:33, 18:03), light work held behind a queued drain (23:47), split-big-files
      (2026-11-21 14:11), lead-broadcasts (15:03), generator-clash and gate-check-jobs (20:06).
-   - After: 11 installs. ci-reuse-disjoint-merge (2026-11-22 00:26); broadcast-every-lead,
-     session-title, unversioned-refs, check-set-by-name, check-spec-one and evidence-hints
-     (2026-11-23 05:58); task-probes and landing-priority (07:30); lead-driver-flake and
-     task-jobs-order (11:10); lead-claim, which keeps a live lead's record and delivers every
-     message to it (16:13); docs-script-code (19:21); evidence-holes (20:14); ci-owns-sanitizers
-     (21:45); slow-once (23:57); sidebar-lead-only (2026-11-24 01:30).
-3. Who was at the keyboard is not controlled: the owner's sessions, sleep and the leads' own
-   context resets change how fast a listed item is acted on, and none of that is recorded apart
-   from the lead's transcript activity.
+   - After: 10 installs and a regeneration of the Codex and Copilot agents (2026-11-23 08:48):
+     ci-reuse-disjoint-merge (2026-11-22 00:26); broadcast-every-lead, session-title,
+     unversioned-refs, check-set-by-name, check-spec-one and evidence-hints (2026-11-23 05:58);
+     task-probes and landing-priority (07:30); lead-driver-flake and task-jobs-order (11:10);
+     lead-claim, which keeps a live lead's record and delivers every message to it (16:13);
+     docs-script-code (19:21); evidence-holes (20:14); ci-owns-sanitizers (21:45); slow-once
+     (23:57); sidebar-lead-only (2026-11-24 01:30).
+3. Lead presence is not controlled, and it is the largest confounder here: the leads' active
+   hours per 24 h fell from 15.9 to 10.4 (detent) and from 20.0 to 14.4 (xapiand), almost all of
+   it on A+1. The transcripts record when a lead ran, not why it stopped (the owner's sessions,
+   sleep, a stopped or compacting session).
 4. CI is not a mover in this method. lead-driver's own `activity()` counts CI queued or running
    at a quest's head as a live waiter; here such a quest counts as nothing moving it. CI runs
    are not recorded locally, so this cannot be corrected from the records.
