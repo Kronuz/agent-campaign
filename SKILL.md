@@ -48,6 +48,12 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
 | Contributor (`campaign-contributor` agent) | One quest or task, by its assignment | its branch and journal |
 | Reviewer (`campaign-reviewer` agent) | One quest through one lens, from a fresh context | one review file |
 
+**Session names.** Every session's title leads with its campaign and role, so messages and the
+owner's session list name the campaign: start the lead with `claude -n '<campaign> · lead'` (in
+cmux: `cmux new-workspace --name '<campaign> · lead' --cwd HOME --command "claude -n '<campaign> ·
+lead'"`; other harnesses: `references/harness.md`); a lead's `campaign brief`, `status` and `wait`
+name its cmux workspace and print the `/rename` to type when the session's title is not that.
+
 A contributor's **assignment** names the kind of work; each but implementation has a method in
 `references/assignments/<name>.md`. The lead names the assignment, the model tier and the effort
 at every launch, choosing by the work, never by habit:
@@ -112,7 +118,9 @@ shrink a review or check, or trim a criterion to save quota.
   its assignment, tier and effort chosen for that step, on a branch off the quest branch. `campaign
   task merge ID T` merges it once its own tests (its `none` and `light` jobs, `--task T`) pass at
   its head; its `strict` and `exclusive` jobs are measurements the quest's landing checks, so they
-  never hold a merge. The quest branch takes `main` daily. Disjoint tasks run at once.
+  never hold a merge. A probe that must fail (a mutant probe) goes in as `--task T --fails-without`:
+  it passes when its command fails and never holds the merge. The quest branch takes `main` daily.
+  Disjoint tasks run at once.
 - **Increments:** `campaign land ID --upto COMMIT --reason R` lands a prefix the quest file's "May
   land early" allows (behavior-preserving refactors, tests, unused internal APIs, code behind a
   disabled switch). Never early: bytes on disk or the wire, public API, user-visible behavior, or
@@ -228,10 +236,10 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
   owner.
 - **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
   what is still disputed, never another text round.
-- **What a quest must pass changes only on the record:** `campaign set ID ... --weaken REASON`
-  lowers its risk, removes a lens, or removes, changes, defers or scopes a check; it is kept in its
-  history, shown by `campaign status ID`, and voids its acceptances. The review a risk needs (a code
-  review for high and critical, a design review for critical) cannot be removed.
+- **What a quest must pass changes only on the record:** `set ID --check NAME=CMD` (`--later`)
+  edits NAME alone, `NAME=` drops it; `--weaken REASON` lowers the risk, removes a lens, or drops
+  (naming it), changes, defers or scopes a check; `campaign status ID` shows it, and it voids the
+  acceptances. The review a risk needs (code at high and critical, design at critical) stays.
 - **System review on events, not on a calendar:** when `campaign check` reports two quests
   changing one file or one contract, ask one reviewer (lens `system`) that specific question.
 
@@ -267,7 +275,7 @@ clears its A/A band decides without an exclusive run.
 Jobs run at their submitted commit, a quest's in its build slot, with the submitter's PATH;
 `--build CMD` builds there under light first. A result is reused for identical code
 (without `.campaign/`), command, directory, level, `--env`, host and toolchain, by read sets, and
-across docs-only commits and merges from `main` touching neither the quest's files nor the job's
+across prose-only commits and merges from `main` touching neither the quest's files nor the job's
 `--inputs GLOBS` (a measurement without them: only docs). Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
 minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).

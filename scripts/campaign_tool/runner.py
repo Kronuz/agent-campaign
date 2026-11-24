@@ -248,6 +248,7 @@ def slot_lock(slot: Path, beat: Path) -> None:
 def prepare(spec: Json, d: Path) -> Path:
     """The job's sources at its exact commits; the agent's own worktree is never used."""
     if not spec.get("commit"):
+        checkout_refs(spec, d)
         return Path(spec["cwd"])
     repo = Path(spec["repo"])
     if spec.get("slot"):
@@ -265,7 +266,13 @@ def prepare(spec: Json, d: Path) -> Path:
         root = d / "src"
         worktree_remove(str(repo), root)
         worktree_add(repo, root, spec["commit"], d / "heartbeat")
-    for name, ref in spec["refs"].items():
+    checkout_refs(spec, d)
+    return root / spec["cwd"]
+
+
+def checkout_refs(spec: Json, d: Path) -> None:
+    """Each --ref at its commit, from its own repository: an unversioned job's too."""
+    for name, ref in spec.get("refs", {}).items():
         path = ref_path(spec, d, name)
         reset = ["checkout", "-q", "--detach", "--force", ref["commit"]]
         if slot_of(spec) and (path / ".git").exists() and git_ok(path, *reset):
@@ -273,7 +280,6 @@ def prepare(spec: Json, d: Path) -> Path:
         worktree_remove(ref["repo"], path)
         git_ok(Path(ref["repo"]), "worktree", "prune")  # a slot removed whole leaves its refs registered
         worktree_add(Path(ref["repo"]), path, ref["commit"], d / "heartbeat")
-    return root / spec["cwd"]
 
 
 def ref_path(spec: Json, d: Path, name: str) -> Path:
@@ -368,11 +374,13 @@ def release(spec: Json, d: Path) -> None:
     fh = _slot_locks.pop(spec.get("slot") or "", None)
     if fh is not None:
         fh.close()
-    if spec.get("commit") and not spec.get("keep"):
+    if spec.get("keep"):
+        return
+    if spec.get("commit"):
         worktree_remove(spec["repo"], d / "src")
-        for name, ref in spec.get("refs", {}).items():
-            if not slot_of(spec):
-                worktree_remove(ref["repo"], ref_path(spec, d, name))
+    for name, ref in spec.get("refs", {}).items():
+        if not slot_of(spec):
+            worktree_remove(ref["repo"], ref_path(spec, d, name))
 
 
 def quiet_argv() -> list[str]:
@@ -534,7 +542,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     )
     if spec.get("fails_without", 0) >= FAILS_WITHOUT:
         env["QUIET_EXPECT"] = "fail"  # its failing is its passing: no failure notice
-    for name in spec["refs"]:
+    for name in spec.get("refs", {}):
         env[f"JOB_REF_{name.upper()}"] = str(ref_path(spec, d, name))
     env.update(mirror_env(env))
     if spec.get("commit") and env.get("CAMPAIGN_GIT"):

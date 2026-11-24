@@ -500,6 +500,34 @@ def deferred(p: Json) -> list[Json]:
     return [x for x in p["checks"] if x.get("later")]
 
 
+def edit_checks(p: Json, specs: list[str], later: list[str]) -> list[str]:
+    """Applies `set --check SPECS --later LATER` by name: a named check is replaced in place or added,
+    `NAME=` removes it, `--later ''` removes the deferred ones, and every other check stays. Returns
+    the names it removed."""
+    old = [x["name"] for x in p["checks"]]
+    checks = [x for x in p["checks"] if not ("" in later and x.get("later"))]
+    named: set[str] = set()
+    for spec, is_later in [(x, False) for x in specs] + [(x, True) for x in later if x]:
+        head, sep, cmd = spec.partition("=")
+        name = head.split(":")[0]
+        if name in named:
+            die(f"--check {name}: named twice")
+        named.add(name)
+        at = next((i for i, x in enumerate(checks) if x["name"] == name), None)
+        rest = [x for x in checks if x["name"] != name]
+        if sep and not cmd.strip():
+            if at is None:
+                die(f"--check {name}=: the quest has no check {name} to remove")
+            checks = rest
+            continue
+        new = parse_check(spec, later=True) if is_later else placed(spec, p["risk"])
+        rest.insert(len(rest) if at is None else at, new)
+        checks = rest
+    p["checks"] = checks
+    kept = {x["name"] for x in checks}
+    return [x for x in old if x not in kept]
+
+
 def lens_floor(risk: str, lenses: list[str]) -> list[str]:
     """The reviews RISK requires that LENSES lack: high and critical a code review, critical a design."""
     need = (

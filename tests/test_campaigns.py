@@ -514,6 +514,102 @@ class Campaigns(CampaignCase):
         self.assertEqual((self.lib / "lib.py").read_text(), "X = 2\n")
 
 
+class LeadClaim(CampaignCase):
+    """Only the lead's session is a campaign's lead: liveness is a surface cmux still lists."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls, self.tree = self.root / "cmux-calls", self.root / "cmux-tree.json"
+        fake = self.root / "bin" / "cmux"
+        fake.write_text(
+            f'#!/bin/sh\nprintf "%s|" "$@" >> {self.calls}; echo >> {self.calls}\n'
+            f'case " $* " in *" tree "*) cat {self.tree};; esac\nexit 0\n'
+        )
+        fake.chmod(0o755)
+        self.lead = self.root / "leads" / "demo"
+
+    def live(self, *surfaces: str) -> None:
+        """The surfaces the fake cmux lists, one workspace each."""
+        spaces = [{"id": f"ws-{s}", "panes": [{"surfaces": [{"id": s}]}]} for s in surfaces]
+        self.tree.write_text(json.dumps({"windows": [{"workspaces": spaces}]}))
+
+    def session(self, surface: str, *args: str, cwd: Path | None = None) -> str:
+        """Runs `campaign ARGS` from the home as the session in cmux SURFACE (workspace ws-SURFACE)."""
+        self.env.update(CMUX_SURFACE_ID=surface, CMUX_WORKSPACE_ID=f"ws-{surface}")
+        return self.ok(cwd or self.home, *args).out
+
+    def recorded(self) -> str:
+        return str(json.loads(self.lead.read_text())["surface"])
+
+    def called(self) -> str:
+        """The fake cmux's calls; none made leaves no file."""
+        return self.calls.read_text() if self.calls.exists() else ""
+
+    def renamed(self, surface: str) -> bool:
+        return f"workspace-action|--workspace|ws-{surface}|--action|rename|" in self.called()
+
+    def sent(self, surface: str, nid: str) -> bool:
+        return any(
+            line.startswith(f"agent|message|{surface}|") and f"campaign demo: {nid} for the lead" in line
+            for line in self.called().splitlines()
+        )
+
+    def announced(self, nid: str) -> Any:
+        return json.loads((self.home / ".git" / "campaign-mail" / "demo" / "@" / f"{nid}.json").read_text())
+
+    def test_a_session_looking_in_leaves_a_live_lead_and_its_title(self) -> None:
+        self.live("lead", "site-core")
+        self.session("lead", "status")
+        self.assertEqual((self.recorded(), self.renamed("lead")), ("lead", True))
+        self.session("site-core", "status")
+        self.assertEqual(self.recorded(), "lead", "a session looking in took a live lead's record")
+        self.assertFalse(self.renamed("site-core"), "a session looking in renamed its workspace for the lead")
+        self.tree.write_text("not json")
+        self.session("site-core", "status")
+        self.assertEqual(self.recorded(), "lead", "a cmux that does not answer keeps the lead")
+        self.live("site-core")
+        self.session("site-core", "status")
+        self.assertEqual(self.recorded(), "site-core", "a lead whose surface is gone is replaced")
+        self.assertTrue(self.renamed("site-core"))
+
+    def test_a_session_outside_the_home_never_becomes_the_lead(self) -> None:
+        self.live("contributor")
+        wt = self.started("fix", files="app.py")
+        self.session("contributor", "brief", cwd=wt)
+        self.assertFalse(self.lead.exists(), "a quest worktree's session became the lead")
+        self.assertFalse(self.renamed("contributor"))
+
+    def test_a_message_from_a_session_looking_in_reaches_the_lead(self) -> None:
+        self.live("lead", "site-core")
+        self.session("lead", "status")
+        self.session("site-core", "status")  # the site-core sequence: a command in the home, then a message
+        out = self.session("site-core", "message", "demo:", "Python spike landed", "--from", "site-core")
+        self.assertIn("msg-1 for the lead", out)
+        self.assertTrue(self.sent("lead", "msg-1"), self.called())
+        self.assertIn("from site-core: Python spike landed", self.called())
+        self.assertEqual(self.announced("msg-1")["announced"]["surface"], "lead")
+
+    def test_a_new_lead_is_sent_every_open_message(self) -> None:
+        self.live("old")
+        self.session("old", "status")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.env.pop("CMUX_SURFACE_ID")
+        for text in ("first", "second"):
+            self.ok(elsewhere, "message", "demo:", text, "--from", "owner")
+        self.assertTrue(self.sent("old", "msg-1") and self.sent("old", "msg-2"))
+        self.calls.write_text("")
+        self.live("new")
+        self.session("new", "status")
+        self.assertEqual(self.recorded(), "new")
+        for nid in ("msg-1", "msg-2"):
+            self.assertTrue(self.sent("new", nid), f"{nid} recorded announced, never sent to the new lead")
+            self.assertEqual(self.announced(nid)["announced"]["surface"], "new")
+        self.calls.write_text("")
+        self.session("new", "status")
+        self.assertFalse(self.sent("new", "msg-1"), "a message that reached its lead is not sent again")
+
+
 class QueueHealth(CampaignCase):
     def fake(self, jid: str, level: str, state: str, submitted: float, spec: Any = None, **times: float) -> str:
         d = self.root / "jobs" / jid

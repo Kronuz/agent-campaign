@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .ci import ci_covers, ci_gate, ci_job
-from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, jobs_dir, section, table_cells
+from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, git, jobs_dir, section, table_cells
 from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
 from .journals import decisions
 from .repo import SHA, file_at, read_object, same_repo
@@ -61,11 +61,12 @@ def unparsed_criteria(c: Campaign, pid: str, *, filled: bool = True) -> str:
     return ""
 
 
-def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], list[str]]:
+def proof(c: Campaign, p: Json, commits: list[str]) -> Callable[[str, str], list[str]]:
     """What keeps an Evidence row's text from proving a criterion of a kind, at one of these commits:
     a job criterion needs a job that passed at the code; an artifact one a `path` in the commit; a
     decision one an id from PLAN.md's Decisions table; a manual one only a non-empty row. Every job a row
-    names must have passed, whatever its kind."""
+    names must have passed, whatever its kind, and a `ci:JOB` by the land gate's rule (`ci_named`)."""
+    repo = c.repo(p)
     job = job_problem(repo, commits)
     recorded = decisions(c)
 
@@ -73,11 +74,13 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
         cited = list(dict.fromkeys(JOB_ID.findall(text)))
         why = [w for w in map(job, cited) if w]
         for name in dict.fromkeys(CI_CITE.findall(text)):
-            state = ci_job(repo, commits[0], name.strip()) if commits else "no commit"
+            state = ci_named(c, p, commits, name.strip())
             if state == "success":
                 cited.append(f"ci:{name}")
             else:
                 why.append(state)
+        for name in dict.fromkeys(x.rstrip(".") for x in BARE_CI.findall(CODE.sub("", text))):
+            why.append(f"ci:{name} is read only in backticks: cite it as `ci:{name}`")
         for path, quote in QUOTED.findall(text):
             if commits and not any(quoted(repo, k, path, quote) for k in commits):
                 why.append(f'"{quote[:60]}" is not in {path} at {commits[0][:12]}')
@@ -100,6 +103,8 @@ def proof(c: Campaign, repo: Path, commits: list[str]) -> Callable[[str, str], l
     return check
 
 
+BARE_CI = re.compile(r"(?<![\w/])ci:([\w.+-]+)")  # a `ci:JOB` citation written without its backticks
+CODE = re.compile(r"`[^`]*`")
 UNMET = re.compile(r"<|(pending|queued|running|failed|missing|open|todo|none)\b", re.I)
 QUOTE = re.compile(r'"[^"]+"')
 QUOTED = re.compile(r'`([^`\s]+)`:?\s*"([^"]+)"')  # `path`: "text the file holds"
@@ -142,6 +147,39 @@ def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
         return f"{jid} ran other code"
 
     return problem
+
+
+def ci_named(c: Campaign, p: Json, commits: list[str], name: str) -> str:
+    """ "success" when CI job NAME passed at one of COMMITS by the land gate's rule (`ci_gate`: its own
+    runs, else those of a commit before clean merges from main); else why not, at the first."""
+    repo = c.repo(p)
+    first = "no commit"
+    for i, k in enumerate(commits):
+        state = ci_gate(c, p, k, lambda x: ci_job(repo, x, name)).state
+        if state == "success":
+            return state
+        first = state if i == 0 else first
+    return first
+
+
+def rerun_hint(repo: Path, jids: Collection[str]) -> str:
+    """The commands that rerun these jobs where they can count: at the quest's head, and a
+    `--fails-without` job at its own pre-fix code (its mutant ref, else its commit), never the head."""
+    plain: list[str] = []
+    mutants: list[str] = []
+    for jid in jids:
+        spec = load_job(jobs_dir() / jid)["spec"] if (jobs_dir() / jid / "spec.json").exists() else {}
+        if spec.get("fails_without") and spec.get("commit"):
+            mutants.append(f"`campaign job rerun {jid} --commit {mutant_ref(repo, spec['commit'])}`")
+        else:
+            plain.append(jid)
+    return "; ".join([f"`campaign job rerun {' '.join(plain)}`"] * bool(plain) + mutants)
+
+
+def mutant_ref(repo: Path, commit: str) -> str:
+    """A ref under refs/campaign/ that names COMMIT, else the commit itself."""
+    refs = git(repo, "for-each-ref", "--points-at", commit, "--format=%(refname)", "refs/campaign/").split()
+    return refs[0] if refs else commit[:12]
 
 
 def evidence(
@@ -232,7 +270,7 @@ def named_check(c: Campaign, p: Json, text: str, commits: list[str]) -> Json | N
     check, repo = checks[names[0]], c.repo(p)
     for k in commits:
         if check["cmd"].startswith(CI_CHECK):
-            if ci_job(repo, k, check["cmd"][len(CI_CHECK) :].strip()) == "success":
+            if ci_named(c, p, [k], check["cmd"][len(CI_CHECK) :].strip()) == "success":
                 return {"journal": "checks", "evidence": check["cmd"], "met": True, "why": []}
             continue
         job = job_for_check(repo, k, check, c.state.get("tested_docs", []), ci=ci_covers(c), files=p["files"])
@@ -332,7 +370,7 @@ def criteria_evidence(
         if wanted.get(x, {}).get("kind") == "job"
     }
     rows = evidence(
-        journals, {x: w for x, w in wanted.items() if x not in tags and w["kind"] != "ci"}, proof(c, repo, commits)
+        journals, {x: w for x, w in wanted.items() if x not in tags and w["kind"] != "ci"}, proof(c, p, commits)
     )
     named = {x: named_check(c, p, w["whole"], commits) for x, w in wanted.items() if w["kind"] == "job"}
     ran = ci_row(c, p, commits, ci) if any(w["kind"] == "ci" for w in wanted.values()) else {}

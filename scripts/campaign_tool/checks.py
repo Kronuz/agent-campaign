@@ -12,15 +12,15 @@ from style import mark, paint
 
 from .campaign import Campaign, find_campaign, migrate_parks, writing
 from .ci import ci_covers
-from .core import CI_CHECK, HEAVY, Json, die, jobs_dir, plural, read_json, stamp
+from .core import CI_CHECK, HEAVY, CampaignError, Json, die, jobs_dir, plural, read_json, stamp
 from .disk import disk_floor, disk_warning, prune_plan
 from .evidence import criteria_for
-from .jobcmds import PARALLEL, ctest_warning, quest_slot, script_digests
-from .jobs import all_jobs, load_job, matches_inputs, tag
+from .jobcmds import LANDING_PRIORITY, PARALLEL, at_landing, ctest_warning, quest_slot, rerun_jobs
+from .jobs import all_jobs, load_job, matches_inputs, resolve_job, tag
 from .journals import journal_place
 from .leads import stuck_warnings
 from .repo import frozen, has_ref, main_branch, rev, same_repo
-from .reuse import build_test, docs_note, job_at, submit
+from .reuse import build_test, check_spec, docs_note, job_at, submit
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, ci_owned, deferred, gates, locate, select, validate
 from .status import print_problem, problems
@@ -110,7 +110,7 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
     return out
 
 
-GATE_PRIORITY = 2  # above a quest's other light evidence (1), measurements (0) and deferred checks (-1)
+GATE_PRIORITY = 2  # above light evidence (1), measurements (0) and deferred checks (-1); below LANDING_PRIORITY
 
 
 def submit_checks(
@@ -123,14 +123,8 @@ def submit_checks(
         if check["cmd"].startswith(CI_CHECK):
             continue  # GitHub runs it when the branch is pushed
         spec: Json = {
-            "repo": str(repo),
-            "commit": commit,
-            "refs": {},
-            "cwd": "",
-            "cmd": check["cmd"],
-            "level": check["level"],
+            **check_spec(repo, commit, check),
             "minutes": check["minutes"],
-            "env": {},
             "quest": qid,
             "campaign": c.ident,
             "what": f"{qid} {'deferred ' if check.get('later') else ''}check {check['name']} at {commit[:12]}",
@@ -138,8 +132,6 @@ def submit_checks(
             "cmux": os.environ.get("CMUX_WORKSPACE_ID", ""),
             "priority": priority,
             "retries": 1,
-            "scripts": script_digests(check["cmd"], str(repo)),  # the bytes of its outside scripts, as job submit
-            **({"inputs": check["inputs"]} if check.get("inputs") else {}),
         }
         exact = build_test(check)
         earlier = None if force else job_at(spec, commit, exact=exact, merged=ci_covers(c) or not exact)
@@ -159,6 +151,22 @@ def submit_checks(
         ids.append(jid)
     ensure_worker()
     return ids
+
+
+def landing_reruns(c: Campaign, pid: str) -> str:
+    """Queues what a merge from main left a landing quest to rerun (`at_landing`): its voided evidence
+    jobs and gate checks at its head, at LANDING_PRIORITY. Returns what it queued, for the refusal."""
+    gaps = at_landing(c, pid)
+    if gaps is None:
+        return ""
+    p = c.quests[pid]
+    stale = [jid for g in gaps for jid in g.jobs if not resolve_job(jid)["spec"].get("fails_without")]  # no mutant here
+    try:
+        ids = rerun_jobs(stale, c=c) if stale else []
+        ids += submit_checks(c, pid, gates(p), rev(c.repo(p), p["branch"]), priority=LANDING_PRIORITY)
+    except CampaignError as e:
+        return f"\n  its reruns were not queued: {e}"
+    return f"\n  queued its reruns at landing priority {LANDING_PRIORITY}: {' '.join(dict.fromkeys(ids))}"
 
 
 def verify_deferred(a: argparse.Namespace) -> int:

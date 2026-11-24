@@ -12,7 +12,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import shutil
 import subprocess
 import sys
@@ -34,7 +33,7 @@ from .core import (
     read_json_shared,
     write_json,
 )
-from .jobs import BUILD_FILES, all_jobs, claim, finish, job_key, key_links, load_job, named_paths, resolve_job
+from .jobs import BUILD_FILES, all_jobs, claim, finish, job_key, key_links, load_job, named_code, resolve_job
 from .repo import ancestor, blobs, changed, is_meta, main_branch, merge_base, on_commits, rev, tree_map
 
 
@@ -50,19 +49,29 @@ def job_for_check(
     """The job of a quest check at COMMIT's code. The build-test needs the exact code, documentation
     aside, unless CI at the exact commit (CI) tests the merge with main; every other check counts
     across merges from main that touch none of the quest's FILES."""
-    nothing: Json = {}
-    spec: Json = {
-        "repo": str(repo),
-        "commit": commit,
-        "refs": nothing,
-        "cmd": check["cmd"],
-        "cwd": "",
-        "level": check["level"],
-        "env": nothing,
-        **({"inputs": check["inputs"]} if check.get("inputs") else {}),
-    }
+    spec = check_spec(repo, commit, check)
     exact = build_test(check)
     return job_at(spec, commit, tested, exact=exact, merged=ci or not exact, files=files)
+
+
+def check_spec(repo: Path, commit: str, check: Json) -> Json:
+    """A quest check's job identity at COMMIT: the spec `verify` queues and `brief` and `land` look up,
+    with the bytes of the scripts it names outside the checkout (as job submit)."""
+    from .jobcmds import PATH_TOKEN, script_digests  # noqa: PLC0415  # jobcmds imports this module
+
+    cmd = check["cmd"]
+    named = any(Path(x).expanduser().is_file() for x in PATH_TOKEN.findall(cmd))  # spares the git call
+    return {
+        "repo": str(repo),
+        "commit": commit,
+        "refs": {},
+        "cmd": cmd,
+        "cwd": "",
+        "level": check["level"],
+        "env": {},
+        "scripts": script_digests(cmd, str(repo)) if named else {},
+        **({"inputs": check["inputs"]} if check.get("inputs") else {}),
+    }
 
 
 def build_test(check: Json) -> bool:
@@ -70,38 +79,28 @@ def build_test(check: Json) -> bool:
     return not check.get("later") and not check.get("inputs")
 
 
-DOC_PATHS = ("docs/**", "website/**", "*.md")  # documentation: evidence outlives commits that change only these
+# documentation, prose only: evidence outlives commits that change only these (.txt is often data)
+DOC_PATHS = ("*.md", "*.mdx", "*.rst", "docs/*.txt", "site/*.txt", "website/*.txt")
+DEPENDENCY_LISTS = ("requirements*.txt", "constraints*.txt")  # prose by extension, code by use
 CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs, whatever its extension
 CARRY_DEPTH = 40  # how many first-parent commits back evidence is looked for (docs-only commits, merges from main)
 
 
-def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
-    """Whether PATH is documentation that the command CMD does not name, itself or by a folder, and
-    that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
-    return docs_unnamed(path, cmd, tuple(tested))
+def doc_path(path: str, cmd: str, tested: Sequence[str] = (), cwd: str = "") -> bool:
+    """Whether PATH is documentation that the command CMD, run in CWD, does not name (named_code),
+    and that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
+    return docs_unnamed(path, cmd, tuple(tested), cwd)
 
 
 @functools.lru_cache(maxsize=1 << 16)
-def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...]) -> bool:
-    folders = {path[: i + 1] for i, ch in enumerate(path) if ch == "/"}
-    named = path in cmd or any(
-        w.rstrip("/") + "/" in folders for w in cmd_words(cmd) if w.startswith(("docs", "website"))
-    )
+def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...], cwd: str) -> bool:
+    named = path in cmd or any(path == x or path.startswith(x + "/") for x in named_code(cmd, cwd))
     parts = path.split("/")
     if named or any(fnmatch.fnmatchcase(path, g) for g in tested) or set(parts[:-1]) & set(CODE_DIRS):
         return False
-    return not any(fnmatch.fnmatchcase(parts[-1], g) for g in BUILD_FILES) and any(
+    return not any(fnmatch.fnmatchcase(parts[-1], g) for g in (*BUILD_FILES, *DEPENDENCY_LISTS)) and any(
         fnmatch.fnmatchcase(path, g) for g in DOC_PATHS
     )
-
-
-@functools.lru_cache(maxsize=1 << 12)
-def cmd_words(cmd: str) -> tuple[str, ...]:
-    """A command's words, as the shell splits them (by whitespace when it cannot)."""
-    try:
-        return tuple(shlex.split(cmd))
-    except ValueError:
-        return tuple(cmd.split())
 
 
 def tested_docs(spec: Json) -> list[str]:
@@ -138,14 +137,14 @@ def carried_ancestors(
     command does not name, or, with MERGED, brings main's changes that touch none of the quest's
     FILES (its file set and own changes) nor the job's inputs (as input_files reads them). A
     measurement (strict, exclusive) without --inputs crosses only main's documentation."""
-    cmd, inputs = spec["cmd"], spec.get("inputs") or []
+    cmd, cwd, inputs = spec["cmd"], spec.get("cwd", ""), spec.get("inputs") or []
     line = on_commits(
         ("first-parents", str(repo), commit),
         lambda: git(repo, "rev-list", "--first-parent", f"--max-count={CARRY_DEPTH + 1}", commit).split(),
     )
     main_head = rev(repo, main_branch(repo)) if merged else ""
-    own = set(own_code(repo, main_head, commit, cmd, tested)) if merged else set()
-    named = named_paths(cmd, spec.get("cwd", ""))
+    own = set(own_code(repo, main_head, commit, cmd, tested, cwd=cwd)) if merged else set()
+    named = named_code(cmd, cwd)
     measured = spec.get("level") in HEAVY and not inputs
 
     def touches(path: str) -> bool:
@@ -169,7 +168,7 @@ def carried_ancestors(
     merges, newer = 0, commit
     for older in line[1:]:
         paths = [x for x in changed(repo, older, newer) if not is_meta(x)]
-        code = [x for x in paths if not doc_path(x, cmd, tested)]
+        code = [x for x in paths if not doc_path(x, cmd, tested, cwd)]
         if merged and from_main(repo, newer, main_head):
             if any(touches(x) for x in code):
                 break
@@ -208,11 +207,11 @@ def job_at(
     return (None if exact else read_twin(spec, commit)) or found
 
 
-def own_code(repo: Path, main_head: str, commit: str, cmd: str, tested: Sequence[str]) -> dict[str, str]:
+def own_code(repo: Path, main_head: str, commit: str, cmd: str, tested: Sequence[str], *, cwd: str) -> dict[str, str]:
     """The quest's own code at COMMIT: the paths it changes against its merge base with main, with
-    their blobs, documentation CMD does not name aside."""
+    their blobs, documentation CMD run in CWD does not name aside."""
     own: dict[str, str] = on_commits(("own", str(repo), main_head, commit), lambda: own_blobs(repo, main_head, commit))
-    return {x: b for x, b in own.items() if not doc_path(x, cmd, tested)}
+    return {x: b for x, b in own.items() if not doc_path(x, cmd, tested, cwd)}
 
 
 def docs_note(job: Json) -> str:

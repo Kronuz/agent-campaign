@@ -43,14 +43,16 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   identical job that is pending or succeeded is returned (`--force` reruns), and a quest job at
   newer code cancels its queued older instances (but one a pending job waits on). A passed job also
   counts wherever every tracked file in its read set holds what it held, and across up to 40
-  first-parent commits, whatever jobs it ran after, each changing only documentation (`docs/**`,
-  `website/**`, `*.md` outside `tests/` and `bench/`, never a build file) its command does not name
-  and no `tested_docs` glob matches, or, for a quest, a merge from main whose changes touch none of
-  the quest's files or own changes nor its `--inputs` (with their build files and named paths); a
-  strict or exclusive job without `--inputs` crosses only main's documentation. The build-test, a
-  gate check without `--inputs`, counts by neither read set nor merges unless `ci=github`, whose
-  run at the exact head tests the merge. Upgrading `campaign` can change keys: run `campaign
-  verify` again. What the key does not see is the submitter's to name:
+  first-parent commits, whatever jobs it ran after, each changing only documentation (prose:
+  `*.md`, `*.mdx` and `*.rst` in any folder, `*.txt` under `docs/`, `site/` or `website/`; outside
+  `tests/` and `bench/`, never a build file or `requirements*.txt`) its command does not name (a
+  path it names names its folder too: a script reads its siblings) and no `tested_docs` glob
+  matches; scripts, data and site source under `docs/` are code, or, for a quest, a merge from main
+  whose changes touch none of the quest's files or own changes nor its `--inputs` (with their build
+  files and named paths); a strict or exclusive job without `--inputs` crosses only main's
+  documentation. The build-test, a gate check without `--inputs`, counts by neither read set nor
+  merges unless `ci=github`, whose run at the exact head tests the merge. Upgrading `campaign` can
+  change keys: run `campaign verify` again. What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|
@@ -237,9 +239,11 @@ contracts; it closes once that quest lands or drops, or yours order `--after NAM
 Messages wait in the home's `.git` (`campaign-mail/<campaign>/`), so any agent can leave one
 without being the campaign's one writer. A new one notifies the owner and wakes the lead's
 `campaign wait`; `campaign brief` lists it for the quest's contributor and the lead. Landing
-moves a quest's answered and closed messages into its state. In cmux, every `campaign` command (but
-`job`) records the lead's surface, and messages from other surfaces go there via `cmux agent
-message`; `check` and `wait` notify the owner of one undelivered over 15 minutes.
+moves a quest's answered and closed messages into its state. In cmux, a `campaign` command (but
+`job`) records its surface as the lead's when none is recorded or cmux no longer lists the recorded
+one, and only that surface names its workspace `<campaign> · lead`. Messages reach the lead
+through `cmux agent message`, but for one the lead's own command printed or sent; a new lead is
+sent every open message; `check` and `wait` notify the owner of one undelivered over 15 minutes.
 
 A campaign on another machine is reached as a peer: `campaign config peers=NAME=URL,...`, where
 URL is a repository both machines can push to and fetch from. A message to `NAME:ID` or `NAME:`

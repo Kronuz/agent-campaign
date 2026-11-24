@@ -77,6 +77,7 @@ class Sidebar(CampaignCase):
         fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
         fake.chmod(0o755)
         self.env["CMUX_WORKSPACE_ID"] = "ws-test"
+        self.env["CMUX_SURFACE_ID"] = "surface-test"  # the lead: only a lead's session names its workspace
         self.ok(
             self.home,
             "new",
@@ -101,6 +102,13 @@ class Sidebar(CampaignCase):
         log = calls.read_text()
         self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)  # the active one
         self.assertIn("set-status|campaign-demo-a|a: active|--icon|hammer|", log)
+        calls.write_text("")
+        self.ok(self.home, "status")
+        self.assertEqual(
+            calls.read_text(),
+            "workspace-action|--workspace|ws-test|--action|rename|--title|demo · lead|\n",
+            "named once",
+        )
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")

@@ -96,5 +96,19 @@ class Pills(unittest.TestCase):
             self.assertEqual(json.loads((Path(tmp) / "ws.json").read_text()), {})
 
 
+class Runner(unittest.TestCase):
+    def test_a_name_that_matches_no_test_fails_the_run(self) -> None:
+        """Several modules in one quoted argument name no test: the run fails instead of passing empty."""
+        for args in (["test_cli test_pace"], ["test_cli.Shell", "test_nope"]):
+            r = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("run.py")), *args],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(f"no test id starts with {args[-1]!r}", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
