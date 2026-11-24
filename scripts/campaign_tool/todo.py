@@ -197,12 +197,23 @@ def pill_key(c: Campaign) -> str:
     return f"campaign-{c.name}--todo"
 
 
+AGE = re.compile(r"\b\d+(?:\.\d+)? (?=[a-z])")  # "45 min", "2 h", "3 jobs": an age or a count
+
+
+def said(x: Json) -> str:
+    """What an item asks of the lead, its gap and command, without the ages and counts that change
+    while it stands."""
+    return f"{AGE.sub('# ', str(x['text']))}: `{x['cmd']}`"
+
+
 def mail_todo(c: Campaign, jobs: list[Json], now: float, workspace: str) -> bool:
     """One look at C's to-do for its live lead, whose cmux workspace is WORKSPACE: when an item is new
-    or was last sent `repeat_seconds` ago, every item goes in one message, critical path first, that
-    replaces the one before (`settled`); an item first sent `escalate_after` ago and undone is told
-    to the owner once, and draws a pill in the lead's workspace while one is. Recorded, with when
-    each item was first and last sent, in `todo_mail_file`. True while the list holds items."""
+    or was last sent `repeat_seconds` ago, or the list differs from the one last sent (an item came
+    or left, or its gap or command changed: `said`), every item goes in one message, critical path
+    first, that replaces the one before (`settled`); an item first sent `escalate_after` ago and
+    undone is told to the owner once, and draws a pill in the lead's workspace while one is.
+    Recorded, with when each item was first and last sent and what was sent, in `todo_mail_file`.
+    True while the list holds items."""
     records = todo_mail(c)
     rec: Json = dict(records.get(c.ident) or {})
     forget_ci()  # CI that was running may have finished
@@ -211,13 +222,16 @@ def mail_todo(c: Campaign, jobs: list[Json], now: float, workspace: str) -> bool
         seen = {str(k): dict(v) for k, v in dict(rec.get("items") or {}).items() if k in {x["key"] for x in items}}
         repeat = repeat_seconds()
         text = ""
-        if any(now - float(seen.get(x["key"], {}).get("sent", float("-inf"))) >= repeat for x in items):
+        asks = {x["key"]: said(x) for x in items}
+        due = any(now - float(seen.get(x["key"], {}).get("sent", float("-inf"))) >= repeat for x in items)
+        if items and (due or asks != rec.get("sent")):
             for x in items:
                 seen.setdefault(x["key"], {"first": now})["sent"] = now
             lines = [mail_line(c, x, jobs, now - float(seen[x["key"]]["first"]), now) for x in items]
             text = "to do, critical path first:\n" + "\n".join(lines)
     if text or not items:  # recorded before the message: its own token must not settle it
         rec["token"] = secrets.token_hex(4) if text else ""
+        rec["sent"] = asks
     rec.update(looked=now, items=seen)
     late = [x for x in items if now - float(seen[x["key"]]["first"]) >= escalate_after()]
     if fresh := [x for x in late if not seen[x["key"]].get("escalated")]:

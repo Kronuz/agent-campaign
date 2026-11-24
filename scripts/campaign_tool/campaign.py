@@ -36,7 +36,7 @@ from .core import (
 from .jobs import all_jobs, quest_jobs
 from .journals import decisions, journal_place, journal_text, milestone_groups, state_of
 from .mail import recorded_lead, settle_mail
-from .repo import ancestor, code_tree, common_dir, frozen, has_ref, main_branch, rev, toplevel
+from .repo import ancestor, code_tree, common_dir, frozen, has_ref, main_branch, on_commits, rev, toplevel
 from .state import (
     branches,
     clashes,
@@ -137,12 +137,14 @@ def unattended(c: Campaign, jobs: list[Json]) -> list[str]:
 
 def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
     """What moves each active or in-review quest, and each of its tasks (QUEST--TASK): "working" (its
-    journal or a task's changed within CAMPAIGN_IDLE seconds, an hour: a contributor at work),
+    journal or a task's changed within CAMPAIGN_IDLE seconds, an hour, or a file left changed in its
+    worktrees within RECENT, or a commit since its last job ended: a contributor at work),
     "waiting" (only a live waiter moves it: a job of its queued or running, or CI running at its
     head; or it says ready and only a dependency not yet landed holds it, since `after` orders the
     landing, never the work) or "lead" (nothing moves it unless the lead does: a journal that says
     it waits on the lead, whatever runs; else, with no waiter, one that waits on the owner (the lead
-    parks it), one that says it waits on jobs (they ended) or one untouched), each with why."""
+    parks it), one that says it waits on jobs (they ended, and nothing changed since) or one
+    untouched), each with why."""
     live = [
         j for j in jobs if j["spec"].get("campaign") == c.ident and j["state"].get("state") in ("queued", "running")
     ]
@@ -164,6 +166,8 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
                 out[name] = ("working" if age < quiet_for else "waiting", state)
             elif OWNER_WAIT.search(state):
                 out[name] = ("lead", f"its journal waits on the owner: {state}")
+            elif touched(c, name, branch, jobs, quiet_for):
+                out[name] = ("working", state)
             elif JOB_WAIT.match(state):
                 out[name] = ("lead", f"its jobs ended: {state}")
             elif age < quiet_for:
@@ -173,6 +177,59 @@ def activity(c: Campaign, jobs: list[Json]) -> dict[str, tuple[str, str]]:
             else:
                 out[name] = ("lead", f"nothing moved it for {duration(age)}: {state}")
     return out
+
+
+RECENT = 900.0  # seconds a file left changed in a worktree marks a contributor at work
+
+
+def touched(c: Campaign, name: str, branch: str, jobs: list[Json], idle: float) -> bool:
+    """Whether a contributor works on NAME (a quest, or QUEST--TASK) without a job: a file of its
+    worktree or journal worktree changed and not committed within RECENT seconds (IDLE when shorter),
+    or a commit on its branch after its last job ended, within IDLE."""
+    pid, _, task = name.partition("--")
+    p = c.quests[pid]
+    record = p.get("tasks", {}).get(task, {}) if task else p
+    now = time.time()
+    places = {c.home / x for x in (record.get("worktree"), record.get("journal")) if x}
+    for place in places:
+        if place.is_dir() and now - newest_change(place) < min(RECENT, idle):
+            return True
+    ended = [
+        float(j["state"]["ended"])
+        for j in jobs
+        if j["spec"].get("campaign") == c.ident
+        and j["spec"].get("quest") == pid
+        and (j["spec"].get("task") or "") == task
+        and j["state"].get("ended")
+    ]
+    if not ended or not branch or idle <= 0:
+        return False
+    heads = {(r, rev(r, branch)) for r in {c.repo(p), resolved(c.home)} if has_ref(r, branch)}
+    last = max((commit_time(r, sha) for r, sha in heads), default=float("-inf"))
+    return last > max(ended) and now - last < idle
+
+
+def commit_time(repo: Path, sha: str) -> float:
+    """When commit SHA was made: asked of git once, then remembered (`on_commits`)."""
+    stamp = on_commits(("ctime", str(repo), sha), lambda: git(repo, "log", "-1", "--format=%ct", sha, check=False))
+    return float(stamp) if str(stamp).isdigit() else float("-inf")
+
+
+def newest_change(worktree: Path) -> float:
+    """When a file left changed or untracked in WORKTREE was last modified (-inf when it is clean)."""
+    out = git(worktree, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules", check=False)
+    entries, paths = iter(out.split("\0")), list[str]()
+    for e in entries:
+        kind, cut = e[:1], {"1": 8, "2": 9, "u": 10, "?": 1}.get(e[:1])
+        if cut is not None and len(parts := e.split(" ", cut)) > cut:
+            paths.append(parts[cut])
+        if kind == "2":
+            next(entries, None)  # a rename's original path
+    newest = float("-inf")
+    for rel in paths:
+        with contextlib.suppress(OSError):
+            newest = max(newest, (worktree / rel).stat().st_mtime)
+    return newest
 
 
 def duration(seconds: float) -> str:

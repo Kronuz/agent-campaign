@@ -331,6 +331,21 @@ class Ownership(CampaignCase):
         self.assertNotIn("unlocks", self.ok(self.home, "brief").out)
         self.assertEqual(self.state()["messages"][-1]["closed"], "its quests started")
 
+    def test_a_parked_quest_with_a_branch_keeps_its_file_set(self) -> None:
+        self.started("holder", files="lib/**")
+        new = ("--title", "t", "--risk", "low", "--files")
+        self.ok(self.home, "new", "user", *new, "lib/util.py")
+        out = self.ok(self.home, "set", "holder", "status=blocked", "until=owner", "reason=the owner decides").out
+        self.assertNotIn("frees", out)
+        self.assertNotIn("unlocks", self.ok(self.home, "brief").out)
+        o = json.loads(self.ok(self.home, "status", "--json").out)["overview"]
+        self.assertEqual((o["launchable"], o["held"]), ([], {"user": ["holder"]}))
+        self.fails(self.home, "start", "user", match="may overlap holder")
+        self.ok(self.home, "new", "idea", *new, "docs/**")
+        self.ok(self.home, "new", "doc", *new, "docs/a.md")
+        self.ok(self.home, "set", "idea", "status=blocked", "until=owner", "reason=later")
+        self.ok(self.home, "start", "doc")  # a planned quest parked holds nothing
+
     def test_stored_blocks_become_derived_needs_or_parks_until_owner(self) -> None:
         new = ("--title", "t", "--risk", "low", "--files")
         self.ok(self.home, "new", "seg", *new, "seg.py")

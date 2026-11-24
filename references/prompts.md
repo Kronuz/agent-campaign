@@ -30,7 +30,8 @@ what changed with its numbers and the docs it wrote; commit the journal before y
 ```
 
 Add when relevant: the review to fold in ("fix the blocking findings C1, C2 in
-.campaign/<campaign>/reviews/<ID>-<lens>.md, each with a test that fails without it"); the
+.campaign/<campaign>/reviews/<ID>-<lens>.md, each with a test that fails without it, and sweep each
+finding's class: every transition of it gets a value-checking test"); the
 experiment budget for performance work (about five, stop at the target or the third loser in a row).
 
 ## Exploration
@@ -78,7 +79,8 @@ Review commit <sha> on <branch> in <worktree>: `git log main..<sha>` and its dif
 increments <ranges>>. Quest: <home>/.campaign/<campaign>/quests/<ID>.md. Journal: <journal path>
 (its evidence and rulings; `campaign get <ID> journal` locates it in another repository).
 Risks to probe: <three to five concrete questions>.<
-Re-review of a fix: only <sha-before>..<sha>, for findings <ids>.>
+Re-review of a fix: <sha-before>..<sha>, for findings <ids>; a fix in a lifecycle is re-reviewed as
+the whole mechanism.>
 
 Do not rebuild what the suite job or CI shows. Probe from
 <home>/.scratch/<campaign>/review-<ID>-<lens>/ (a one-line `.purpose` first). Write only
