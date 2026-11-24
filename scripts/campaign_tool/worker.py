@@ -1,4 +1,5 @@
-"""The worker: its plan of which jobs run each tick, CPU metering, queue health, and its loop."""
+"""The worker: its plan of which jobs run each tick, CPU metering, queue health, and its loop, which
+also mails each lead its to-do (`lead_todo`)."""
 
 from __future__ import annotations
 
@@ -735,10 +736,14 @@ def cmd_worker(a: argparse.Namespace) -> int:
             reap()
             watch_calls()
             jobs = all_jobs()
+            from .todo import lead_todo  # noqa: PLC0415  # todo reads this module's slots: a cycle at import
+
+            mailing = lead_todo(jobs, time.time())  # the leads' to-do, as mail
             if not any(j["state"].get("state") in ("queued", "running") for j in jobs):
                 if daily_prune((home / "heartbeat").touch):
                     continue  # whatever arrived while it pruned
-                return 0
+                if not mailing:
+                    return 0
             if time.time() - sampled >= CPU_SAMPLE:
                 since, sampled = sampled, time.time()
                 running = {j["id"] for j in jobs if j["state"].get("state") == "running"}

@@ -66,7 +66,7 @@ class LeadDriver(CampaignCase):
         """The list's items, in order, from a command's output: the lines after its heading."""
         lines = out.splitlines()
         heads = [i for i, x in enumerate(lines) if x.startswith("to do, critical path first")]
-        return [x for x in lines[heads[-1] + 1 :] if x.startswith("- ")] if heads else []
+        return [x for x in lines[heads[-1] + 1 :] if x.startswith("todo: ")] if heads else []
 
     # A1: what makes work for the lead wakes it within a tick
 
@@ -80,7 +80,7 @@ class LeadDriver(CampaignCase):
         time.sleep(1)
         self.ok(self.home, "land", "base")
         out = self.returns(waiter)
-        self.assertIn("- start top: launchable: `campaign start top`", out)
+        self.assertIn("todo: start top: launchable: `campaign start top`", out)
 
     def test_a_wait_returns_when_a_file_set_frees(self) -> None:
         self.started("holder", files="lib/**", check="unit=true")
@@ -90,7 +90,7 @@ class LeadDriver(CampaignCase):
         time.sleep(1)
         self.ok(self.home, "set", "holder", "status=dropped", "reason=superseded", "into=none")
         out = self.returns(waiter)
-        self.assertIn("- start user: launchable: `campaign start user`", out)
+        self.assertIn("todo: start user: launchable: `campaign start user`", out)
 
     def test_a_wait_returns_when_a_tasks_jobs_pass(self) -> None:
         self.started("fix", files="app.py,lib/**")
@@ -101,7 +101,7 @@ class LeadDriver(CampaignCase):
         time.sleep(1)
         self.submit(self.wt("fix--lib"), "--quest", "fix", "--task", "lib", "--", "true")
         out = self.returns(waiter)
-        self.assertIn("- merge fix's task lib: its jobs passed: `campaign task merge fix lib`", out)
+        self.assertIn("todo: merge fix's task lib: its jobs passed: `campaign task merge fix lib`", out)
 
     def test_a_wait_returns_when_a_quest_crosses_the_idle_bound(self) -> None:
         self.started("slow", files="app.py")
@@ -109,7 +109,7 @@ class LeadDriver(CampaignCase):
         self.quiet_now()  # its journal was just written: a contributor at work
         waiter = self.waiting("--timeout", "60")
         out = self.returns(waiter, within=25)
-        self.assertRegex(out, r"- resume slow: nothing moved it for \d+ min: working: `campaign status slow`")
+        self.assertRegex(out, r"todo: resume slow: nothing moved it for \d+ min: working: `campaign status slow`")
 
     # A2: every return, status and brief end with the list, critical path first
 
@@ -135,32 +135,32 @@ class LeadDriver(CampaignCase):
         self.journal("stuck", "waiting on jobs J1")  # they ended long ago: its contributor is gone
         self.assertEqual(len(self.state()["quests"]), 18)
         want = [
-            "- start root: launchable: `campaign start root`",  # two quests wait on it
-            *(f"- start leaf{k}: launchable: `campaign start leaf{k}`" for k in range(10)),
+            "todo: start root: launchable: `campaign start root`",  # two quests wait on it
+            *(f"todo: start leaf{k}: launchable: `campaign start leaf{k}`" for k in range(10)),
         ]
         out = self.ok(self.home, "status").out
         items = self.todo(out)
         self.assertEqual(items[0], want[0], out)
-        self.assertEqual([x for x in items if x.startswith("- start")], want)
+        self.assertEqual([x for x in items if x.startswith("todo: start")], want)
         kinds = {x.split()[1] for x in items}
         self.assertEqual(kinds, {"start", "land", "answer", "review", "merge", "resume"}, out)
-        self.assertIn("- land ready: nothing keeps it from landing: `campaign land ready`", items)
+        self.assertIn("todo: land ready: nothing keeps it from landing: `campaign land ready`", items)
         self.assertIn(
-            "- answer asks: its journal waits on the lead: blocked on the lead: which wire format: "
+            "todo: answer asks: its journal waits on the lead: blocked on the lead: which wire format: "
             "`campaign status asks`",
             items,
         )
         self.assertIn(
-            "- review reviewed: its journal says ready for review; then launch its correctness review: "
+            "todo: review reviewed: its journal says ready for review; then launch its correctness review: "
             "`campaign set reviewed status=review`",
             items,
         )
-        self.assertIn("- merge tasked's task t1: its jobs passed: `campaign task merge tasked t1`", items)
-        self.assertIn("- resume stuck: its jobs ended: waiting on jobs J1: `campaign status stuck`", items)
+        self.assertIn("todo: merge tasked's task t1: its jobs passed: `campaign task merge tasked t1`", items)
+        self.assertIn("todo: resume stuck: its jobs ended: waiting on jobs J1: `campaign status stuck`", items)
         self.assertTrue(all(re.search(r": `campaign [^`]+`$", x) for x in items), "each item ends with its command")
         self.assertEqual(out.rstrip().splitlines()[-1], items[-1], "status ends with the list")
         self.assertNotIn("wait again", out)
-        shown = [*items[:10], f"- and {len(items) - 10} more: `campaign status`"]  # a brief or wait's ten
+        shown = [*items[:10], f"todo: and {len(items) - 10} more: `campaign status`"]  # a brief or wait's ten
         brief = self.ok(self.home, "brief").out
         self.assertEqual(self.todo(brief), shown)
         self.assertEqual(brief.rstrip().splitlines()[-1], shown[-1], "brief ends with the list")
@@ -184,7 +184,7 @@ class LeadDriver(CampaignCase):
         self.assertTrue(out.rstrip().endswith("the lead has nothing to do: wait again after this"), out)
         self.ok(self.home, "new", "next", "--title", "t", "--risk", "low", "--files", "next.py")
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
-        self.assertEqual(self.todo(out), ["- start next: launchable: `campaign start next`"])
+        self.assertEqual(self.todo(out), ["todo: start next: launchable: `campaign start next`"])
         self.assertNotIn("wait again", out)
 
     # A3: a wait with work returns at once; an item left undone fires again after a bound, never sooner
@@ -196,14 +196,14 @@ class LeadDriver(CampaignCase):
         out = self.ok(self.home, "wait", "--commits", "--timeout", "60").out
         shown = time.time()
         self.assertLess(shown - start, 10, "a wait with work returned late")
-        self.assertIn("- start next: launchable: `campaign start next`", out)
+        self.assertIn("todo: start next: launchable: `campaign start next`", out)
         again = self.run_cli(self.home, "wait", "--commits", "--timeout", "2")
         self.assertEqual(again.code, 3, f"an item shown fired again before its bound:\n{again.text}")
-        self.assertIn("- start next: launchable", again.out, "a timed-out wait still ends with the list")
+        self.assertIn("todo: start next: launchable", again.out, "a timed-out wait still ends with the list")
         out = self.ok(self.home, "wait", "--commits", "--timeout", "60").out
         self.assertGreater(time.time() - shown, 7, "it fired again sooner than its bound")
         self.assertLess(time.time() - shown, 25, "it fired again long after its bound")
-        self.assertIn("- start next: launchable", out)
+        self.assertIn("todo: start next: launchable", out)
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "2").code, 3)
 
     # A5: waiting on jobs, CI or a drain never empties the list
@@ -231,8 +231,8 @@ class LeadDriver(CampaignCase):
         out = self.ok(self.home, "wait", "--commits", "--timeout", "60").out
         self.assertLess(time.time() - start, 20, "the wait waited on the jobs and CI")  # they take 30 s and more
         items = self.todo(out)
-        self.assertIn("- start third: launchable: `campaign start third`", items)
-        self.assertTrue(any(x.startswith("- resume fourth: nothing moved it") for x in items), out)
+        self.assertIn("todo: start third: launchable: `campaign start third`", items)
+        self.assertTrue(any(x.startswith("todo: resume fourth: nothing moved it") for x in items), out)
         self.assertFalse([x for x in items if "oncl" in x or "drain" in x], "a quest with a live waiter is moving")
         self.assertIn("in flight: 0 worked on, 2 waiting on jobs, CI or a landing, 1 needing the lead", out)
 
@@ -255,10 +255,10 @@ class LeadDriver(CampaignCase):
         out = self.ok(self.home, "status").out
         self.assertNotIn("nothing moves without the lead", out, "its waiter on CI moves it")
         items = self.todo(out)
-        self.assertEqual(items, ["- start other: launchable: `campaign start other`"], out)
+        self.assertEqual(items, ["todo: start other: launchable: `campaign start other`"], out)
         gh.write_text('#!/bin/sh\necho \'[{"name": "build", "status": "completed", "conclusion": "success"}]\'\n')
         self.assertIn(
-            "- land install: nothing keeps it from landing: `campaign land install`",
+            "todo: land install: nothing keeps it from landing: `campaign land install`",
             self.todo(self.ok(self.home, "status").out),
         )
 
@@ -482,7 +482,7 @@ class LeadDriver(CampaignCase):
         self.started("fix", files="app.py")
         self.journal("fix", "blocked on the owner: A6's decision")
         park = "campaign set fix status=blocked until=owner reason=owner"
-        want = f"- park fix: its journal waits on the owner: blocked on the owner: A6's decision: `{park}`"
+        want = f"todo: park fix: its journal waits on the owner: blocked on the owner: A6's decision: `{park}`"
         self.assertEqual(self.todo(self.ok(self.home, "status").out), [want])
         self.ok(self.home, *park.split()[1:])
         self.assertEqual(self.todo(self.ok(self.home, "status").out), [])
@@ -491,7 +491,7 @@ class LeadDriver(CampaignCase):
         self.env["CAMPAIGN_IDLE"] = "0"
         self.started("fix", files="app.py")
         self.journal("fix", "blocked on owner and lead: the wire format")
-        want = "- answer fix: its journal waits on the lead: blocked on owner and lead: the wire format"
+        want = "todo: answer fix: its journal waits on the lead: blocked on owner and lead: the wire format"
         self.assertEqual(self.todo(self.ok(self.home, "status").out), [f"{want}: `campaign status fix`"])
 
     # A2: a wait or brief prints ten items and counts the rest; status prints them all
@@ -502,8 +502,8 @@ class LeadDriver(CampaignCase):
             self.ok(self.home, "new", k, "--title", "t", "--risk", "low", "--files", f"{k}.py")
         out = self.ok(self.home, "wait", "--commits", "--timeout", "30").out
         items = self.todo(out)
-        self.assertEqual(items[:10], [f"- start {k}: launchable: `campaign start {k}`" for k in names[:10]], out)
-        self.assertEqual(items[10:], ["- and 2 more: `campaign status`"])
+        self.assertEqual(items[:10], [f"todo: start {k}: launchable: `campaign start {k}`" for k in names[:10]], out)
+        self.assertEqual(items[10:], ["todo: and 2 more: `campaign status`"])
         self.assertEqual(len(self.todo(self.ok(self.home, "status").out)), 12)
 
     def test_the_item_that_woke_the_lead_is_printed(self) -> None:
@@ -514,4 +514,4 @@ class LeadDriver(CampaignCase):
         self.ok(self.home, "new", "zz-new", "--title", "t", "--risk", "low", "--files", "zz.py")
         r = self.run_cli(self.home, "wait", "--commits", "--timeout", "30")
         self.assertEqual(r.code, 0)
-        self.assertEqual(self.todo(r.out)[0], "- start zz-new: launchable: `campaign start zz-new`", r.out)
+        self.assertEqual(self.todo(r.out)[0], "todo: start zz-new: launchable: `campaign start zz-new`", r.out)

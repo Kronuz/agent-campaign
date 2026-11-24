@@ -119,8 +119,8 @@ def expire() -> None:
     keep(kept)
 
 
-def notify(title: str, body: str = "") -> None:
-    if cmux(["notify", "--title", title, *(["--body", body] if body else [])]):
+def notify(title: str, body: str = "", workspace: str | None = None) -> None:
+    if cmux(["notify", "--title", title, *(["--body", body] if body else [])], workspace):
         return
     script = "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run"
     argv = (

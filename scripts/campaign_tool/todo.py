@@ -1,16 +1,27 @@
 """The lead's to-do list: what nothing moves without, critical path first, each item with its exact
-next command. `status`, `brief` and every return of `wait --commits` end with it."""
+next command. `status`, `brief` and every return of `wait --commits` end with it, and the worker
+mails it to the lead until each item is done (`lead_todo`)."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import secrets
+import sys
+from pathlib import Path
 
-from .campaign import READY, Campaign, activity, critical_path, hunt_open, overview, park_met
-from .core import Json, plural
+import report
+
+from .campaign import JOB_WAIT, READY, Campaign, activity, critical_path, duration, hunt_open, overview, park_met
+from .ci import forget_ci
+from .core import CampaignError, Json, atomic_write, plural, section
 from .journals import journal_text, state_of
-from .repo import has_ref, rev
+from .mail import leave_message, recorded_lead, surface_spaces, todo_mail, todo_mail_file
+from .map import first_paragraph
+from .repo import frozen, has_ref, rev
 from .reviews import landing_gaps, task_gaps
+from .state import registry
 from .worker import light_slots, light_weight
 
 KINDS = ("merge", "land", "review", "finish", "answer", "park", "resume", "start", "unpark", "slots")  # within a quest
@@ -129,7 +140,149 @@ def todo_lines(t: Json, shown: int | None = SHOWN) -> list[str]:
     if not t["items"]:
         return [f"{head}; the lead has nothing to do: wait again after this"]
     lines = [f"to do, critical path first ({head}):"]
-    lines += [f"- {x['text']}: `{x['cmd']}`" for x in t["items"][:shown]]
+    lines += [f"todo: {x['text']}: `{x['cmd']}`" for x in t["items"][:shown]]
     if shown is not None and len(t["items"]) > shown:
-        lines.append(f"- and {len(t['items']) - shown} more: `campaign status`")
+        lines.append(f"todo: and {len(t['items']) - shown} more: `campaign status`")
     return lines
+
+
+def mail_every() -> float:
+    """Seconds between two looks of the worker at one campaign's to-do."""
+    return float(os.environ.get("CAMPAIGN_TODO_MAIL", "300"))
+
+
+def escalate_after() -> float:
+    """Seconds after its first send that an undone item is the owner's to see."""
+    return float(os.environ.get("CAMPAIGN_TODO_ESCALATE", "7200"))
+
+
+PARK = "or park it with a reason"
+DEMANDS = {"start": PARK, "unpark": "or park it again with a reason", "resume": PARK, "answer": PARK}
+JOB_ID = re.compile(r"\b\d{6}-\d{6}-[0-9a-f]{6}\b")
+
+
+def jobs_note(state: str, jobs: list[Json], now: float) -> str:
+    """What the jobs a journal waits on did ("its journal waits on jobs A and B, which passed 52 h
+    ago"), or "" unless it names jobs that all ended."""
+    ids = list(dict.fromkeys(JOB_ID.findall(state)))
+    known = {j["id"].removeprefix("job-"): j for j in jobs}
+    ended = [known[x]["state"] for x in ids if x in known and known[x]["state"].get("ended")]
+    if not ids or not ended or len(ended) < len(ids):
+        return ""
+    states = {str(x.get("state")) for x in ended}
+    how = "passed" if states == {"done"} else "ended (" + ", ".join(sorted(states)) + ")"
+    names = " and ".join(ids) if len(ids) < 3 else f"{', '.join(ids[:-1])} and {ids[-1]}"
+    return f"its journal waits on jobs {names}, which {how} {duration(now - max(float(x['ended']) for x in ended))} ago"
+
+
+def mail_line(c: Campaign, x: Json, jobs: list[Json], age: float, now: float) -> str:
+    """An item as the lead's mail says it: what, its evidence and age, then its command and what else
+    the lead may do instead."""
+    head, _, why = str(x["text"]).partition(": ")
+    then = DEMANDS.get(x["kind"], "")
+    p = c.quests.get(x["quest"], {})
+    if x["kind"] in ("resume", "answer") and "--" not in x["key"] and p.get("branch"):
+        journal = journal_text(c, x["quest"], p["branch"])
+        state = state_of(journal)
+        if JOB_WAIT.match(state) and (note := jobs_note(state, jobs, now)):
+            why, then = note, f"read them, {PARK}"
+        elif x["kind"] == "answer" and (ask := first_paragraph(section(journal, "Blocked on"), 300)):
+            why, then = f"{why}; it asks: {ask}", f"answer it (`campaign message {x['quest']} TEXT`), {PARK}"
+    listed = "new" if age < 60 else f"listed {duration(age)}"
+    return f"todo: {head} ({why}; {listed}): `{x['cmd']}`" + (f", {then}" if then else "")
+
+
+def pill_key(c: Campaign) -> str:
+    """The lead's sidebar pill for its undone to-do: quest ids hold no "--", so no quest's pill is it."""
+    return f"campaign-{c.name}--todo"
+
+
+def mail_todo(c: Campaign, jobs: list[Json], now: float, workspace: str) -> bool:
+    """One look at C's to-do for its live lead, whose cmux workspace is WORKSPACE: when an item is new
+    or was last sent `repeat_seconds` ago, every item goes in one message, critical path first, that
+    replaces the one before (`settled`); an item first sent `escalate_after` ago and undone is told
+    to the owner once, and draws a pill in the lead's workspace while one is. Recorded, with when
+    each item was first and last sent, in `todo_mail_file`. True while the list holds items."""
+    records = todo_mail(c)
+    rec: Json = dict(records.get(c.ident) or {})
+    forget_ci()  # CI that was running may have finished
+    with frozen():
+        items = [x for x in todo(c, jobs)["items"] if x["kind"] != "slots"]  # advice, not work a quest waits on
+        seen = {str(k): dict(v) for k, v in dict(rec.get("items") or {}).items() if k in {x["key"] for x in items}}
+        repeat = repeat_seconds()
+        text = ""
+        if any(now - float(seen.get(x["key"], {}).get("sent", float("-inf"))) >= repeat for x in items):
+            for x in items:
+                seen.setdefault(x["key"], {"first": now})["sent"] = now
+            lines = [mail_line(c, x, jobs, now - float(seen[x["key"]]["first"]), now) for x in items]
+            text = "to do, critical path first:\n" + "\n".join(lines)
+    if text or not items:  # recorded before the message: its own token must not settle it
+        rec["token"] = secrets.token_hex(4) if text else ""
+    rec.update(looked=now, items=seen)
+    late = [x for x in items if now - float(seen[x["key"]]["first"]) >= escalate_after()]
+    if fresh := [x for x in late if not seen[x["key"]].get("escalated")]:
+        for x in fresh:
+            seen[x["key"]]["escalated"] = True
+        heads = ", ".join(str(x["text"]).partition(": ")[0] for x in late)
+        body = f"{c.name}: {plural(len(late), 'item')} untouched {duration(escalate_after())}+: {heads}"
+        report.notify(f"campaign: {c.name}'s lead leaves its to-do undone", body, workspace=workspace)
+    oldest = max((now - float(seen[x["key"]]["first"]) for x in late), default=0.0)
+    want = f"🚨 {len(items)} to do, oldest {duration(oldest)}" if late else ""
+    drawn: Json = dict(rec.get("pill") or {})
+    if drawn and (not want or drawn.get("workspace") != workspace):
+        report.unstatus(pill_key(c), str(drawn["workspace"]))
+        drawn = {}
+    if want and drawn.get("value") != want:
+        report.status(pill_key(c), want, workspace=workspace)
+        drawn = {"workspace": workspace, "value": want}
+    rec["pill"] = drawn
+    records[c.ident] = rec
+    atomic_write(todo_mail_file(c), json.dumps(records, indent=2) + "\n")
+    if text:
+        leave_message(c, "", text, "campaign", settles={"todo": rec["token"]})
+    return bool(items)
+
+
+SCAN = 30.0  # seconds between the worker's looks at which campaign's to-do is due
+_scanned: list[Json] = [{"at": float("-inf"), "pending": False}]
+_failed: dict[str, float] = {}  # campaign ident -> when its look last failed, waited out like a look
+
+
+def lead_todo(jobs: list[Json], now: float) -> bool:
+    """The worker's tick: at most every SCAN seconds, looks at the registered campaign longest
+    unlooked whose recorded lead cmux lists, once `mail_every` passed for it (`mail_todo`); a
+    campaign with no recorded lead is skipped unread. True while a look left items for a live lead."""
+    last = _scanned[0]
+    if now - float(last["at"]) < SCAN:
+        return bool(last["pending"])
+    led: list[tuple[str, Path, str]] = []
+    folder = registry()
+    for f in sorted(folder.iterdir()) if folder.is_dir() else []:
+        if lead := recorded_lead(f.name):
+            led.append((f.name, Path(f.read_text().strip()), lead))
+    spaces = surface_spaces() if led else None
+    pending = False
+    due: list[tuple[float, Campaign, str]] = []
+    for name, home, lead in led:
+        if spaces is None or lead not in spaces:
+            continue  # no live lead: its items wait for the next one
+        try:
+            c = Campaign(home, name)
+        except (CampaignError, OSError):
+            continue
+        rec = todo_mail(c).get(c.ident) or {}
+        looked = max(float(rec.get("looked", float("-inf"))), _failed.get(c.ident, float("-inf")))
+        if now - looked >= mail_every():
+            due.append((looked, c, spaces[lead]))
+        else:
+            pending = pending or bool(rec.get("items"))
+    if due:
+        _, c, workspace = min(due, key=lambda d: d[0])
+        try:
+            pending = mail_todo(c, jobs, now, workspace) or pending
+        except Exception as e:  # a campaign the worker cannot read never stops its queue
+            _failed[c.ident] = now
+            print(f"campaign: the to-do of {c.name} failed: {e}", file=sys.stderr)
+        pending = pending or len(due) > 1  # the others are looked at on the next scans
+    _scanned[0] = {"at": now if len(due) <= 1 else now - SCAN, "pending": pending}
+    return pending

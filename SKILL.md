@@ -186,7 +186,9 @@ job passing at the exact commit; it queues no local job.
    completed, and a run's jobs for good once green. Waiting on a job, CI or a drain is never a reason for the
    list to be empty. The lead acts on every item at every wake: it resumes a contributor by message
    while its context is small (about 150k tokens), else starts a fresh one with the "Resume"
-   prompt; "wait again" is printed only when the list is empty.
+   prompt; "wait again" is printed only when the list is empty. The worker also mails the list to
+   the lead, and again every 30 minutes while an item is undone; at 2 hours the owner is told. Closing
+   the mail declines nothing: park the quest with a reason, or answer it.
 4. When every task is in, the quest is the feature: the lead sets `status=review`, runs the suite,
    launches the review its risk needs and the measurements its criteria name, all at once. Their
    findings become tasks; then `campaign accept ID LENS` and `campaign land ID` on a green suite

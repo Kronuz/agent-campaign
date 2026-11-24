@@ -46,6 +46,13 @@ def campaigns_led_by(surface: str, but: str = "") -> list[str]:
 
 def live_surfaces() -> set[str] | None:
     """The surfaces cmux lists in every window, or None when cmux is absent or does not answer."""
+    spaces = surface_spaces()
+    return None if spaces is None else set(spaces)
+
+
+def surface_spaces() -> dict[str, str] | None:
+    """Each surface cmux lists in every window -> its workspace, or None when cmux is absent or
+    does not answer."""
     exe = shutil.which("cmux")
     if not exe:
         return None
@@ -57,12 +64,14 @@ def live_surfaces() -> set[str] | None:
         return None
     if not isinstance(tree, dict) or not isinstance(tree.get("windows"), list):
         return None
-    found: set[str] = set()
+    found: dict[str, str] = {}
     for window in tree["windows"]:
         for space in window.get("workspaces", []) if isinstance(window, dict) else []:
             for pane in space.get("panes", []) if isinstance(space, dict) else []:
                 if isinstance(pane, dict):
-                    found.update(str(s.get("id")) for s in pane.get("surfaces", []) if isinstance(s, dict))
+                    for s in pane.get("surfaces", []):
+                        if isinstance(s, dict):
+                            found[str(s.get("id"))] = str(space.get("id", ""))
     return found
 
 
@@ -124,6 +133,10 @@ def settled(c: Campaign, m: Json) -> str:
     """Why a message the tool left has closed itself, or "": the quests it announced started; or the
     other campaign's quest whose start it reported landed or dropped, or ours named all order after it."""
     s = m.get("settles") or {}
+    if s.get("todo"):
+        current = str((todo_mail(c).get(c.ident) or {}).get("token", ""))
+        if current != s["todo"]:
+            return "a newer to-do replaced it" if current else "its to-do is done"
     if s.get("start") and all(c.quests.get(k, {}).get("status") not in ("planned", "blocked") for k in s["start"]):
         return "its quests started"
     if s.get("quest"):
@@ -134,6 +147,18 @@ def settled(c: Campaign, m: Json) -> str:
         if mine and all(s["quest"] in x["after"] or x["status"] in ("landed", "dropped") for x in mine):
             return f"ordered --after {s['quest']}"
     return ""
+
+
+def todo_mail_file(c: Campaign) -> Path:
+    """What the worker mailed of each campaign's to-do, and when, in the home's .git (`mail_todo`)."""
+    return Path(common_dir(c.home)) / "campaign-todo-mail.json"
+
+
+def todo_mail(c: Campaign) -> Json:
+    """The to-do mail record of the home: campaign ident -> its last look, message and items."""
+    with contextlib.suppress(OSError, CampaignError):
+        return read_json(todo_mail_file(c)) or {}
+    return {}
 
 
 def mailbox(c: Campaign, pid: str) -> Path:

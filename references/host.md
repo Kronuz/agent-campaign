@@ -92,7 +92,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Builds for measurements.** `--after` only orders jobs. `--build CMD` runs CMD as a light job (30
   minutes, outside `--minutes`) in the job's checkout; a passed build's command then queues for its
   heavy hold, keeping the slot.
-- **Scheduling.** The worker starts with the first submit or wait and exits when idle. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
+- **Scheduling.** The worker starts with the first submit or wait, or a command of a recorded lead, and exits when idle and no lead's to-do waits as mail. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns splitting the light slots, rounded up; within each, the shortest job runs first, and
   one queued over an hour (`CAMPAIGN_AGE`) goes ahead in submit order, so a batch of hour-long jobs
@@ -244,6 +244,13 @@ moves a quest's answered and closed messages into its state. In cmux, a `campaig
 one, and only that surface names its workspace `<campaign> · lead`. Messages reach the lead
 through `cmux agent message`, but for one the lead's own command printed or sent; a new lead is
 sent every open message; `check` and `wait` notify the owner of one undelivered over 15 minutes.
+The worker mails each campaign's to-do to its lead when cmux lists the lead's surface, looking at
+one campaign at most every 5 minutes (`CAMPAIGN_TODO_MAIL`): one message, critical path first,
+when an item is new or was last sent `CAMPAIGN_TODO_REPEAT` seconds ago, which replaces the one
+before; the "slots" item is never mailed. What was sent and when is in the home's `.git`
+(`campaign-todo-mail.json`). An item undone 2 hours after its first send
+(`CAMPAIGN_TODO_ESCALATE`) notifies the owner once and shows a pill in the lead's workspace until
+no item is that old.
 
 A campaign on another machine is reached as a peer: `campaign config peers=NAME=URL,...`, where
 URL is a repository both machines can push to and fetch from. A message to `NAME:ID` or `NAME:`
