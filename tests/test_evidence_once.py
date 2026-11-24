@@ -433,6 +433,9 @@ class CitedInFlight(CampaignCase):
         self.assertIn(why, self.fails(self.home, "land", "fix", match="criteria without evidence").text)
         self.assertIn(why, self.ok(self.home, "brief").out)
         self.ok(self.home, "job", "cancel", shard)
+        deadline = time.time() + 60
+        while self.job(shard)["state"] in ("queued", "running") and time.time() < deadline:
+            time.sleep(0.5)  # a running job stops when its runner sees the cancel
         self.ok(self.home, "land", "fix")
 
 
