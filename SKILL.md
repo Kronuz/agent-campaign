@@ -171,8 +171,8 @@ job passing at the exact commit; it queues no local job.
    (`references/prompts.md`), critical path first, capped by what it can merge and the host's
    light slots. A quest is launchable when it is planned, its `needs` are met and its file set is
    free in its repository; `campaign status` lists them, critical path first.
-2. A contributor builds its task, runs its tests as jobs (`--quest ID --task T`), commits and ends
-   its turn; the lead merges it and starts what it unblocked.
+2. A contributor builds its task, iterating on targeted test jobs (`--quest ID --task T`); suites, sanitizers
+   and crash checks run once per round (`verify` holds a passed slow one until State `ready for review`). It commits and ends its turn; the lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits`, never with a loop that retries
    `land`, which hides every refusal. It returns when a job ends, a branch moves, a message arrives
    or the lead's **to-do list** gains an item, at once when the wait starts with one, and again for

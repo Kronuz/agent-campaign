@@ -97,7 +97,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `jobcmds.py` (631 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
   `message`. Boundary: the `job` and `message` command lines over the job store and mail. Opened
   alone to change a job command's options or output.
-- `checks.py` (202 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
+- `checks.py` (239 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
   quest's gate checks as jobs. Boundary: the two commands that audit a campaign and queue its gates.
   Opened alone to add a consistency check or change what verify queues.
 - `land.py` (575 lines): Landing: version pins, task merges, merging main, landing a quest, and
