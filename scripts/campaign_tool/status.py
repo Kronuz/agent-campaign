@@ -63,37 +63,69 @@ from .todo import todo, todo_lines
 from .worker import cpu_lines, health_lines, queue_health
 
 GUARD_HOURS = 24  # the window the treadmill guard reads
-GUARD_NEVER = 10  # jobs cancelled before they started, in the window
-GUARD_UNPROVEN = 20  # jobs that ran in the window while no criterion was newly met
+GUARD_NEVER = 3  # rounds cancelled before any of their jobs started, in the window
+GUARD_UNPROVEN = 4  # rounds that ran in the window and met no new criterion
+
+
+def parent(repo: str, commit: str) -> str:
+    return on_commits(
+        ("parent", repo, commit), lambda: git(Path(repo), "rev-parse", "-q", "--verify", f"{commit}^", check=False)
+    )
+
+
+def rounds(jobs: list[Json]) -> dict[str, list[Json]]:
+    """Jobs grouped by the quest head they ran against: a round. A fails-without job counts with the
+    head its mutant was cut from (its parent), else with the round submitted just before it."""
+    out: dict[str, list[Json]] = {}
+    order = sorted(jobs, key=lambda j: float(j["spec"].get("submitted") or 0))
+    for j in order:
+        if not j["spec"].get("fails_without"):
+            out.setdefault(j["spec"].get("commit") or "unversioned", []).append(j)
+    last = ""
+    for j in order:
+        spec = j["spec"]
+        if not spec.get("fails_without"):
+            last = spec.get("commit") or "unversioned"
+            continue
+        commit = spec.get("commit") or ""
+        up = parent(spec["repo"], commit) if commit and spec.get("repo") and commit not in out else commit
+        out.setdefault(up if up in out else last or commit, []).append(j)
+    return out
 
 
 def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
-    """Why a quest's last GUARD_HOURS of jobs look like evidence queued at every commit: at least
-    GUARD_NEVER cancelled before they started, or GUARD_UNPROVEN that ran while no criterion was newly
-    met (first proven by a job tagged for it); "" otherwise. Names the counts and the hours waited."""
+    """Why a quest's last GUARD_HOURS of evidence look queued at every commit, counted in rounds (one
+    per head): at least GUARD_NEVER cancelled before any job started, or GUARD_UNPROVEN that ran and
+    met no new criterion (first proven by a job tagged for it); "" otherwise. Names the counts, the
+    job-hours waited, and the lead's step."""
     since = now - GUARD_HOURS * 3600
     mine = quest_jobs(jobs, c.ident, pid)
     window = [j for j in mine if float(j["spec"].get("submitted") or 0) >= since]
-    never = sum(1 for j in window if j["state"].get("state") == "cancelled" and not j["state"].get("started"))
-    ran = sum(1 for j in window if j["state"].get("started"))
-    first: dict[str, float] = {}
+    first: dict[str, tuple[float, str]] = {}
     for j in mine:
         ended = float(j["state"].get("ended") or 0)
         for t in j.get("tags", []) if j["state"].get("state") == "done" else ():
             for cid in t.get("for", []) if (t.get("campaign"), t.get("quest")) == (c.ident, pid) else ():
-                first[cid] = min(first.get(cid, ended), ended)
-    newly = sum(1 for x in first.values() if x >= since)
-    if never < GUARD_NEVER and (ran < GUARD_UNPROVEN or newly):
+                first[cid] = min(first.get(cid, (ended, j["id"])), (ended, j["id"]))
+    proving = {jid for ended, jid in first.values() if ended >= since}
+    never = barren = 0
+    for group in rounds(window).values():
+        if not any(j["state"].get("started") for j in group):
+            never += any(j["state"].get("state") == "cancelled" for j in group)
+        elif not any(j["id"] in proving for j in group):
+            barren += 1
+    if never < GUARD_NEVER and barren < GUARD_UNPROVEN:
         return ""
     waited = sum(
         max(0.0, float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]))
         for j in window
     )
+    heads = len(rounds(window))
     return (
-        f"{pid} queues evidence at every commit: in the last {GUARD_HOURS} h, {never} of its {len(window)} jobs were "
-        f"cancelled before starting and {ran} ran with {newly or 'no'} {'criterion' if newly < 2 else 'criteria'} "
-        f"newly met, {waited / 3600:.0f} h waiting in the queue. Iterate in its worktree under `quiet light` and "
-        "submit evidence once per round (State ready for review)"
+        f"{pid} queued evidence at {heads} heads in the last {GUARD_HOURS} h: {never} "
+        f"{'round was' if never == 1 else 'rounds were'} cancelled before any job started, {barren} ran and met "
+        f"no new criterion, {len(proving)} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
+        "contributor to iterate in its worktree under `quiet light` and submit one round per State ready for review"
     )
 
 

@@ -23,10 +23,10 @@ Tag each job with the criteria it proves: `campaign verify <ID> --for A1`, `camp
 --quest <ID> --for A2 -- <cmd>`, and for a fix's test `--for A2 --fails-without` on the plain test
 at a mutant, revert or the base (passes when it fails there). An [artifact], [decision] or [manual] criterion gets its journal row (a `path`, a PLAN.md id,
 who checked what). Sanitizers, platforms and `ci:` checks are CI's. Evidence survives journal
-commits and merges from main; run each job once. Done means `campaign brief` shows every
-criterion met (paste its Evidence table into the journal), the Result says what changed with its
-numbers and the docs it wrote, and State says "ready for review"; commit the journal before your
-final message.
+commits and merges from main; run each job once. A round: commit the code, commit State
+"ready for review", submit its evidence, then commit State "waiting on jobs <ids>". Done means `campaign
+brief` shows every criterion met (paste its Evidence table into the journal) and the Result says
+what changed with its numbers and the docs it wrote; commit the journal before your final message.
 ```
 
 Add when relevant: the review to fold in ("fix the blocking findings C1, C2 in

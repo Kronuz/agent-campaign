@@ -16,6 +16,12 @@ from harness import SKILL, CampaignCase
 
 
 class Scenarios(CampaignCase):
+    """The documented flows end to end, with the evidence hold on as in every real run."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.env.pop("CAMPAIGN_EVIDENCE_HOLD")
+
     def test_a_small_bug_fix_needs_one_contributor_and_no_reviewer(self) -> None:
         wt = self.started("fix-off-by-one", files="app.py", risk="low")
         self.commit(wt, {"app.py": "print(1 + 1)\n"}, "fix the off-by-one")

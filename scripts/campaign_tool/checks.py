@@ -219,7 +219,7 @@ def cmd_verify(a: argparse.Namespace) -> int:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
     ids = criteria_for(c, a.id, a.criteria or "")
-    hold = "" if a.force else iterating(c, a.id)
+    hold = "" if a.force else iterating(c, a.id, verify=True)
     queued = submit_checks(c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force, hold=hold)
     for jid in queued:
         if ids:

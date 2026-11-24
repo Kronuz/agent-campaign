@@ -20,6 +20,25 @@ A mechanical edit needs the suite and CI; a behavior change needs these.
    tree (a shared FetchContent directory links one flavor's libraries into another's binaries). A
    local result does not stand for another platform.
 
+### When evidence runs
+
+A round is one quest head's evidence: commit the code, commit State `ready for review`, submit the
+round, then commit State `waiting on jobs <ids>`. A State is set at the head when the commit that
+set it is newer than the head's code, so a code commit re-holds until the State is set again.
+
+| Quest status | Journal State | Event | Result |
+|---|---|---|---|
+| active | ready for review, or waiting on jobs, set at the head | `job submit --for`, `job rerun`, `verify` | queues |
+| active | ready for review, or waiting on jobs, set before the head | the same | held: "set State at <head>" |
+| active | any other State | the same | held |
+| active, tasked, every task merged | any | the lead's `verify` | queues |
+| review, or landing | any | any | queues (the lead owns this phase) |
+| any | any | a probe or measurement without `--for` | queues |
+| any | any | `--force` | queues |
+
+A result an earlier job already answers is reused whatever the State. The test harness turns the
+hold off with `CAMPAIGN_EVIDENCE_HOLD=0`; only the hold's own tests and `test_scenarios` run with it.
+
 ### Concurrency claims
 
 Deterministic tests that force each interleaving the design names, and stress against a sequential

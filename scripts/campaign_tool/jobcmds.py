@@ -132,26 +132,49 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
 
 
 READY = "ready for review"  # the journal State that ends a round: its evidence runs then
+RELEASED = (READY, "waiting on jobs")  # the States that let a round's evidence queue, set at the head
 
 
-def iterating(c: Campaign, pid: str, task: str = "") -> str:
-    """The committed journal State of a quest (or its task) while it iterates; "" at State ready for
-    review, the round's end, when its evidence and gate checks run, and for a journal that declares no
-    State (none, or no State line)."""
+def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) -> str:
+    """Why the hold keeps a quest's (or task's) evidence and gate checks from queuing, by the quest's
+    lifecycle table (SKILL.md, "Run a quest"); "" when they queue: a quest past active, a tasked
+    quest's `verify` once every task merged, or State ready for review or waiting on jobs set at the
+    head (the commit that set it is newer than the head's code)."""
     if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
         return ""
     p = c.quests[pid]
-    t = p.get("tasks", {}).get(task) if task else None
+    tasks = p.get("tasks", {})
+    if p.get("status") != "active" or (verify and tasks and all(t.get("merged") for t in tasks.values())):
+        return ""
+    t = tasks.get(task) if task else None
     name, branch = (f"{pid}--{task}", t["branch"]) if t else (pid, p.get("branch", ""))
     state = journal_state(c, name, branch)
-    return "" if state.startswith((READY, "(no ")) else state
+    if not state.startswith(RELEASED):
+        return f"the journal State is {state!r}"
+    head = state_before_head(c, p, name, branch)
+    return f"State {state!r} was set before the head {head[:12]}: set State at {head[:12]}" if head else ""
 
 
-def held(state: str, force: str = "pass --force") -> str:
-    """What a hold says: why nothing was queued, and the two ways to release it."""
+def state_before_head(c: Campaign, p: Json, name: str, branch: str) -> str:
+    """The head's code commit when the journal's State line last changed before it, else "": in one
+    repository by ancestry, across two (a quest in another repository) by commit time."""
+    repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
+    state = git(c.home, "log", "-1", "--format=%H %ct", "-G", "^State:", branch, "--", path)
+    if not code or not state:
+        return code.split()[0] if code else ""
+    (k, k_at), (s, s_at) = code.split(), state.split()
+    if same_repo(repo, c.home):
+        return "" if ancestor(repo, k, s) else k
+    return "" if int(s_at) >= int(k_at) else k
+
+
+def held(why: str, force: str = "pass --force") -> str:
+    """What a hold says: why nothing was queued, and the two ways to release it, for the contributor
+    and the lead alike."""
     return (
-        f"held, the journal State is {state!r}: evidence runs once per round. Iterate in the worktree under "
-        f"`quiet light`; commit State {READY} to run it, or {force}"
+        f"held: {why}. Evidence runs once per round: the contributor iterates in its worktree under `quiet "
+        f"light`, then commits State {READY} at the head; or {force}"
     )
 
 
@@ -308,6 +331,12 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
                 "a changed script is another job",
                 file=sys.stderr,
             )
+    if ids and not spec.get("commit"):
+        die("an unversioned job is never evidence: drop --for")
+    why = iterating(c, a.quest, a.task or "") if c is not None and ids and not a.force else ""
+    if why and not reusable(spec, spec["commit"], False):
+        print(f"campaign: --for {','.join(ids)} {held(why)}", file=sys.stderr)
+        return 1
     print(parsed_submit(spec, a, ids), file=sys.stderr)
     stray: list[str] = [x for x in cmd if x in SUBMIT_FLAGS] if len(cmd) > 1 else []
     if stray:
@@ -323,12 +352,6 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
         spec["campaign"] = ""
         with contextlib.suppress(CampaignError):
             spec["campaign"] = find_campaign(Path.cwd()).ident
-    if ids and not spec.get("commit"):
-        die("an unversioned job is never evidence: drop --for")
-    state = iterating(c, a.quest, a.task or "") if c is not None and ids and not a.force else ""
-    if state and not reusable(spec, spec["commit"], False):
-        print(f"campaign: --for {','.join(ids)} {held(state)}", file=sys.stderr)
-        return 1
     jid, reused = submit(spec, force=a.force)
     if c is not None and ids:
         tag(jid, c.ident, a.quest, ids, a.fails_without)
@@ -521,9 +544,9 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
         c = find_campaign(Path.cwd())
     for j in map(resolve_job, a.jobs) if c is not None else ():
         for t in [t for t in j.get("tags", []) if t["campaign"] == c.ident and t["quest"] in c.quests]:
-            if state := iterating(c, t["quest"], j["spec"].get("task", "")):
+            if (why := iterating(c, t["quest"], j["spec"].get("task", ""))) and not still_holds(c, j):
                 force = "submit it again with `job submit --force`"
-                die(f"{j['id']} is evidence for {t['quest']} {','.join(t['for'])}: {held(state, force)}")
+                die(f"{j['id']} is evidence for {t['quest']} {','.join(t['for'])}: {held(why, force)}")
     rerun_jobs(a.jobs, a.commit, a.minutes, c)
     return 0
 
@@ -539,6 +562,14 @@ def mutant_head(c: Campaign | None, spec: Json) -> str:
     return ""
 
 
+def still_holds(c: Campaign | None, job: Json) -> str:
+    """The quest head where a passed fails-without job still holds, else "": its rerun asks nothing."""
+    if not job["spec"].get("fails_without") or not fails_without_met(job):
+        return ""
+    head = mutant_head(c, job["spec"])
+    return head if head and mutant_holds(job, [head]) else ""
+
+
 def rerun_jobs(
     jobs: list[str], at: str | None = None, minutes: int | None = None, c: Campaign | None = None
 ) -> list[str]:
@@ -549,8 +580,7 @@ def rerun_jobs(
         with contextlib.suppress(CampaignError):
             c = find_campaign(Path.cwd())
     for jid in [x for x, s in specs.items() if s.get("fails_without")] if not at else ():
-        job = resolve_job(jid)
-        if (head := mutant_head(c, specs[jid])) and fails_without_met(job) and mutant_holds(job, [head]):
+        if head := still_holds(c, resolve_job(jid)):
             print(f"{jid} still holds at {head[:12]}: the code its mutation reverts is unchanged, so it stays evidence")
             del specs[jid]
     if not at and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):

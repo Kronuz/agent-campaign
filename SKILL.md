@@ -34,8 +34,8 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
    recording a landing done by hand needs a reason, which the tool records.
 6. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
    product is goes to `docs/` of the repository it describes.
-7. **Agents never wait on machines, and measurements never run without isolation.** A
-   contributor's own iteration builds and targeted tests run in its worktree under `quiet light`.
+7. **Agents never wait on machines, except a contributor's own iteration builds and targeted tests in
+   its worktree under `quiet light`, and measurements never run without isolation.**
 8. **The owner decides goals, scope, and any removal or narrowing of user-visible behavior.** The
    lead decides the rest and records it in `PLAN.md`. **Campaign never rents machines** or creates
    any other billable resource.
@@ -174,11 +174,11 @@ job passing at the exact commit; it queues no local job.
    light slots. A quest is launchable when it is planned, its `needs` are met and its file set is
    free in its repository; `campaign status` lists them, critical path first.
 2. A contributor builds its task, iterating in its worktree under `quiet light`, and submits evidence
-   once per round: until its journal commits State `ready for review`, `job submit --for`, `job
-   rerun` of tagged jobs and `verify` queue nothing new (`--force` releases), while probes without
-   `--for` queue. A passed `--fails-without` job holds until the code its mutation reverts changes;
-   `status`, `check` and `brief` flag a quest whose jobs churn. It commits and ends its turn; the
-   lead merges it and starts what it unblocked.
+   once per round: commit the code, commit State `ready for review`, submit the round, then commit
+   State `waiting on jobs <ids>`. Until a State set at the head releases them, `job submit --for`,
+   `job rerun` and `verify` queue nothing new (the table: `references/review.md`); probes queue. A
+   passed `--fails-without` job holds until the code its mutation reverts changes; `status`, `check`
+   and `brief` flag a quest whose rounds churn. The lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits`, never with a loop that retries
    `land`, which hides every refusal. It returns when a job ends, a branch moves, a message arrives
    or the lead's **to-do list** gains an item, at once when the wait starts with one, and again for

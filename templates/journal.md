@@ -23,8 +23,9 @@ ready for review, fixing <findings>, blocked on <who>: <what>.
 
 Jobs prove criteria by their tags (`--for A1`); paste `campaign brief`'s generated table here.
 Write the rows of [artifact], [decision] and [manual] criteria (a `path`, a decision id, who
-checked what). A row cites only what proves its criterion: every job it names must have passed at
-the code. Name the other jobs you examined, failures included, below the table (`campaign brief`
+checked what). A row cites only what proves its criterion: every job it names passed at the code,
+or is a fails-without result that still holds; a proof job still running stays in its row, where
+`land` waits for it. Name the other jobs you examined, failures included, below the table (`campaign brief`
 lists failed jobs no journal names), and answer each message by its id (msg-N).
 
 | Criterion | Evidence |
@@ -33,7 +34,7 @@ lists failed jobs no journal names), and answer each message by its id (msg-N).
 
 ## Result
 
-<When ready for review: what changed, its measured effect with numbers and the jobs behind them,
+<When the round's jobs pass: what changed, its measured effect with numbers and the jobs behind them,
 and what it leaves open. Results and how it works go in the docs of the repository it changed
 (docs/perf/, docs/mechanisms/, a library's own); name them here. `campaign map` shows this.>
 

@@ -309,7 +309,10 @@ class CampaignCase(unittest.TestCase):
         return self.ok(cwd, "job", "submit", *args).out.split()[0]
 
     def verified(self, pid: str) -> None:
-        """Queues the quest's checks at its head and waits for them to pass."""
+        """Queues the quest's checks at its head and waits for them to pass. With the hold on, the
+        contributor first ends its round: State ready for review set at the head."""
+        if "CAMPAIGN_EVIDENCE_HOLD" not in self.env:
+            self.round_ended(self.wt(pid), pid)
         self.ok(self.home, "verify", pid)
         self.ok(self.home, "wait", "--quest", pid, "--timeout", "90", timeout=120)
 
@@ -341,6 +344,17 @@ class CampaignCase(unittest.TestCase):
         rel = f".campaign/demo/journal/{pid}.md"
         text = re.sub(r"^State:.*\n", "", (wt / rel).read_text(), flags=re.M)
         return self.commit(wt, {rel: f"State: ready for review\n{text}"})
+
+    def round_ended(self, wt: Path, pid: str) -> None:
+        """Commits State `ready for review at <code head>` in the quest's journal unless it says so."""
+        rel = f".campaign/demo/journal/{pid}.md"
+        if not (wt / rel).exists():
+            return
+        code = self.git(wt, "log", "-1", "--first-parent", "--format=%h", "--", ".", ":(exclude).campaign")
+        text = (wt / rel).read_text()
+        if f"State: ready for review at {code}\n" not in text:
+            text = re.sub(r"^State:.*\n", "", text, flags=re.M)
+            self.commit(wt, {rel: f"State: ready for review at {code}\n{text}"})
 
     def wait_until(self, predicate: Any, timeout: float = 30) -> None:
         end = time.time() + timeout

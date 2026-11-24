@@ -23,6 +23,8 @@ def set_state(case: CampaignCase, wt: Path, pid: str, state: str) -> None:
 
 
 class Hold(CampaignCase):
+    """The hold's lifecycle table (SKILL.md, "Run a quest"), a test per row, with the hold on."""
+
     def setUp(self) -> None:
         super().setUp()
         self.env.pop("CAMPAIGN_EVIDENCE_HOLD")
@@ -39,40 +41,82 @@ class Hold(CampaignCase):
     def jobs(self) -> int:
         return len(list((self.root / "jobs").glob("*/spec.json")))
 
-    def test_while_iterating_evidence_and_gate_checks_are_held_and_probes_queue(self) -> None:
-        wt = self.iterating()
-        held = "held, the journal State is 'working': evidence runs once per round."
-        refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", TEST)
-        self.assertIn(f"--for A1 {held}", refused.err)
-        self.assertIn("commit State ready for review to run it, or pass --force", refused.err)
-        self.assertEqual(refused.out, "")  # no id: nothing was queued
-        out = self.ok(self.home, "verify", "fix", "--for", "A1").out
-        self.assertIn(f"unit: {held}", out)
-        self.assertNotIn("wait for them", out)
-        self.assertEqual(self.jobs(), 0)
-        probe = self.submit(wt, "--quest", "fix", "--", TEST)  # no --for: a probe queues either way
-        self.assertEqual(self.jobs(), 1)
-        self.ok(self.home, "wait", probe, "--timeout", "60")
-        forced = self.submit(wt, "--quest", "fix", "--for", "A1", "--force", "--", TEST)
-        self.assertNotEqual(forced, probe)
-        self.assertRegex(self.ok(self.home, "verify", "fix", "--force").out, r"(?m)^unit: \d{6}-\d{6}-[0-9a-f]{6}$")
-        self.assertEqual(self.jobs(), 3)
+    def queued(self, wt: Path, cmd: str = TEST) -> tuple[str, str]:
+        """A contributor's `job submit --for` and the lead's `verify`, both queued: their job ids."""
+        tagged = self.submit(wt, "--quest", "fix", "--for", "A1", "--", cmd)
+        gate = re.search(r"(?m)^unit: (\d{6}-\d{6}-[0-9a-f]{6})", self.ok(self.home, "verify", "fix").out)
+        assert gate, "verify queued no unit check"
+        return tagged, gate[1]
 
-    def test_at_ready_for_review_both_queue_and_a_reused_result_passes_a_hold(self) -> None:
+    def held(self, wt: Path, why: str, rerun: str = "", *, verify: bool = True) -> None:
+        """Submit --for, the lead's verify (unless its check is reused) and (given a tagged job) its
+        rerun, all held for WHY."""
+        refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # held")
+        self.assertIn(f"--for A1 held: {why}. Evidence runs once per round", refused.err)
+        self.assertEqual(refused.out, "")  # no id: nothing was queued
+        self.assertNotIn("command:", refused.err)  # nothing reads as queued before the hold
+        out = self.ok(self.home, "verify", "fix").out
+        self.assertIn(f"unit: held: {why}." if verify else "(reused)", out)
+        if rerun:
+            self.fails(self.home, "job", "rerun", rerun, match=f"held: {why}")
+
+    def test_row_1_ready_for_review_or_waiting_on_jobs_set_at_the_head_queues(self) -> None:
         wt = self.iterating()
         set_state(self, wt, "fix", "ready for review")
-        tagged = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
-        gate = re.search(r"(?m)^unit: (\S+)$", self.ok(self.home, "verify", "fix").out)
-        assert gate, "verify queued no unit check at ready for review"
-        self.ok(self.home, "wait", tagged, gate[1], "--timeout", "60")
-        journal = ".campaign/demo/journal/fix.md"
-        text = (wt / journal).read_text().replace("State: ready for review", "State: working")
-        self.commit(wt, {journal: text})  # iterating again, at the same code
-        self.assertEqual(self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST), tagged)
-        self.assertIn(f"unit: {gate[1]} (reused)", self.ok(self.home, "verify", "fix").out)
-        self.commit(wt, {"app.py": "print(2)  # new code\n"})
-        self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", TEST, match="held")
-        self.fails(self.home, "job", "rerun", tagged, match="submit it again with `job submit --force`")
+        tagged, gate = self.queued(wt)
+        self.ok(self.home, "wait", tagged, gate, "--timeout", "60")
+        self.ok(self.home, "job", "rerun", tagged)
+        set_state(self, wt, "fix", f"waiting on jobs {tagged}")
+        again, _ = self.queued(wt, f"{TEST} && true")
+        self.assertNotEqual(again, tagged)
+
+    def test_row_2_a_state_set_before_the_head_holds_until_set_again(self) -> None:
+        wt = self.iterating()
+        set_state(self, wt, "fix", "ready for review")
+        tagged, gate = self.queued(wt)
+        self.ok(self.home, "wait", tagged, gate, "--timeout", "60")
+        head = self.commit(wt, {"app.py": "print(2)  # new code\n"})[:12]
+        self.held(wt, f"State 'ready for review' was set before the head {head}: set State at {head}", tagged)
+        set_state(self, wt, "fix", f"ready for review at {head}")
+        self.queued(wt)
+
+    def test_row_3_any_other_state_holds(self) -> None:
+        wt = self.iterating()
+        self.held(wt, "the journal State is 'working'")
+        self.assertEqual(self.jobs(), 0)
+        set_state(self, wt, "fix", "ready for review")
+        tagged, _ = self.queued(wt)
+        set_state(self, wt, "fix", "fixing D1")
+        self.held(wt, "the journal State is 'fixing D1'", tagged, verify=False)  # its unit check is reused
+        self.assertEqual(self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST), tagged)  # reused: not held
+
+    def test_row_4_a_tasked_quest_s_verify_queues_once_every_task_merged(self) -> None:
+        self.iterating()
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        self.assertIn("unit: held: the journal State is 'working'", self.ok(self.home, "verify", "fix").out)
+        own = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")
+        self.ok(self.home, "wait", own, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+        self.assertRegex(self.ok(self.home, "verify", "fix").out, r"(?m)^unit: \d{6}-\d{6}-[0-9a-f]{6}")
+
+    def test_row_5_a_quest_in_review_or_landing_never_holds(self) -> None:
+        wt = self.iterating()
+        self.ok(self.home, "set", "fix", "status=review")
+        self.queued(wt)
+
+    def test_row_6_a_probe_or_measurement_without_for_queues(self) -> None:
+        wt = self.iterating()
+        probe = self.submit(wt, "--quest", "fix", "--", TEST)
+        self.assertEqual(self.jobs(), 1)
+        self.ok(self.home, "wait", probe, "--timeout", "60")
+
+    def test_row_7_force_queues(self) -> None:
+        wt = self.iterating()
+        self.submit(wt, "--quest", "fix", "--for", "A1", "--force", "--", TEST)
+        self.assertRegex(self.ok(self.home, "verify", "fix", "--force").out, r"(?m)^unit: \d{6}-\d{6}-[0-9a-f]{6}$")
+        self.assertEqual(self.jobs(), 2)
 
 
 class Mutants(CampaignCase):
@@ -151,50 +195,88 @@ class Mutants(CampaignCase):
 class Guard(CampaignCase):
     ids = itertools.count()
 
-    def fake_jobs(self, pid: str, n: int, state: str, *, started: bool, tag: str = "", age_h: float = 3) -> None:
-        """Writes N ended job records of quest PID into the job store, submitted AGE_H hours ago, each
-        waiting an hour in the queue (two when cancelled before it started)."""
+    def fake_jobs(
+        self,
+        pid: str,
+        heads: list[str],
+        n: int,
+        state: str,
+        *,
+        started: bool,
+        tag: str = "",
+        age_h: float = 3,
+        mutant: bool = False,
+    ) -> None:
+        """Writes N ended job records of quest PID at each of HEADS into the job store, submitted AGE_H
+        hours ago, each waiting an hour in the queue (two when cancelled before it started)."""
         campaign = str(self.home / ".campaign/demo")
-        submitted = time.time() - age_h * 3600
-        for _ in range(n):
-            d = self.root / "jobs" / f"261124-000000-{next(self.ids):06x}"
-            d.mkdir(parents=True)
-            spec = {"cmd": "true", "quest": pid, "campaign": campaign, "submitted": submitted, "level": "light"}
-            st: dict[str, object] = {"state": state, "ended": submitted + 7200}
-            if started:
-                st["started"] = submitted + 3600
-            (d / "spec.json").write_text(json.dumps(spec))
-            (d / "state.json").write_text(json.dumps(st))
-            if tag:
-                tags = [{"campaign": campaign, "quest": pid, "fails_without": False, "for": [tag]}]
-                (d / "for.json").write_text(json.dumps({"tags": tags}))
+        for head in heads:
+            submitted = time.time() - age_h * 3600
+            for _ in range(n):
+                d = self.root / "jobs" / f"261124-000000-{next(self.ids):06x}"
+                d.mkdir(parents=True)
+                spec = {
+                    "cmd": "true",
+                    "quest": pid,
+                    "campaign": campaign,
+                    "submitted": submitted,
+                    "level": "light",
+                    "commit": head,
+                    "repo": str(self.home),
+                    **({"fails_without": 2} if mutant else {}),
+                }
+                st: dict[str, object] = {"state": state, "ended": submitted + 7200}
+                if started:
+                    st["started"] = submitted + 3600
+                (d / "spec.json").write_text(json.dumps(spec))
+                (d / "state.json").write_text(json.dumps(st))
+                if tag:
+                    tags = [{"campaign": campaign, "quest": pid, "fails_without": mutant, "for": [tag]}]
+                    (d / "for.json").write_text(json.dumps({"tags": tags}))
 
-    def test_the_guard_names_a_quest_queuing_evidence_at_every_commit(self) -> None:
+    def heads(self, n: int, parent: str = "") -> list[str]:
+        """N commits of the home's repository: children of PARENT (mutants cut from it), else fake heads."""
+        if not parent:
+            return [f"{next(self.ids):040x}" for _ in range(n)]
+        tree = self.git(self.home, "rev-parse", f"{parent}^{{tree}}")
+        return [self.git(self.home, "commit-tree", tree, "-p", parent, "-m", f"mutant {i}") for i in range(n)]
+
+    def test_the_guard_counts_rounds_and_names_the_lead_s_step(self) -> None:
         for pid in ("spin", "churn", "fine", "proving"):
             self.started(pid, files=f"{pid}/**")
-        self.fake_jobs("spin", 10, "cancelled", started=False)  # cancelled before starting
-        self.fake_jobs("churn", 20, "done", started=True)  # ran, and no criterion newly met
-        self.fake_jobs("fine", 9, "cancelled", started=False)  # below both thresholds
-        self.fake_jobs("fine", 19, "done", started=True)
-        self.fake_jobs("fine", 30, "cancelled", started=False, age_h=30)  # outside the window
-        self.fake_jobs("proving", 25, "done", started=True, tag="A1")  # A1 first proven in the window
-        self.fake_jobs("proving", 1, "done", started=True, tag="A2", age_h=40)
+        self.fake_jobs("spin", self.heads(3), 4, "cancelled", started=False)  # 3 rounds never started
+        self.fake_jobs("churn", self.heads(4), 5, "done", started=True)  # 4 rounds ran, none met anything
+        self.fake_jobs("fine", self.heads(2), 9, "cancelled", started=False)  # below both thresholds
+        self.fake_jobs("fine", self.heads(3), 9, "done", started=True)
+        self.fake_jobs("fine", self.heads(5), 9, "cancelled", started=False, age_h=30)  # outside the window
+        self.fake_jobs("proving", self.heads(3), 5, "done", started=True)
+        self.fake_jobs("proving", self.heads(1), 5, "done", started=True, tag="A1")  # A1 first met in the window
         spin = (
-            "spin queues evidence at every commit: in the last 24 h, 10 of its 10 jobs were cancelled before "
-            "starting and 0 ran with no criterion newly met, 20 h waiting in the queue."
+            "spin queued evidence at 3 heads in the last 24 h: 3 rounds were cancelled before any job started, 0 ran "
+            "and met no new criterion, 0 newly met; 24 job-hours waiting. Lead: tell its contributor"
         )
         churn = (
-            "churn queues evidence at every commit: in the last 24 h, 0 of its 20 jobs were cancelled before "
-            "starting and 20 ran with no criterion newly met, 20 h waiting in the queue."
+            "churn queued evidence at 4 heads in the last 24 h: 0 rounds were cancelled before any job started, 4 ran"
         )
         for args in (("status",), ("check",)):
             out = self.run_cli(self.home, *args).out
             self.assertIn(spin, out)
             self.assertIn(churn, out)
-            self.assertNotIn("fine queues", out)
-            self.assertNotIn("proving queues", out)
+            self.assertNotIn("fine queued", out)
+            self.assertNotIn("proving queued", out)
         self.assertIn(f"  - {spin}", self.ok(self.wt("spin"), "brief").out)
-        self.assertNotIn("queues evidence", self.ok(self.wt("fine"), "brief").out)
+        self.assertNotIn("queued evidence at", self.ok(self.wt("fine"), "brief").out)
+
+    def test_one_round_superseded_once_is_not_flagged(self) -> None:
+        """A round at one head, with mutants cut from it, cancelled before it started by a fix."""
+        self.started("fix", files="app.py")
+        head = self.git(self.home, "rev-parse", "main")
+        self.fake_jobs("fix", [head], 4, "cancelled", started=False, tag="A1")
+        self.fake_jobs("fix", self.heads(3, head), 1, "cancelled", started=False, tag="A2", mutant=True)
+        self.fake_jobs("fix", self.heads(1), 4, "done", started=True, tag="A1", age_h=1)  # the fixed round
+        self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
+        self.fake_jobs("fix", self.heads(2), 3, "cancelled", started=False)  # 2 more rounds never ran: 3 in all
+        self.assertIn("fix queued evidence at 4 heads", self.run_cli(self.home, "status").out)
 
 
 class ExaminedJobs(CampaignCase):
@@ -252,3 +334,16 @@ class CitedInFlight(CampaignCase):
         self.assertIn(why, self.ok(self.home, "brief").out)
         self.ok(self.home, "job", "cancel", shard)
         self.ok(self.home, "land", "fix")
+
+
+class RoundOrder(CampaignCase):
+    def test_every_text_gives_one_round_order(self) -> None:
+        """Commit the code, State ready for review, submit the round, then State waiting on jobs."""
+        order = re.compile(
+            r"commit (?:it|the code), commit State .?ready for review.?, submit (?:its evidence|the round), "
+            r"then (?:set|commit) State .?waiting on jobs"
+        )
+        skill = Path(__file__).resolve().parent.parent
+        for rel in ("SKILL.md", "agents/campaign-contributor.md", "references/prompts.md", "references/review.md"):
+            text = " ".join((skill / rel).read_text().split())
+            self.assertRegex(text, order, rel)

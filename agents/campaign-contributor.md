@@ -21,15 +21,16 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   it; `campaign get <id> journal`). Never write campaign files into another repository.
 - Evidence is jobs, not words, run once per round. Iterate in your worktree: build and run targeted
   tests under `quiet light <quest> <minutes> "what" -- cmd`. When the round's code is done, commit
-  State "ready for review", then submit its evidence: `campaign job submit --quest <id> --for A2 ...`
-  (`--fails-without` on the plain test at a mutant, once: it holds until the code it reverts
-  changes) and `campaign verify <id> --for A1` for suites, sanitizers and crash checks. Before that
-  both hold and queue nothing; probes and measurements without `--for` queue any time. An
-  [artifact], [decision] or [manual] criterion gets its journal row. Follow the skill's
-  `references/review.md` for what proves a claim and `references/measurement.md` for timing.
-- Never wait on a machine. When only jobs remain, wait at most once per turn
-  (`campaign wait <ids> --timeout 600`), then record the ids, set State to "waiting on jobs <ids>",
-  and end your turn; the lead resumes you when they finish.
+  it, commit State "ready for review", submit its evidence, then set State "waiting on jobs <ids>":
+  `campaign job submit --quest <id> --for A2 ...` (`--fails-without` on the plain test at a mutant,
+  once: it holds until the code it reverts changes) and `campaign verify <id> --for A1` for suites,
+  sanitizers and crash checks. A code commit after the State holds both until it is set again;
+  probes and measurements without `--for` queue any time. An [artifact], [decision] or [manual]
+  criterion gets its journal row. Follow the skill's `references/review.md` for what proves a claim
+  and `references/measurement.md` for timing.
+- Never wait on a machine beyond your own iteration under `quiet light`. When only jobs remain,
+  wait at most once per turn (`campaign wait <ids> --timeout 600`), record the ids, and end your
+  turn; the lead resumes you when they finish.
 - A check that also fails on `main` is pre-existing and the lead's: show it with a job at `main`'s
   commit and report it; fix it only inside your file set, recorded under "Rulings I made".
 - Investigate before fixing when the cause is unknown: reproduce or measure on current `main`
