@@ -43,9 +43,9 @@ This is the replay's `quest_hours` query (agent-campaign branch `quest/xapiand/v
 running, and every `after` landed. The headline sums the active and review statuses, which the
 lead moves; blocked quests wait on the owner and are shown apart.
 
-The numbers come from `measure.py` in the quest's journal (campaign-v3
-`.campaign/campaign-v3/journal/lead-driver-measured/measure.py`), run as campaign job
-261124-035128-77f6bd at campaign-v3:3916044. It reads, read-only:
+The numbers come from `docs/v3/lead-driver-measured.py`, next to this page, run as a campaign
+job (`python3 docs/v3/lead-driver-measured.py`; the quest's journal names the job). It prints
+every table here and writes `measure.json` under `--out`. It reads, read-only:
 1. Each home's `state.json` at each of its commits in the windows, plus the one in force at the
    start: 1,105 for xapiand, 860 for detent.
 2. The job store, `~/.scratch/campaign/jobs`. A task's job carries its quest's id and counts for
