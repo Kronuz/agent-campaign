@@ -15,11 +15,12 @@ import report
 
 from .campaign import JOB_WAIT, READY, Campaign, activity, critical_path, duration, hunt_open, overview, park_met
 from .ci import forget_ci
-from .core import CampaignError, Json, atomic_write, plural, section
+from .core import CampaignError, Json, atomic_write, git, plural, section
+from .jobs import quest_jobs
 from .journals import journal_text, state_of
 from .mail import leave_message, recorded_lead, surface_spaces, todo_mail, todo_mail_file
 from .map import first_paragraph
-from .repo import frozen, has_ref, rev
+from .repo import ancestor, frozen, has_ref, rev
 from .reviews import landing_gaps, task_gaps
 from .state import registry
 from .worker import light_slots, light_weight
@@ -42,6 +43,28 @@ def first_command(gaps: list[str], fallback: str) -> str:
         if m := re.search(r"`(campaign [^`]+)`", gap):
             return m.group(1)
     return fallback
+
+
+def ready(state: str) -> bool:
+    """A journal State that ends a round: ready for review, or waiting on the round's jobs."""
+    return bool(READY.match(state) or JOB_WAIT.search(state))
+
+
+def round_at_head(c: Campaign, k: str, p: Json, jobs: list[Json]) -> bool:
+    """Whether quest K's round exists at its head's code: a job tagged for it, or a gate check of it, at
+    or after the head's last code commit. Only then is it worth a review."""
+    repo = c.repo(p)
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H", p["branch"], "--", ".", ":(exclude).campaign")
+    check = re.compile(rf"{re.escape(k)} (?:deferred )?check ")
+    for j in quest_jobs(jobs, c.ident, k):
+        commit = j["spec"].get("commit") or ""
+        if (
+            commit
+            and (j.get("tags") or check.match(j["spec"].get("what", "")))
+            and (not code or ancestor(repo, code, commit))
+        ):
+            return True
+    return False
 
 
 def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None) -> Json:
@@ -76,7 +99,7 @@ def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None
         state = state_of(journal_text(c, k, p["branch"]))
         if not missing:
             items.append(item("land", k, f"land {k}: nothing keeps it from landing", f"campaign land {k}"))
-        elif p["status"] == "active" and READY.match(state) and p["lenses"]:
+        elif p["status"] == "active" and ready(state) and p["lenses"] and round_at_head(c, k, p, jobs):
             lenses = " and ".join(p["lenses"])
             text = f"review {k}: its journal says {state}; then launch its {lenses} review"
             items.append(item("review", k, text, f"campaign set {k} status=review"))

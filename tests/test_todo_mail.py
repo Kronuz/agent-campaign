@@ -199,6 +199,24 @@ class TodoMail(CampaignCase):
         self.assertEqual(len(mails), 2, f"the gap changed: {mails[-1]['text']}")
         self.assertNotEqual(first["text"].splitlines()[1:], mails[-1]["text"].splitlines()[1:])
 
+    def test_a_review_is_proposed_once_the_round_s_jobs_exist_at_the_head(self) -> None:
+        """Design review D2: the State alone proposes no review; the round's jobs at the head do."""
+        self.started("deep", files="deep.py", risk="high")
+        brief = self.home / ".campaign/demo/quests/deep.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 one: a test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(self.wt("deep"), {"deep.py": "x = 1\n"})
+        self.journal("deep", "ready for review")
+        review = "todo: review deep: its journal says"
+        self.assertNotIn(review, self.ok(self.home, "status").out)
+        old = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "true")
+        self.ok(self.home, "wait", old, "--timeout", "60")
+        self.commit(self.wt("deep"), {"deep.py": "x = 2\n"})  # new code: that job is the last round's
+        self.assertNotIn(review, self.ok(self.home, "status").out)
+        jid = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "true")
+        self.journal("deep", f"waiting on jobs {jid}")
+        self.assertIn(f"{review} waiting on jobs {jid}; then launch its", self.ok(self.home, "status").out)
+
     def test_an_items_age_alone_never_resends(self) -> None:
         self.started("slow", files="slow.py")
         journal = self.wt("slow") / ".campaign/demo/journal/slow.md"

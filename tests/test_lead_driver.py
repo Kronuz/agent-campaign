@@ -129,7 +129,9 @@ class LeadDriver(CampaignCase):
         self.started("asks", files="asks.py")
         self.journal("asks", "blocked on the lead: which wire format")
         self.started("reviewed", files="reviewed.py", risk="high")
+        self.commit(self.wt("reviewed"), {"reviewed.py": "done\n"})
         self.journal("reviewed", "ready for review")
+        self.verified("reviewed")  # its round's checks exist at its head: a review is worth launching
         self.started("tasked", files="tasked/**")
         self.ok(self.home, "start", "tasked", "--task", "t1", "--files", "tasked/**")
         job = self.submit(self.wt("tasked--t1"), "--quest", "tasked", "--task", "t1", "--", "true")
