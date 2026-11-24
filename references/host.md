@@ -45,7 +45,8 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   counts wherever every tracked file in its read set holds what it held, and across up to 40
   first-parent commits, whatever jobs it ran after, each changing only documentation (`docs/**`,
   `website/**`, `*.md` outside `tests/` and `bench/`, never a build file) its command does not name
-  and no `tested_docs` glob matches, or, for a quest, a merge from main whose changes touch none of
+  (a docs path it names or its directory enters names that path's folder too: a script's siblings
+  run with it) and no `tested_docs` glob matches, or, for a quest, a merge from main whose changes touch none of
   the quest's files or own changes nor its `--inputs` (with their build files and named paths); a
   strict or exclusive job without `--inputs` crosses only main's documentation. The build-test, a
   gate check without `--inputs`, counts by neither read set nor merges unless `ci=github`, whose

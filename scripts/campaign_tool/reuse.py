@@ -12,7 +12,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import shutil
 import subprocess
 import sys
@@ -85,18 +84,15 @@ CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs,
 CARRY_DEPTH = 40  # how many first-parent commits back evidence is looked for (docs-only commits, merges from main)
 
 
-def doc_path(path: str, cmd: str, tested: Sequence[str] = ()) -> bool:
-    """Whether PATH is documentation that the command CMD does not name, itself or by a folder, and
-    that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
-    return docs_unnamed(path, cmd, tuple(tested))
+def doc_path(path: str, cmd: str, tested: Sequence[str] = (), cwd: str = "") -> bool:
+    """Whether PATH is documentation that the command CMD, run in CWD, does not name (named_docs),
+    and that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
+    return docs_unnamed(path, cmd, tuple(tested), cwd)
 
 
 @functools.lru_cache(maxsize=1 << 16)
-def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...]) -> bool:
-    folders = {path[: i + 1] for i, ch in enumerate(path) if ch == "/"}
-    named = path in cmd or any(
-        w.rstrip("/") + "/" in folders for w in cmd_words(cmd) if w.startswith(("docs", "website"))
-    )
+def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...], cwd: str) -> bool:
+    named = path in cmd or any(path == x or path.startswith(x + "/") for x in named_docs(cmd, cwd))
     parts = path.split("/")
     if named or any(fnmatch.fnmatchcase(path, g) for g in tested) or set(parts[:-1]) & set(CODE_DIRS):
         return False
@@ -106,12 +102,15 @@ def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...]) -> bool:
 
 
 @functools.lru_cache(maxsize=1 << 12)
-def cmd_words(cmd: str) -> tuple[str, ...]:
-    """A command's words, as the shell splits them (by whitespace when it cannot)."""
-    try:
-        return tuple(shlex.split(cmd))
-    except ValueError:
-        return tuple(cmd.split())
+def named_docs(cmd: str, cwd: str) -> tuple[str, ...]:
+    """The documentation a command run in CWD names, as paths whose files and folders count as its
+    code: each docs/ or website/ path it names or enters, and that path's folder (a script there
+    runs its siblings)."""
+    out: list[str] = []
+    for x in [*named_paths(cmd, cwd), *([cwd] if cwd else [])]:
+        if x.split("/")[0] in ("docs", "website"):
+            out += [x, *([x.rsplit("/", 1)[0]] if "/" in x else [])]
+    return tuple(dict.fromkeys(out))
 
 
 def tested_docs(spec: Json) -> list[str]:
@@ -148,14 +147,14 @@ def carried_ancestors(
     command does not name, or, with MERGED, brings main's changes that touch none of the quest's
     FILES (its file set and own changes) nor the job's inputs (as input_files reads them). A
     measurement (strict, exclusive) without --inputs crosses only main's documentation."""
-    cmd, inputs = spec["cmd"], spec.get("inputs") or []
+    cmd, cwd, inputs = spec["cmd"], spec.get("cwd", ""), spec.get("inputs") or []
     line = on_commits(
         ("first-parents", str(repo), commit),
         lambda: git(repo, "rev-list", "--first-parent", f"--max-count={CARRY_DEPTH + 1}", commit).split(),
     )
     main_head = rev(repo, main_branch(repo)) if merged else ""
-    own = set(own_code(repo, main_head, commit, cmd, tested)) if merged else set()
-    named = named_paths(cmd, spec.get("cwd", ""))
+    own = set(own_code(repo, main_head, commit, cmd, tested, cwd=cwd)) if merged else set()
+    named = [*named_paths(cmd, cwd), *named_docs(cmd, cwd)]
     measured = spec.get("level") in HEAVY and not inputs
 
     def touches(path: str) -> bool:
@@ -179,7 +178,7 @@ def carried_ancestors(
     merges, newer = 0, commit
     for older in line[1:]:
         paths = [x for x in changed(repo, older, newer) if not is_meta(x)]
-        code = [x for x in paths if not doc_path(x, cmd, tested)]
+        code = [x for x in paths if not doc_path(x, cmd, tested, cwd)]
         if merged and from_main(repo, newer, main_head):
             if any(touches(x) for x in code):
                 break
@@ -218,11 +217,11 @@ def job_at(
     return (None if exact else read_twin(spec, commit)) or found
 
 
-def own_code(repo: Path, main_head: str, commit: str, cmd: str, tested: Sequence[str]) -> dict[str, str]:
+def own_code(repo: Path, main_head: str, commit: str, cmd: str, tested: Sequence[str], *, cwd: str) -> dict[str, str]:
     """The quest's own code at COMMIT: the paths it changes against its merge base with main, with
-    their blobs, documentation CMD does not name aside."""
+    their blobs, documentation CMD run in CWD does not name aside."""
     own: dict[str, str] = on_commits(("own", str(repo), main_head, commit), lambda: own_blobs(repo, main_head, commit))
-    return {x: b for x, b in own.items() if not doc_path(x, cmd, tested)}
+    return {x: b for x, b in own.items() if not doc_path(x, cmd, tested, cwd)}
 
 
 def docs_note(job: Json) -> str:

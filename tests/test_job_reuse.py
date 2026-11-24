@@ -366,10 +366,38 @@ class Identity(CampaignCase):
     def test_a_docs_folder_counts_as_named_only_as_a_whole_argument(self) -> None:
         doc_path = campaign_module().doc_path
         self.assertTrue(doc_path("docs/design/results.md", "docs/design/bench/run.sh row 1000"))
-        self.assertTrue(doc_path("docs/perf/notes.md", "docs/perf/run.sh measure"))
+        self.assertFalse(doc_path("docs/perf/notes.md", "docs/perf/run.sh measure"))  # a script's sibling
+        self.assertFalse(doc_path("docs/perf/lib/fit.py", "bash ./docs/perf/run.sh"))
+        self.assertFalse(doc_path("docs/perf/fit.py", "bash run.sh", cwd="docs/perf"))
+        self.assertTrue(doc_path("docs/other/notes.md", "bash run.sh", cwd="docs/perf"))
+        self.assertFalse(doc_path("website/lib/a.js", "node --script=website/lib/b.js"))
         self.assertFalse(doc_path("docs/design/results.md", "pytest docs/design"))
         self.assertFalse(doc_path("docs/design/results.md", "check docs/"))
         self.assertFalse(doc_path("docs/design/results.md", "cat docs/design/results.md"))
+
+    def test_a_docs_script_runs_the_files_in_its_folder(self) -> None:
+        """A script under docs/ that the command names runs its siblings: they are code for the job,
+        documentation outside its folder is not."""
+        self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets
+        row = 'python3 "$(dirname "$0")/boot.py"\n'
+        self.commit(self.home, {"docs/m/x/row.sh": row, "docs/m/x/boot.py": "print(1)\n", "docs/m/n.md": "n\n"})
+        cmd = "bash docs/m/x/row.sh"
+        jid = self.submit(self.home, "--", cmd)
+        self.ok(self.home, "wait", jid)
+        self.commit(self.home, {"docs/m/n.md": "prose\n", "docs/y/run.py": "print(0)\n"})
+        self.assertEqual(self.submit(self.home, "--", cmd), jid)  # docs elsewhere keep its evidence
+        self.commit(self.home, {"docs/m/x/boot.py": "raise SystemExit(1)\n"})
+        new = self.submit(self.home, "--", cmd)
+        self.assertNotEqual(new, jid)  # the sibling it runs is code
+        self.run_cli(self.home, "wait", new)
+        self.assertEqual(self.job(new)["state"], "failed")
+        self.commit(self.home, {"docs/m/x/boot.py": "print(2)\n"})
+        inside = self.submit(self.home / "docs/m/x", "--", "bash row.sh")
+        self.ok(self.home, "wait", inside)
+        self.commit(self.home, {"docs/m/n.md": "more prose\n"})
+        self.assertEqual(self.submit(self.home / "docs/m/x", "--", "bash row.sh"), inside)
+        self.commit(self.home, {"docs/m/x/boot.py": "print(3)\n"})
+        self.assertNotEqual(self.submit(self.home / "docs/m/x", "--", "bash row.sh"), inside)  # by its directory
 
     def test_a_rerun_never_moves_a_commit_the_quests_branch_never_held(self) -> None:
         """A mutant (a commit only a scratch ref holds) is refused without --commit and kept with it; a

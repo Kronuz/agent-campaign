@@ -25,7 +25,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `jobs.py` (389 lines): The job store: a job's identity, its records, the index of terminal jobs,
   and the tags that make it evidence. Boundary: the on-disk job record and its key. Opened alone to
   change what identifies a job or how its records are read and indexed.
-- `reuse.py` (507 lines): Evidence reuse: which job speaks for a commit (its own run, an ancestor's,
+- `reuse.py` (516 lines): Evidence reuse: which job speaks for a commit (its own run, an ancestor's,
   a twin whose read set is unchanged), and queueing jobs. Boundary: the rules for whether a result
   counts at other code, and submit, which applies them. Opened alone when a job is rerun that should
   not be, or reused that should not be.
@@ -154,7 +154,7 @@ The job queue tests:
 
 - `test_job_scheduling.py` (814): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
   job runs next and on how many cores.
-- `test_job_reuse.py` (447): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
+- `test_job_reuse.py` (475): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
   fixtures they share. When a finished job is reused for another commit.
 - `test_job_lifecycle.py` (406): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
   limits, crash, pruning and disk use.
