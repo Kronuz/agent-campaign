@@ -513,6 +513,7 @@ class LeadDriver(CampaignCase):
         self.assertIn("in flight: 1 worked on", out)
         os.utime(wt / "app.py", (time.time() - 1200,) * 2)
         self.assertIn(resume, self.todo(self.ok(self.home, "status").out), "untouched for 20 min")
+        time.sleep(max(0.0, float(self.job(jid)["ended"]) + 1.1 - time.time()))  # a commit's time is in whole seconds
         self.git(wt, "commit", "-qam", "more")
         os.utime(wt / "app.py", (time.time() - 1200,) * 2)
         self.assertNotIn(resume, self.todo(self.ok(self.home, "status").out), "a commit since its last job ended")
