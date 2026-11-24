@@ -228,6 +228,28 @@ class Plan(unittest.TestCase):
             gone = self.job(2, "light", "done", NOW - 7000, 1, claimed=NOW - ago, started=NOW - ago, ended=NOW - 30)
             self.assertEqual(drain["id"] in self.started(drain, gone), claimed)
 
+    def test_an_overdue_drain_behind_a_strict_job_lets_in_light_work_that_ends_before_it(self) -> None:
+        """The heavy slot is the strict job's for 8 more minutes: a light job expected to take 5 starts,
+        one declaring 10 waits."""
+        drain = self.job(1, "exclusive", "queued", NOW - 7200)
+        strict = self.job(2, "strict", "running", NOW - 600, claimed=NOW - 120, started=NOW - 120)
+        short, long = (self.job(n, "light", "queued", NOW - 60, 1) for n in (3, 4))
+        short["spec"]["minutes"] = 5
+        self.assertEqual(
+            self.started(drain, strict, short, long, turn={"until": NOW + 600, "opened": NOW}), [short["id"]]
+        )
+
+    def test_a_deferred_drain_waiting_aside_holds_no_other_drain_back(self) -> None:
+        """A priority -1 drain claimed in its stretch, then passed by work of higher priority, waits aside:
+        a due drain of priority 0 is claimed beside it."""
+        aside = self.job(1, "exclusive", "running", NOW - 7200, -1, phase="built", claimed=NOW - 600)
+        light = self.job(2, "light", "running", NOW - 300, 1, claimed=NOW - 300, started=NOW - 300)
+        higher = self.job(3, "light", "queued", NOW - 60, 1)
+        due = self.job(4, "exclusive", "queued", NOW - 7200)
+        start = {j["id"]: j["state"] for j in self.module.plan([aside, light, higher, due], NOW, {})[0]}
+        self.assertEqual(start[due["id"]]["phase"], "built")
+        self.assertNotIn(aside["id"], start)
+
     def test_one_drain_is_claimed_at_a_time(self) -> None:
         """Two drains with builds in a lull: the first's build is claimed, the second stays queued until the
         first ends."""

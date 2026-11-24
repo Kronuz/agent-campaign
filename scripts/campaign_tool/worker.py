@@ -498,8 +498,7 @@ def plan(
     until it is due, and takes its hold once no light job runs (a drain claimed earlier waits in phase
     "built"). A deferred drain (priority below 0) is due only a DRAIN_WAIT after work of higher priority
     last waited."""
-    # one drain at a time, from its claim (its build, or its wait for admission) to its end
-    drain_busy = any(drains(j) and j["state"].get("state") == "running" for j in jobs)
+    claimed = [j for j in jobs if drains(j) and j["state"].get("state") == "running"]
     pending = [  # the drains not yet admitted to their hold
         j
         for j in jobs
@@ -581,6 +580,9 @@ def plan(
             since = max([since, *(t for p, t in waited.items() if p > prio(j))])
         return since + drain_wait
 
+    # one drain at a time, from its claim (its build, or its wait for admission) to its end; a deferred
+    # one claimed before work of higher priority came waits aside, so it holds no other drain back
+    drain_busy = any(eligible(j) or j not in pending for j in claimed)
     # the drains that may take the machine: not waiting for their slot (a claimed one holds its own)
     ready_drains = [
         j
@@ -619,7 +621,8 @@ def plan(
         return float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
 
     lights_end = max((ends(r) for r in lights), default=now)
-    free_at = max([lights_end, *(ends(r) for r in running if r["spec"].get("level") in HEAVY)])
+    # an overdue drain also waits for a running strict job, which light work may share
+    free_at = max([lights_end, *(ends(r) for r in running if r["spec"].get("level") == "strict")])
     drain_ok = lights_end - now <= drain_slack
     starved = [
         j
