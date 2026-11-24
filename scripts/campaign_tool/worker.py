@@ -457,10 +457,14 @@ def batch_of(jobs: list[Json]) -> Json:
 def phases(jobs: list[Json]) -> list[Json]:
     """The jobs as the holds they take. A heavy job the worker builds in two phases (queued, or its
     state names a phase) is two: its build under light, then its command at its level after it. Each
-    phase keeps the job it is of under "job"; a built job waiting for its hold keeps its checkout."""
+    phase keeps the job it is of under "job"; a built job waiting for its hold keeps its checkout, as
+    does a drain claimed without a build (phase "built" from its claim)."""
     out: list[Json] = []
     for j in jobs:
         spec, st = j["spec"], j["state"]
+        if st.get("phase") == "built" and st.get("state") == "running" and not spec.get("build"):
+            out.append({**j, "job": j, "state": {**st, "state": "queued", "claimed": st.get("admitted")}})
+            continue
         if not (spec.get("build") and spec.get("level") in HEAVY and (st.get("phase") or st.get("state") == "queued")):
             out.append(j)
             continue
@@ -490,7 +494,21 @@ def plan(
     job): the queued jobs to start, in order (a heavy one's state carries its batch), the jobs to skip
     (one they run after did not succeed), and the drain turn's record ({} for none). A heavy job with a
     build starts it as light work (state phase "build"); once built, it waits in the heavy queue's order
-    for its hold (phase "run": the worker admits it)."""
+    for its hold (phase "run": the worker admits it). One drain is claimed at a time; it holds no one up
+    until it is due, and takes its hold once no light job runs (a drain claimed earlier waits in phase
+    "built"). A deferred drain (priority below 0) is due only a DRAIN_WAIT after work of higher priority
+    last waited."""
+    # one drain at a time, from its claim (its build, or its wait for admission) to its end
+    drain_busy = any(drains(j) and j["state"].get("state") == "running" for j in jobs)
+    pending = [  # the drains not yet admitted to their hold
+        j
+        for j in jobs
+        if drains(j)
+        and (
+            j["state"].get("state") == "queued"
+            or (j["state"].get("state") == "running" and j["state"].get("phase") in ("build", "built"))
+        )
+    ]
     jobs = phases(jobs)
     charges = charges or {}
     # a drain waits two of its capped lengths for a lull: light work keeps most of the machine
@@ -538,23 +556,54 @@ def plan(
         (float(j["state"].get("ended") or 0) for j in jobs if drains(j) and j["state"].get("started")),
         default=0.0,
     )
-    # when the first queued drain falls due: light work running far past it would hold it for hours
-    due = min(
-        (
-            max(float(j["spec"].get("submitted") or 0), last_drain) + drain_wait
-            for j in queued
-            if drains(j) and not held(j) and all(states.get(x) == "done" for x in j["spec"].get("after", []))
-        ),
-        default=0.0,
-    )
+
+    # deferred drains wait for work of higher priority: the priorities waiting now, and when each last did
+    def prio(j: Json) -> int:
+        return int(j["spec"].get("priority", 0))
+
+    def ready(j: Json) -> bool:
+        return all(states.get(x) == "done" for x in j["spec"].get("after", []))
+
+    top = max((prio(j) for j in queued if j["spec"].get("level") != "none" and ready(j)), default=None)
+    waited: dict[int, float] = {}
+    for j in jobs:
+        if j["spec"].get("level") != "none":
+            stop = float(j["state"].get("claimed") or j["state"].get("ended") or 0)
+            waited[prio(j)] = max(waited.get(prio(j), 0.0), stop)
+
+    def eligible(j: Json) -> bool:
+        """Whether drain J may be claimed: a deferred one only while no work of higher priority waits."""
+        return prio(j) >= 0 or top is None or top <= prio(j)
+
+    def due_at(j: Json) -> float:
+        since = max(float(j["spec"].get("submitted") or 0), last_drain)
+        if prio(j) < 0:  # a stretch with no work of higher priority waiting
+            since = max([since, *(t for p, t in waited.items() if p > prio(j))])
+        return since + drain_wait
+
+    # the drains that may take the machine: not waiting for their slot (a claimed one holds its own)
+    ready_drains = [
+        j
+        for j in pending
+        if eligible(j) and ready(j) and (j["state"].get("state") == "running" or slot_of(j["spec"]) not in busy)
+    ]
+    # when the first drain falls due: light work running far past it would hold it for hours
+    due = min((due_at(j) for j in ready_drains), default=0.0)
 
     def outlasts(j: Json) -> bool:
         """Whether light job J would run past the queued drain's due by more than DRAIN_HOLD."""
         return bool(due) and now + expected_seconds(j["spec"], took) > max(due, now) + drain_hold
 
-    # light work its slot or a queued drain holds back (a built drain's, a soak's) is not waiting for the machine
+    def mine(j: Json) -> bool:
+        """Whether view J is a drain's: its build, or its hold."""
+        return drains(j.get("job", j))
+
+    # light work its slot or a queued drain holds back (a built drain's, a soak's) is not waiting for the
+    # machine, nor is a drain's own build
     wanting = {
-        camp(j) for j in queued if j["spec"].get("level") not in (*HEAVY, "none") and not held(j) and not outlasts(j)
+        camp(j)
+        for j in queued
+        if j["spec"].get("level") not in (*HEAVY, "none") and not mine(j) and not held(j) and not outlasts(j)
     }
     sharing = max(1, len(wanting | {c for c, n in holds.items() if n}))
     slots = light_slots(heavy)
@@ -566,19 +615,17 @@ def plan(
 
     # a draining hold blocks new light holds until the running ones end: start one only when
     # they all end soon; past its wait, only light work that ends before them fills the lull
-    lights_end = max(
-        (
-            float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
-            for r in running
-            if r["spec"].get("level") not in (*HEAVY, "none")
-        ),
-        default=now,
-    )
+    def ends(r: Json) -> float:
+        return float(r["state"].get("started") or now) + expected_seconds(r["spec"], took)
+
+    lights_end = max((ends(r) for r in lights), default=now)
+    free_at = max([lights_end, *(ends(r) for r in running if r["spec"].get("level") in HEAVY)])
     drain_ok = lights_end - now <= drain_slack
     starved = [
         j
         for j in queued
         if j["spec"].get("level") not in (*HEAVY, "none")
+        and not mine(j)
         and int(j["spec"].get("priority", 0)) >= 1
         and now - float(j["spec"].get("submitted") or now) > drain_turn
         and all(states.get(x) == "done" for x in j["spec"].get("after", []))
@@ -593,14 +640,8 @@ def plan(
         # work has DRAIN_WAIT from that drain's end, so a long drain queue cannot hold it for hours
         turn = {}
     window = window_until(turn, now) > 0  # an open window: every ready drain is due, back to back
-    overdue = [
-        j
-        for j in queued
-        if drains(j)
-        and not held(j)  # a drain waiting for its build slot holds no one up
-        and (window or now - max(float(j["spec"].get("submitted") or 0), last_drain) >= drain_wait)
-        and all(states.get(x) == "done" for x in j["spec"].get("after", []))
-    ]
+    # a drain waiting for its build slot, or a deferred one behind work of higher priority, holds no one up
+    overdue = {j["id"] for j in ready_drains if window or now >= due_at(j)}
     if overdue and not window:
         # an overdue drain opens a turn: the queued drains run back to back for DRAIN_TURN, then
         # light work has DRAIN_WAIT again, so a queue of drains takes turns, not one per hour
@@ -633,28 +674,36 @@ def plan(
             continue
         if waiting or (is_heavy and heavy) or (is_bare and bare >= slots) or (weight and reserved):
             continue
-        if drains(j) and j not in overdue and (not drain_ok or wanting):
-            continue  # for a lull in light work, or its turn after an hour of it
-        if drains(j) and not drain_ok:
-            continue  # an overdue drain claims as the running light work ends: quiet would block the lull
-        if drains(j) and yielded:
-            continue  # light work goes first after a full batch
-        if overdue and weight and not full and now + expected_seconds(j["spec"], took) > lights_end:
+        of = j.get("job", j)  # a phase starts the job it is of: its build, or its command's hold
+        if mine(j):
+            if yielded or (drain_busy and of["state"].get("state") == "queued"):
+                continue  # light work goes first after a full batch; one drain is claimed at a time
+            # it is due, or a lull in light work (a deferred drain has its stretch instead)
+            lull = prio(of) >= 0 and not wanting and (drain_ok or of["state"].get("state") == "running")
+            if of["id"] not in overdue and not lull:
+                continue
+        if overdue and weight and not full and not mine(j) and now + expected_seconds(j["spec"], took) > free_at:
             continue  # an overdue drain waits: only light work that ends before the running work starts
         if weight and outlasts(j):
             continue  # it would run past a queued drain's due by more than DRAIN_HOLD: it waits for the drains
         if is_late and not is_heavy and late >= max(1, slots // 2):
             continue  # deferred work never takes every slot from the direct path
-        if not is_heavy and not is_bare and len(wanting) > 1 and holds[camp(j)] >= share:
+        if not is_heavy and not is_bare and not mine(j) and len(wanting) > 1 and holds[camp(j)] >= share:
             continue  # its campaign has its share while another campaign waits
         if held(j):
             continue  # its slot's job runs: it waits its turn, and the jobs behind it go on
+        if is_heavy and drains(j) and light:
+            if of["state"].get("state") == "queued":  # claimed now, it holds nothing until it is admitted
+                start.append({**of, "state": {**of["state"], "phase": "built"}})
+                busy |= {slot_of(j["spec"])} - {""}
+                drain_busy = True
+            continue  # its hold waits for the running work: quiet would keep new light work out meanwhile
         yielded = yielded or (full and bool(weight))
+        drain_busy = drain_busy or mine(j)
         if is_heavy:
             batch = {"since": batch["since"], "jobs": batch["jobs"] + 1} if room else {"since": now, "jobs": 1}
             slots = light_slots(True)  # light work beside it keeps to a heavy job's share from now on
             share = math.ceil(slots / sharing)
-        of = j.get("job", j)  # a phase starts the job it is of: its build, or its command's hold
         state = {**of["state"], **({"batch": batch} if is_heavy else {})}
         start.append({**of, "state": {**state, "phase": "run" if is_heavy else "build"} if of is not j else state})
         busy |= {slot_of(j["spec"])} - {""}
