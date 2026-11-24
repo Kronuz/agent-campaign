@@ -56,9 +56,9 @@ class CiOwnsSanitizers(CampaignCase):
         self.ok(self.home, "set", "fix", "--check", "unit=python3 app.py", "--check", "thr=cc -fsanitize=thread t.c")
         self.assertNotIn("locally", self.ok(self.home, "check").text)
         self.workflow(ASAN_CI)
-        self.ok(self.home, "set", "fix", "--check", "unit=python3 app.py", "--check", "mem=ci:Clang ASan")
         self.ok(self.home, "new", "two", "--title", "two", "--check", "mem=ci:Clang ASan -fsanitize=address")
-        self.assertNotIn("locally", self.ok(self.home, "check").text)
+        self.ok(self.home, "set", "two", "--check", "san=ci:Clang ASan")
+        self.assertNotIn("two: gate check", self.ok(self.home, "check").text)
 
 
 DETENT_CI = """\
