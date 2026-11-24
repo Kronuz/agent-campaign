@@ -411,6 +411,21 @@ class Identity(CampaignCase):
         self.commit(self.home, {"docs/m/x/rows.txt": "3\n"})
         self.assertNotEqual(self.submit(self.home / "docs/m/x", "--", "bash row.sh"), inside)  # by its directory
 
+    def test_pages_are_prose_in_any_folder_and_text_only_under_a_docs_folder(self) -> None:
+        """A site page (.mdx) keeps a passed job wherever it lives; a .txt outside docs/, site/ and
+        website/ is data, so changing it voids the job."""
+        self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets
+        page = "site/src/content/docs/x.mdx"
+        self.commit(
+            self.home, {"app.py": "print(open('data/words.txt').read())\n", "data/words.txt": "a\n", page: "x\n"}
+        )
+        jid = self.submit(self.home, "--", "python3 app.py")
+        self.ok(self.home, "wait", jid)
+        self.commit(self.home, {page: "# x\n\nthe page, edited\n", "site/notes.txt": "n\n"})
+        self.assertEqual(self.submit(self.home, "--", "python3 app.py"), jid)  # prose keeps its evidence
+        self.commit(self.home, {"data/words.txt": "b\n"})
+        self.assertNotEqual(self.submit(self.home, "--", "python3 app.py"), jid)  # the data it reads is code
+
     def test_data_under_docs_is_code_whatever_reads_it(self) -> None:
         """A script outside docs/ reads a dataset under it: the dataset is code, the prose beside it is not."""
         self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets

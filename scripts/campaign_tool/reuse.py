@@ -79,8 +79,8 @@ def build_test(check: Json) -> bool:
     return not check.get("later") and not check.get("inputs")
 
 
-# documentation, prose only: evidence outlives commits that change only these
-DOC_PATHS = ("*.md", "docs/*.mdx", "docs/*.rst", "docs/*.txt", "website/*.mdx", "website/*.rst", "website/*.txt")
+# documentation, prose only: evidence outlives commits that change only these (.txt is often data)
+DOC_PATHS = ("*.md", "*.mdx", "*.rst", "docs/*.txt", "site/*.txt", "website/*.txt")
 DEPENDENCY_LISTS = ("requirements*.txt", "constraints*.txt")  # prose by extension, code by use
 CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs, whatever its extension
 CARRY_DEPTH = 40  # how many first-parent commits back evidence is looked for (docs-only commits, merges from main)

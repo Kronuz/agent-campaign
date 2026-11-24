@@ -44,15 +44,15 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   newer code cancels its queued older instances (but one a pending job waits on). A passed job also
   counts wherever every tracked file in its read set holds what it held, and across up to 40
   first-parent commits, whatever jobs it ran after, each changing only documentation (prose:
-  `*.md`, and `*.mdx`, `*.rst`, `*.txt` under `docs/` or `website/`; outside `tests/` and `bench/`,
-  never a build file or `requirements*.txt`) its command does not name (a path it names names its
-  folder too: a script reads its siblings) and no `tested_docs` glob matches; scripts, data and
-  site source under `docs/` are code, or, for a quest, a merge from main whose changes touch none of
-  the quest's files or own changes nor its `--inputs` (with their build files and named paths); a
-  strict or exclusive job without `--inputs` crosses only main's documentation. The build-test, a
-  gate check without `--inputs`, counts by neither read set nor merges unless `ci=github`, whose
-  run at the exact head tests the merge. Upgrading `campaign` can change keys: run `campaign
-  verify` again. What the key does not see is the submitter's to name:
+  `*.md`, `*.mdx` and `*.rst` in any folder, `*.txt` under `docs/`, `site/` or `website/`; outside
+  `tests/` and `bench/`, never a build file or `requirements*.txt`) its command does not name (a
+  path it names names its folder too: a script reads its siblings) and no `tested_docs` glob
+  matches; scripts, data and site source under `docs/` are code, or, for a quest, a merge from main
+  whose changes touch none of the quest's files or own changes nor its `--inputs` (with their build
+  files and named paths); a strict or exclusive job without `--inputs` crosses only main's
+  documentation. The build-test, a gate check without `--inputs`, counts by neither read set nor
+  merges unless `ci=github`, whose run at the exact head tests the merge. Upgrading `campaign` can
+  change keys: run `campaign verify` again. What the key does not see is the submitter's to name:
 
   | Input | How it enters the identity |
   |---|---|
