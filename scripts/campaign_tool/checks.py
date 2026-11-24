@@ -12,15 +12,25 @@ from style import mark, paint
 
 from .campaign import Campaign, find_campaign, migrate_parks, writing
 from .ci import ci_covers
-from .core import CI_CHECK, HEAVY, TERMINAL, CampaignError, Json, die, jobs_dir, plural, read_json, stamp
+from .core import CI_CHECK, HEAVY, CampaignError, Json, die, jobs_dir, plural, read_json, stamp
 from .disk import disk_floor, disk_warning, prune_plan
 from .evidence import criteria_for
-from .jobcmds import LANDING_PRIORITY, PARALLEL, at_landing, ctest_warning, quest_slot, rerun_jobs
-from .jobs import all_jobs, load_job, matches_inputs, quest_jobs, resolve_job, tag
-from .journals import journal_place, journal_state
+from .jobcmds import (
+    LANDING_PRIORITY,
+    PARALLEL,
+    at_landing,
+    ctest_warning,
+    held,
+    iterating,
+    quest_slot,
+    rerun_jobs,
+    reusable,
+)
+from .jobs import all_jobs, load_job, matches_inputs, resolve_job, tag
+from .journals import journal_place
 from .leads import stuck_warnings
-from .repo import ancestor, frozen, has_ref, main_branch, rev, same_repo
-from .reuse import build_test, check_spec, docs_note, job_at, job_with_key, shape, submit
+from .repo import frozen, has_ref, main_branch, rev, same_repo
+from .reuse import build_test, check_spec, docs_note, job_at, submit
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, ci_owned, deferred, gates, locate, select, validate
 from .status import print_problem, problems
@@ -111,33 +121,6 @@ def housekeeping(c: Campaign) -> list[tuple[str, str]]:
 
 
 GATE_PRIORITY = 2  # above light evidence (1), measurements (0) and deferred checks (-1); below LANDING_PRIORITY
-SLOW_MINUTES = 20  # a gate check declared this long runs once per round (`verify` holds it while iterating)
-RESULTS = set(TERMINAL) - {"cancelled", "skipped"}  # the ends that say whether a check passes
-
-
-def passed_before(jobs: list[Json], spec: Json, commit: str) -> str:
-    """The earlier commit of the quest at which SPEC's check passed in its last run, among the quest's
-    JOBS; "" when that run failed or none ran."""
-    runs = [
-        j
-        for j in jobs
-        if j["state"].get("state") in RESULTS
-        and shape(j["spec"]) == shape(spec)
-        and j["spec"].get("commit") not in (None, commit)
-        and ancestor(Path(spec["repo"]), j["spec"]["commit"], commit)
-    ]
-    last = max(runs, key=lambda j: j["spec"].get("submitted", 0), default=None)
-    return last["spec"]["commit"] if last is not None and last["state"]["state"] == "done" else ""
-
-
-def reusable(spec: Json, commit: str, exact: bool) -> bool:
-    """Whether `submit` hands back an earlier job for SPEC at COMMIT instead of queuing one: the same
-    code tree, or unless EXACT a passed twin. A reused check is evidence here, so it is never held."""
-    old = job_with_key(spec)
-    if old is not None and old["state"].get("state") in ("queued", "running", "done"):
-        return not old["state"].get("slimmed")
-    twin = None if exact else job_at(spec, commit, merged=True)
-    return twin is not None and twin["state"].get("state") == "done" and not twin["state"].get("slimmed")
 
 
 def submit_checks(
@@ -149,13 +132,13 @@ def submit_checks(
     priority: int,
     fresh: bool = False,
     force: bool = False,
-    hold: bool = False,
+    hold: str = "",
 ) -> list[str]:
-    """Queues CHECKS at COMMIT; with HOLD, not a slow gate check that passed at an earlier commit."""
+    """Queues CHECKS at COMMIT; with HOLD (the journal State, while the quest iterates), only those an
+    earlier job answers, so nothing new is queued."""
     p = c.quests[qid]
     repo = c.repo(p)
     ids: list[str] = []
-    jobs: list[Json] | None = None
     for check in checks:
         if check["cmd"].startswith(CI_CHECK):
             continue  # GitHub runs it when the branch is pushed
@@ -176,12 +159,9 @@ def submit_checks(
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
             continue
-        if hold and not check.get("later") and check["minutes"] >= SLOW_MINUTES and not reusable(spec, commit, exact):
-            jobs = quest_jobs(all_jobs(), c.ident, qid) if jobs is None else jobs
-            if at := passed_before(jobs, spec, commit):
-                end = "it reruns at the round's end (State ready for review, or land)"
-                print(f"{check['name']}: held, slow and passed at {at[:12]}: {end}")
-                continue
+        if hold and not reusable(spec, commit, exact):
+            print(f"{check['name']}: {held(hold)}")
+            continue
         if spec.get("inputs") and not matches_inputs(repo, commit, spec["inputs"]):
             print(
                 f"campaign: {check['name']}'s inputs {','.join(spec['inputs'])} match no file at {commit[:12]}",
@@ -239,12 +219,11 @@ def cmd_verify(a: argparse.Namespace) -> int:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
     ids = criteria_for(c, a.id, a.criteria or "")
-    iterating = not journal_state(c, a.id, p.get("branch", "")).startswith("ready for review")
-    queued = submit_checks(
-        c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force, hold=iterating and not a.force
-    )
+    hold = "" if a.force else iterating(c, a.id)
+    queued = submit_checks(c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force, hold=hold)
     for jid in queued:
         if ids:
             tag(jid, c.ident, a.id, ids, False)
-    print(f"wait for them with `campaign wait --quest {a.id}`")
+    if queued:
+        print(f"wait for them with `campaign wait --quest {a.id}`")
     return 0

@@ -33,11 +33,12 @@ from .core import (
     stamp,
     write_json,
 )
-from .evidence import criteria_for
+from .evidence import criteria_for, fails_without_met, mutant_holds
 from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, claim, finish, load_job, matches_inputs, resolve_job, tag
+from .journals import journal_state
 from .mail import announce, inbox, leave_message, mailbox, peers, send_message
 from .repo import ancestor, changed, ever_on, frozen, has_ref, is_meta, main_branch, rev, same_repo, toplevel
-from .reuse import submit, supersede
+from .reuse import job_at, job_with_key, submit, supersede
 from .reviews import EVIDENCE_GAPS, Gap, landing_gap_kinds
 from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
@@ -128,6 +129,37 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
                 digest = hashlib.file_digest(f, "sha256") if sys.version_info >= (3, 11) else hashlib.sha256(f.read())
                 out[token] = digest.hexdigest()[:24]
     return out
+
+
+READY = "ready for review"  # the journal State that ends a round: its evidence runs then
+
+
+def iterating(c: Campaign, pid: str, task: str = "") -> str:
+    """The committed journal State of a quest (or its task) while it iterates; "" at State ready for
+    review, the round's end, when its evidence and gate checks run."""
+    p = c.quests[pid]
+    t = p.get("tasks", {}).get(task) if task else None
+    name, branch = (f"{pid}--{task}", t["branch"]) if t else (pid, p.get("branch", ""))
+    state = journal_state(c, name, branch)
+    return "" if state.startswith(READY) else state
+
+
+def held(state: str, force: str = "pass --force") -> str:
+    """What a hold says: why nothing was queued, and the two ways to release it."""
+    return (
+        f"held, the journal State is {state!r}: evidence runs once per round. Iterate in the worktree under "
+        f"`quiet light`; commit State {READY} to run it, or {force}"
+    )
+
+
+def reusable(spec: Json, commit: str, exact: bool) -> bool:
+    """Whether `submit` hands back an earlier job for SPEC at COMMIT instead of queuing one: the same
+    code tree, or unless EXACT a passed twin. A reused job queues nothing, so a hold lets it through."""
+    old = job_with_key(spec)
+    if old is not None and old["state"].get("state") in ("queued", "running", "done"):
+        return not old["state"].get("slimmed")
+    twin = None if exact else job_at(spec, commit, merged=True)
+    return twin is not None and twin["state"].get("state") == "done" and not twin["state"].get("slimmed")
 
 
 SUBMIT_FLAGS = (
@@ -290,6 +322,10 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             spec["campaign"] = find_campaign(Path.cwd()).ident
     if ids and not spec.get("commit"):
         die("an unversioned job is never evidence: drop --for")
+    state = iterating(c, a.quest, a.task or "") if c is not None and ids and not a.force else ""
+    if state and not reusable(spec, spec["commit"], False):
+        print(f"campaign: --for {','.join(ids)} {held(state)}", file=sys.stderr)
+        return 1
     jid, reused = submit(spec, force=a.force)
     if c is not None and ids:
         tag(jid, c.ident, a.quest, ids, a.fails_without)
@@ -477,8 +513,27 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     """The same jobs (command, level, directory, environment, other repositories) at another commit:
     by default the head of their quest's branch, in whichever of the job's repositories holds it
     (its own or a `--ref`'s), else of their repository."""
-    rerun_jobs(a.jobs, a.commit, a.minutes)
+    c: Campaign | None = None
+    with contextlib.suppress(CampaignError):
+        c = find_campaign(Path.cwd())
+    for j in map(resolve_job, a.jobs) if c is not None else ():
+        for t in [t for t in j.get("tags", []) if t["campaign"] == c.ident and t["quest"] in c.quests]:
+            if state := iterating(c, t["quest"], j["spec"].get("task", "")):
+                force = "submit it again with `job submit --force`"
+                die(f"{j['id']} is evidence for {t['quest']} {','.join(t['for'])}: {held(state, force)}")
+    rerun_jobs(a.jobs, a.commit, a.minutes, c)
     return 0
+
+
+def mutant_head(c: Campaign | None, spec: Json) -> str:
+    """The head of the quest a fails-without job ran for, where its result may still hold; "" when
+    it has none."""
+    with contextlib.suppress(CampaignError, KeyError):
+        if c is not None and spec.get("quest") in c.quests and spec.get("commit"):
+            p = c.quests[spec["quest"]]
+            task = p.get("tasks", {}).get(spec.get("task", ""), {})
+            return rev(Path(spec["repo"]), task.get("branch") or p["branch"])
+    return ""
 
 
 def rerun_jobs(
@@ -487,6 +542,14 @@ def rerun_jobs(
     """`job rerun`: returns the new (or reused) job ids. A quest's light evidence rerun at its head
     while it is `at_landing` runs at LANDING_PRIORITY; every other job keeps its priority."""
     specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, jobs)}
+    if c is None:
+        with contextlib.suppress(CampaignError):
+            c = find_campaign(Path.cwd())
+    for jid in [x for x, s in specs.items() if s.get("fails_without")] if not at else ():
+        job = resolve_job(jid)
+        if (head := mutant_head(c, specs[jid])) and fails_without_met(job) and mutant_holds(job, [head]):
+            print(f"{jid} still holds at {head[:12]}: the code its mutation reverts is unchanged, so it stays evidence")
+            del specs[jid]
     if not at and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):
         die(
             f"{', '.join(old)} must fail at the code without the fix: at the quest's head they run the fix; "
@@ -512,9 +575,6 @@ def rerun_jobs(
 
     for jid in specs:
         visit(jid)
-    if c is None:
-        with contextlib.suppress(CampaignError):
-            c = find_campaign(Path.cwd())
 
     def quest_code(spec: Json) -> tuple[str, Path | None, list[str]]:
         """The quest's branch, its repository and every branch its code is on (its tasks', main)."""

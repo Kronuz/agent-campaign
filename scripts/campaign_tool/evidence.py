@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 from collections.abc import Callable, Collection
 from pathlib import Path
@@ -13,7 +14,19 @@ from .ci import ci_covers, ci_gate, ci_job
 from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, git, jobs_dir, section, table_cells
 from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
 from .journals import decisions
-from .repo import SHA, file_at, read_object, same_repo
+from .repo import (
+    SHA,
+    ancestor,
+    changed,
+    file_at,
+    has_ref,
+    main_branch,
+    merge_base,
+    on_commits,
+    read_object,
+    rev,
+    same_repo,
+)
 from .reuse import descends, docs_note, job_at, job_for_check, shape
 from .state import gates
 
@@ -139,6 +152,8 @@ def job_problem(repo: Path | None, commits: list[str]) -> Callable[[str], str]:
             return f"{jid} is unversioned"
         if repo is not None and not same_repo(Path(job["spec"]["repo"]), repo):
             return f"{jid} ran in {job['spec']['repo']}, not the quest's repository"
+        if job["spec"].get("fails_without"):
+            return "" if fails_without_met(job) and mutant_holds(job, commits) else stale_mutant(job, commits)
         for commit in commits:
             with contextlib.suppress(CampaignError, KeyError):
                 twin = job_at(job["spec"], commit, merged=True)
@@ -162,24 +177,76 @@ def ci_named(c: Campaign, p: Json, commits: list[str], name: str) -> str:
     return first
 
 
-def rerun_hint(repo: Path, jids: Collection[str]) -> str:
-    """The commands that rerun these jobs where they can count: at the quest's head, and a
-    `--fails-without` job at its own pre-fix code (its mutant ref, else its commit), never the head."""
-    plain: list[str] = []
-    mutants: list[str] = []
-    for jid in jids:
-        spec = load_job(jobs_dir() / jid)["spec"] if (jobs_dir() / jid / "spec.json").exists() else {}
-        if spec.get("fails_without") and spec.get("commit"):
-            mutants.append(f"`campaign job rerun {jid} --commit {mutant_ref(repo, spec['commit'])}`")
-        else:
-            plain.append(jid)
-    return "; ".join([f"`campaign job rerun {' '.join(plain)}`"] * bool(plain) + mutants)
+def rerun_hint(_repo: Path, jids: Collection[str]) -> str:
+    """The command that reruns these jobs at the quest's head, where they count. A fails-without job is
+    never among them: its result holds until the code its mutation reverts changes (mutant_moved)."""
+    return f"`campaign job rerun {' '.join(jids)}`"
 
 
-def mutant_ref(repo: Path, commit: str) -> str:
-    """A ref under refs/campaign/ that names COMMIT, else the commit itself."""
-    refs = git(repo, "for-each-ref", "--points-at", commit, "--format=%(refname)", "refs/campaign/").split()
-    return refs[0] if refs else commit[:12]
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+")
+WHOLE = [[0, 1 << 62]]  # a file changed with no line ranges (binary, a mode): all of it
+
+
+def hunks(repo: Path, a: str, b: str) -> dict[str, list[list[int]]]:
+    """Each file B changes from A, with the line ranges [first, end) of A that it changes (`diff -U0`)."""
+
+    def ask() -> dict[str, list[list[int]]]:
+        out: dict[str, list[list[int]]] = {}
+        path = ""
+        for line in git(repo, "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", a, b).splitlines():
+            if line.startswith("diff --git a/"):
+                path = line[len("diff --git a/") :].rpartition(" b/")[0]
+                out[path] = []
+            elif path and (m := HUNK.match(line)):
+                start = int(m[1])
+                out[path].append([start, start + max(int(m[2] if m[2] is not None else 1), 1)])
+        return out
+
+    found: dict[str, list[list[int]]] = on_commits(("hunks", str(repo), a, b), ask)
+    return found
+
+
+def mutant_moved(spec: Json, head: str) -> list[str]:
+    """Where the code a fails-without job's mutation reverts changed by HEAD: [] while its result holds.
+    A mutant or revert commit (off HEAD's history) reverts the lines its diff from its parent changes;
+    a run at the quest's own commit mutates, in its command, the files the command names; a run at
+    main's code before the quest lacks the whole fix, which the head's own runs test."""
+    repo, commit, cmd = Path(spec["repo"]), spec["commit"], spec["cmd"]
+    if ancestor(repo, commit, head):
+        main = main_branch(repo)
+        if has_ref(repo, main) and ancestor(repo, commit, merge_base(repo, rev(repo, main), head)):
+            return []
+        cwd = spec.get("cwd") or ""
+        return [x for x in changed(repo, commit, head) if x in cmd or (cwd and os.path.relpath(x, cwd) in cmd)]
+    parent = git(repo, "rev-parse", f"{commit}^")
+    mutation, moved = hunks(repo, parent, commit), hunks(repo, parent, head)
+    return [
+        x
+        for x, lines in mutation.items()
+        if x in moved and any(a < d and c < b for a, b in lines or WHOLE for c, d in moved[x] or WHOLE)
+    ]
+
+
+def mutant_holds(job: Json, commits: list[str]) -> bool:
+    """Whether a fails-without job's result holds at one of COMMITS (mutant_moved finds nothing)."""
+    for k in commits:
+        with contextlib.suppress(CampaignError, KeyError):
+            if not mutant_moved(job["spec"], k):
+                return True
+    return False
+
+
+def stale_mutant(job: Json, commits: list[str]) -> str:
+    """Why a fails-without job is no evidence at COMMITS: it never failed without the fix, or the code
+    its mutation reverts changed since."""
+    if not fails_without_met(job):
+        return fails_without_why(job)
+    moved: list[str] = []
+    with contextlib.suppress(CampaignError, KeyError):
+        moved = mutant_moved(job["spec"], commits[0]) if commits else []
+    where = f" ({', '.join(moved[:4])})" if moved else ""
+    at = f" at {commits[0][:12]}" if commits else ""
+    return f"{job['id']}: the code its mutation reverts changed{where}: submit a mutant of the code{at}"
 
 
 def evidence(
@@ -320,9 +387,9 @@ def tagged_row(repo: Path, commits: list[str], entry: Json, named: Json | None =
             why.append(f"{j['id']} ran in {j['spec'].get('repo')}, not the quest's repository")
         else:
             why.append(f"{j['id']} ran other code" if state == "done" else f"{j['id']} {state}")
-    fails = [j["id"] for j in entry["fails"] if fails_without_met(j)]
+    fails = [j["id"] for j in entry["fails"] if fails_without_met(j) and mutant_holds(j, commits)]
     if entry["fails"] and not fails:
-        why += [fails_without_why(j) for j in entry["fails"]]
+        why += [stale_mutant(j, commits) for j in entry["fails"]]
     text = ", ".join(passed) + (f"; fails without: {', '.join(fails)}" if fails else "")
     met = bool(passed) and (bool(fails) or not entry["fails"])
     return {"journal": "jobs", "evidence": text or "none passed", "met": met, "why": [] if met else why}

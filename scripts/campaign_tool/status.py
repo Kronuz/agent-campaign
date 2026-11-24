@@ -62,6 +62,40 @@ from .title import keep_title
 from .todo import todo, todo_lines
 from .worker import cpu_lines, health_lines, queue_health
 
+GUARD_HOURS = 24  # the window the treadmill guard reads
+GUARD_NEVER = 10  # jobs cancelled before they started, in the window
+GUARD_UNPROVEN = 20  # jobs that ran in the window while no criterion was newly met
+
+
+def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
+    """Why a quest's last GUARD_HOURS of jobs look like evidence queued at every commit: at least
+    GUARD_NEVER cancelled before they started, or GUARD_UNPROVEN that ran while no criterion was newly
+    met (first proven by a job tagged for it); "" otherwise. Names the counts and the hours waited."""
+    since = now - GUARD_HOURS * 3600
+    mine = quest_jobs(jobs, c.ident, pid)
+    window = [j for j in mine if float(j["spec"].get("submitted") or 0) >= since]
+    never = sum(1 for j in window if j["state"].get("state") == "cancelled" and not j["state"].get("started"))
+    ran = sum(1 for j in window if j["state"].get("started"))
+    first: dict[str, float] = {}
+    for j in mine:
+        ended = float(j["state"].get("ended") or 0)
+        for t in j.get("tags", []) if j["state"].get("state") == "done" else ():
+            for cid in t.get("for", []) if (t.get("campaign"), t.get("quest")) == (c.ident, pid) else ():
+                first[cid] = min(first.get(cid, ended), ended)
+    newly = sum(1 for x in first.values() if x >= since)
+    if never < GUARD_NEVER and (ran < GUARD_UNPROVEN or newly):
+        return ""
+    waited = sum(
+        max(0.0, float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]))
+        for j in window
+    )
+    return (
+        f"{pid} queues evidence at every commit: in the last {GUARD_HOURS} h, {never} of its {len(window)} jobs were "
+        f"cancelled before starting and {ran} ran with {newly or 'no'} {'criterion' if newly < 2 else 'criteria'} "
+        f"newly met, {waited / 3600:.0f} h waiting in the queue. Iterate in its worktree under `quiet light` and "
+        "submit evidence once per round (State ready for review)"
+    )
+
 
 def problems(c: Campaign) -> list[tuple[str, str]]:
     """(severity, message) for everything git, the worktrees and the queue contradict."""
@@ -248,6 +282,10 @@ def problems(c: Campaign) -> list[tuple[str, str]]:
                             f"{pid}: deferred check {jid} is {st} at {at}: fix forward or revert, then `campaign verify {pid} --deferred`",
                         )
                     )
+    now = time.time()
+    for pid, p in c.quests.items():
+        if p["status"] in ("active", "review") and (text := treadmill(c, pid, jobs, now)):
+            out.append(("warning", text))
     if any(j["state"].get("state") == "queued" for j in jobs) and not worker_alive():
         out.append(
             ("warning", "jobs are queued and no worker runs (`campaign worker`, or any submit or wait starts one)")
@@ -360,6 +398,7 @@ def quest_view(c: Campaign, pid: str, jobs: list[Json], brief: bool = False, tab
             "tasks_done": sum(1 for t in tasks if re.match(r"(complete|done|merged)\b", t, re.I)),
             "next": next_step(journal),
         }
+    view["treadmill"] = treadmill(c, pid, jobs, time.time()) if p["status"] in ("active", "review") else ""
     view["replaced"] = replaced_citations(texts, mine)
     view["stray"] = stray_rows(texts, criteria(c, pid)) if brief and texts else []
     ended = ended_at_head(c, pid, mine)
@@ -568,6 +607,7 @@ def brief(c: Campaign, views: list[Json], queue: dict[str, int], scoped: bool) -
         ]
         q["failed"] = [{k: f[k] for k in ("job", "state", "what")} for f in v["bad_at_head"] if not f["noted"]]
         q["replaced"] = v["replaced"]
+        q["treadmill"] = v["treadmill"]
         q["stray"] = v["stray"]
         q["pending"] = {s: k for s, k in v["jobs"].items() if k}
         if "evidence" in v:
@@ -607,6 +647,8 @@ def print_brief(b: Json) -> None:
             print(f"  - {f['job']} {f['state']}, in no journal yet: {f['what']}")
         for note in q["stray"]:
             print(f"  - {note}")
+        if q["treadmill"]:
+            print(f"  - {q['treadmill']}")
         for r in q["replaced"]:
             print(
                 f"  - {r['criteria']} in {r['journal']} cites {r['job']}; {r['by']} replaces it "
