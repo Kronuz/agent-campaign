@@ -121,9 +121,10 @@ class Skill(unittest.TestCase):
         text = (SKILL / "SKILL.md").read_text()
         start = text.index("A **task**'s gate is its own jobs")
         paragraph = text[start : text.index("\n\n", start)]
-        self.assertIn("A **quest**'s gate, once, when the feature is done: its targeted\ntests and CI", paragraph)
-        self.assertIn("The full suite, sanitizers and the platform matrix\nare CI's", paragraph)
-        self.assertIn("`check` flags a local gate check CI already runs", paragraph)
+        said = " ".join(paragraph.split())
+        self.assertIn("A **quest**'s gate, once, when the feature is done: its targeted tests and CI", said)
+        self.assertIn("The full suite, sanitizers and the platform matrix are CI's", said)
+        self.assertIn("`check` flags a local sanitizer gate check CI already builds", said)
         self.assertEqual(len(paragraph.splitlines()), 4, paragraph)
 
 
