@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
+from typing import Any
+from unittest import mock
 
-from harness import CAMPAIGN, CampaignCase
+from harness import CAMPAIGN, CampaignCase, campaign_module
 
 
 class Quests(CampaignCase):
@@ -56,6 +62,36 @@ class Quests(CampaignCase):
             out, _ = waiting.communicate(timeout=60)
             self.assertLess(time.time() - start, 20, f"the {event} waited for the tick:\n{out}")
             self.assertIn("pins moved" if event == "message" else "done exit 0", out)
+
+    def test_wait_wakes_on_an_event_that_lands_while_it_looks(self) -> None:
+        """A message written while the wait reads the state (here, while it makes the to-do list)
+        wakes it: the directories are watched before the look, not after it."""
+        self.started("fix", files="app.py")
+        tool = campaign_module()
+        made = tool.wait.todo
+        sent: list[bool] = []
+
+        def todo(*args: Any) -> Any:  # the look's last read: the message lands after messages() ran
+            if not sent:
+                sent.append(True)
+                self.ok(self.home, "message", "demo:", "pins moved", "--from", "peer")
+            return made(*args)
+
+        out = io.StringIO()
+        env = {**self.env, "CAMPAIGN_WAIT_TICK": "3600"}  # a missed event would sleep the whole tick
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(tool.wait, "todo", todo):
+            c = tool.Campaign(self.home, "demo")
+
+            def wait() -> None:
+                with contextlib.redirect_stdout(out):
+                    tool.wait.wait_events(c, 0)
+
+            waiting = threading.Thread(target=wait, daemon=True)
+            waiting.start()
+            waiting.join(60)  # ends a hung test only: the wait takes about a second alone
+        self.assertTrue(sent)
+        self.assertFalse(waiting.is_alive(), "the message that landed during the look waited for the tick")
+        self.assertIn("msg-1 for the lead, from peer: pins moved", out.getvalue())
 
     def test_wait_misses_nothing_that_happened_between_two_waits(self) -> None:
         a = self.started("one", files="app.py")
