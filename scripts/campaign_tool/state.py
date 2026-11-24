@@ -281,14 +281,20 @@ def foreign(dep: str) -> Json | None:
     return quest if isinstance(quest, dict) else None
 
 
+def writes(q: Json) -> bool:
+    """Whether a quest holds its file set: started and not landed (active, in review, or parked with a
+    branch); only a planned or dropped one frees it."""
+    return q.get("status") in ("active", "review") or (q.get("status") == "blocked" and bool(q.get("branch")))
+
+
 def clashes(c: Campaign, pid: str) -> list[str]:
-    """The active or review quests whose files may overlap this one's in its repository: one writer
+    """The quests holding files (`writes`) that may overlap this one's in its repository: one writer
     per file set, so `start` refuses them."""
     p, repo = c.quests[pid], c.repo(c.quests[pid])
     return [
         x
         for x, q in c.quests.items()
-        if x != pid and q["status"] in ("active", "review") and c.repo(q) == repo and overlap(p["files"], q["files"])
+        if x != pid and writes(q) and c.repo(q) == repo and overlap(p["files"], q["files"])
     ]
 
 
@@ -319,7 +325,7 @@ def cross_overlaps(c: Campaign, pid: str) -> list[str]:
             ordered = f"{name}:{qid}" in mine or f"{c.name}:{pid}" in {*q.get("needs", []), *q.get("after", [])}
             if (
                 not ordered
-                and q.get("status") in ("active", "review")
+                and writes(q)
                 and (o["home"] / q.get("repo", ".")).resolve() == c.repo(p)
                 and overlap(p["files"], q.get("files", []))
             ):
