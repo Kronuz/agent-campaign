@@ -33,7 +33,14 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
 - Decisions inside the quest's scope are yours: record them under "Rulings I made". Decisions that
   change the quest, a contract, or user-visible behavior are not: write them under "Blocked on"
   with options and a recommendation, and stop that step.
-- Fold in review findings by id; each fix gets a test that fails without it, run as a job.
+- Fold in review findings by id; each fix gets a test that fails without it, run as a job. Each
+  blocking finding's fix sweeps its class: name the class (the other transitions that share its
+  cause), check every transition in it, and add one value-checking test per transition; the
+  journal names the class and its tests.
+- A fix round that adds a mechanism or state machine starts with its lifecycle table in the
+  repository's docs (states x events: what each event bumps, what is watched, what a lookup
+  answers). Commit it, set State to "blocked on lead: design check of the lifecycle table", and
+  write the code once it passes the `design` lens.
 - Answer each message `campaign brief` lists in your journal by its id (`msg-N`), with what you
   did or why nothing changed: the quest cannot land while one is unanswered.
 - Write the journal tersely: state, next step, evidence, rulings. Push your quest branch once a
