@@ -14,9 +14,18 @@ from harness import CampaignCase
 TEST = "python3 app.py | grep -q 2"
 
 
+def set_state(case: CampaignCase, wt: Path, pid: str, state: str) -> None:
+    """Commits State STATE in the quest's journal, unless it already says so."""
+    path = wt / f".campaign/demo/journal/{pid}.md"
+    text = re.sub(r"^State:.*$", f"State: {state}", path.read_text(), count=1, flags=re.M)
+    if text != path.read_text():
+        case.commit(wt, {f".campaign/demo/journal/{pid}.md": text})
+
+
 class Hold(CampaignCase):
     def iterating(self) -> Path:
         wt = self.started("fix", files="app.py,lib/**")
+        set_state(self, wt, "fix", "working")
         brief = self.home / ".campaign/demo/quests/fix.md"
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
         self.git(self.home, "commit", "-qam", "criteria")
@@ -47,7 +56,7 @@ class Hold(CampaignCase):
 
     def test_at_ready_for_review_both_queue_and_a_reused_result_passes_a_hold(self) -> None:
         wt = self.iterating()
-        self.ready_for_review(wt, "fix")
+        set_state(self, wt, "fix", "ready for review")
         tagged = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
         gate = re.search(r"(?m)^unit: (\S+)$", self.ok(self.home, "verify", "fix").out)
         assert gate, "verify queued no unit check at ready for review"
@@ -70,7 +79,7 @@ class Mutants(CampaignCase):
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
         self.git(self.home, "commit", "-qam", "criteria")
         self.commit(wt, {"app.py": "print(2)\nprint('tail')\n"})
-        self.ready_for_review(wt, "fix")
+        set_state(self, wt, "fix", "ready for review")
         return wt
 
     def met(self) -> bool:
@@ -202,7 +211,7 @@ class ExaminedJobs(CampaignCase):
         failed = self.submit(wt, "--quest", "fix", "--", "exit 3")
         self.run_cli(self.home, "wait", passed, failed, "--timeout", "60")
         rel = ".campaign/demo/journal/fix.md"
-        text = journal.read_text().replace("State: working", "State: ready for review")
+        text = re.sub(r"^State:.*$", "State: ready for review", journal.read_text(), count=1, flags=re.M)
         row = f"| A1 | {passed}, {failed}, {old} |"
         self.commit(wt, {rel: text.replace("| <A1> | <from `campaign brief`> |", row)})
         self.verified("fix")
