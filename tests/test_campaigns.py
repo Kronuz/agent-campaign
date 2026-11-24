@@ -311,7 +311,9 @@ class Campaigns(CampaignCase):
         self.fails(self.home, "land", "api", match="adds campaign files to lib")
         self.git(api, "reset", "-q", "--hard", "HEAD~1")
         self.commit(api, {"lib.py": "X = 2\n"})
-        self.commit(journal, {".campaign/demo/journal/api.md": "msg-1, msg-2: both pass now\n"})
+        self.commit(
+            journal, {".campaign/demo/journal/api.md": "State: ready for review\nmsg-1, msg-2: both pass now\n"}
+        )
         self.landed_from(self.home, "api")
         self.assertEqual([m["id"] for m in self.quest("api")["messages"]], ["msg-1", "msg-2"])
         self.assertEqual(self.git(self.lib, "ls-tree", "-r", "--name-only", "main", "--", ".campaign"), "")

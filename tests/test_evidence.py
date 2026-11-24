@@ -166,7 +166,7 @@ class Evidence(CampaignCase):
         self.assertIn("    A1  pending  prints two: a probe\n", out)
         self.assertIn(f"journal: {broken} ({broken} failed)\n", out)
         self.fails(self.home, "land", "fix", match="criteria without evidence")
-        self.commit(wt, {journal: f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.commit(wt, {journal: f"State: ready for review\n\n## Evidence\n\n| A1 | {probe} |\n"})
         self.assertIn("    A1  met      prints two: a probe\n", self.ok(self.home, "status", "fix").out)
         self.commit(wt, {"app.py": "print(2)  # the code moves on after the probe\n"})
         self.verified("fix")
@@ -212,9 +212,11 @@ class Evidence(CampaignCase):
     def scoped(self) -> Path:
         """A quest with a whole-tree build-test (unit) and a bench check whose inputs are lib/**."""
         self.ok(self.home, "config", "tested_docs=docs/**")  # docs the tests run: whole-tree evidence ignores none
-        wt = self.started("fast", files="app.py,lib/**,docs/**,CMakeLists.txt", check="unit=python3 app.py")
+        wt = self.started("fast", files="app.py,lib/**,docs/**,CMakeLists.txt", check="unit:light:5=python3 app.py")
         self.fails(self.home, "set", "fast", "--inputs", "bench=lib/**", match="has no check bench")
-        self.ok(self.home, "set", "fast", "--check", "unit=python3 app.py", "--check", "bench=test -f lib/util.py")
+        self.ok(
+            self.home, "set", "fast", "--check", "unit:light:5=python3 app.py", "--check", "bench=test -f lib/util.py"
+        )
         self.fails(self.home, "set", "fast", "--inputs", "bench=lib/**", match="inputs narrowed to lib/**")
         self.ok(self.home, "set", "fast", "--inputs", "bench=lib/**", "--weaken", "bench reads only lib/")
         self.assertEqual(self.ok(self.home, "get", "fast", "inputs").out, "bench=lib/**\n")
@@ -311,6 +313,7 @@ class Evidence(CampaignCase):
         self.verified("fix")
         self.commit(wt, {"app.py": "print(3)\n"})  # the evidence is now for an older commit
         self.fails(self.home, "land", "fix", match="not green")
+        self.ready_for_review(wt, "fix")
         self.verified("fix")
         head = self.git(wt, "rev-parse", "HEAD")
         self.ok(self.home, "land", "fix")
@@ -469,7 +472,7 @@ class Evidence(CampaignCase):
         check = "grep -q 2 lib/util.py && grep -q 6 notes/n.txt"  # also reads the file main changes below
         probe = self.submit(b, "--quest", "b", "--", check)
         self.verified("b")
-        self.commit(b, {".campaign/demo/journal/b.md": f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.commit(b, {".campaign/demo/journal/b.md": f"State: ready for review\n\n## Evidence\n\n| A1 | {probe} |\n"})
         self.ok(self.home, "land", "a")
         self.fails(self.home, "land", "b", match="merge main into it")
         self.git(b, "merge", "-q", "--no-edit", "main")
@@ -504,7 +507,7 @@ class Evidence(CampaignCase):
         self.commit(b, {"lib/util.py": "X = 2\n"})
         probe = self.submit(b, "--quest", "b", "--", "grep -q 2 lib/util.py")
         self.verified("b")
-        self.commit(b, {".campaign/demo/journal/b.md": f"## Evidence\n\n| A1 | {probe} |\n"})
+        self.commit(b, {".campaign/demo/journal/b.md": f"State: ready for review\n\n## Evidence\n\n| A1 | {probe} |\n"})
         self.ok(self.home, "land", "a")
         self.git(b, "merge", "-q", "--no-edit", "main")
         brief_out = self.ok(self.home, "brief", "b").out
@@ -563,6 +566,7 @@ class Evidence(CampaignCase):
         self.assertIn(f"  | A1 | {probe} |", table)
         self.assertIn("  | A3 | the lead read the output |", table)
         self.commit(wt, {"app.py": "print(2)  # the code moves on\n"})
+        self.ready_for_review(wt, "fix")
         self.verified("fix")
         refused = self.fails(self.home, "land", "fix", match="criteria without evidence at")
         self.assertIn(f"`campaign job rerun {probe}`", refused.text)

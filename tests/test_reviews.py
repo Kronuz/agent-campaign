@@ -277,6 +277,7 @@ class ReviewBinding(CampaignCase):
         probe = self.probe(wt, "python3 app.py | grep -q fixed")  # the reviewer's probe fails at the reviewed code
         self.review("feat", "correctness", "CHANGES", findings=(("C1", "yes", "defect"),))
         self.commit(wt, {"app.py": "print('feature, fixed')\n"})
+        self.ready_for_review(wt, "feat")
         self.verified("feat")
         rerun = self.ok(self.home, "job", "rerun", probe).out.split(":")[0]
         self.ok(self.home, "wait", rerun)

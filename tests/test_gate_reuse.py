@@ -46,6 +46,7 @@ class GateReuse(CampaignCase):
 
     def test_without_ci_verify_runs_the_check_at_the_merge_and_land_counts_it(self) -> None:
         self.merged_quest(ci=False)
+        self.ready_for_review(self.b, "b")  # else verify holds the passed 30-minute check until then
         head = self.git(self.b, "rev-parse", "HEAD")
         self.assertNotIn("reused", self.ok(self.home, "verify", "b").out)
         self.ok(self.home, "wait", "--quest", "b", "--timeout", "90", timeout=120)
