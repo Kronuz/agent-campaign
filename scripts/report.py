@@ -69,8 +69,8 @@ def progress(value: float, label: str = "") -> None:
         print(f"progress: {pct}%{' ' + label if label else ''}", file=sys.stderr)
 
 
-def clear() -> None:
-    if not cmux(["clear-progress"]):
+def clear(workspace: str | None = None) -> None:
+    if not cmux(["clear-progress"], workspace) and workspace is None:
         osc("0")
 
 

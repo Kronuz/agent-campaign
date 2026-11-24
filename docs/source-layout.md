@@ -56,7 +56,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `reviews.py` (456 lines): Reviews and landing gaps: verdicts, acceptances, drift, and what keeps a
   quest or task from landing. Boundary: the landing gate's judgment, short of landing itself. Opened
   alone when land refuses, or lets through, what it should not.
-- `campaign.py` (498 lines): The `Campaign`: its state loaded and saved by the one writer, the
+- `campaign.py` (509 lines): The `Campaign`: its state loaded and saved by the one writer, the
   overview, what moves each quest in flight, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
   Opened alone to change how state is written, locked or summarized in the sidebar.
 - `leads.py` (274 lines): Lead notices across campaigns: noting a lead (only from the home, and only
@@ -147,7 +147,7 @@ The campaign tests:
 - `test_usage.py` (337): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
 - `test_messages.py` (220): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
   contributors, and the home they share.
-- `test_views.py` (233): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
+- `test_views.py` (297): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
   show.
 
 The job queue tests:

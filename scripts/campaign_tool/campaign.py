@@ -35,7 +35,7 @@ from .core import (
 )
 from .jobs import all_jobs, quest_jobs
 from .journals import decisions, journal_place, journal_text, milestone_groups, state_of
-from .mail import settle_mail
+from .mail import recorded_lead, settle_mail
 from .repo import ancestor, code_tree, frozen, has_ref, main_branch, rev, toplevel
 from .state import branches, clashes, cycles, follow, foreign, locate, register, select, unstarted_waits, validate
 
@@ -350,10 +350,13 @@ def close_hunt(c: Campaign, quest: str, repo: Path, commit: str) -> tuple[str, .
 
 def sidebar(c: Campaign) -> None:
     """A bar for the current milestone, a pill for the project and one per quest in flight, drawn
-    by commands run in the home. Only changes are sent; the last view per workspace is cached in the
-    git directory."""
+    by the recorded lead's commands run in the home. Only changes are sent; the last view per
+    workspace is cached in the git directory, and the lead's draw clears the campaign from the rest."""
     workspace = os.environ.get("CMUX_WORKSPACE_ID", "")
-    if not workspace or not Path.cwd().resolve().is_relative_to(c.home.resolve()):
+    surface = os.environ.get("CMUX_SURFACE_ID", "")
+    if not workspace or not surface or surface != recorded_lead(c.name):
+        return  # only the recorded lead draws, as only it names its workspace (`set_workspace_title`)
+    if not Path.cwd().resolve().is_relative_to(c.home.resolve()):
         return  # drawn only from its home: a message to another campaign leaves that sidebar alone
     o = overview(c)
     counts, m = o["counts"], o["milestone"]
@@ -377,14 +380,14 @@ def sidebar(c: Campaign) -> None:
         want["bar"] = f"{m['landed']}/{m['quests']}\t{label}"
     cache = Path(git(c.home, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "campaign-sidebar.json"
     view = f"{workspace} {c.ident}"
-    seen: dict[str, str] = {}
-    with contextlib.suppress(FileNotFoundError, json.JSONDecodeError, AttributeError):
-        seen = json.loads(cache.read_text()).get(view, {})
-    for key in seen.keys() - want.keys():
-        if key == "bar":
-            report.clear()
-        else:
-            report.unstatus(key.split(":", 1)[1])
+    views: dict[str, dict[str, str]] = {}
+    with contextlib.suppress(OSError, ValueError):
+        views = json.loads(cache.read_text())
+    views = views if isinstance(views, dict) else {}
+    for other in [v for v in views if v != view and v.partition(" ")[2] == c.ident]:
+        unsidebar(views.pop(other), other.partition(" ")[0])  # drawn there by an earlier session
+    seen = views.get(view, {})
+    unsidebar(seen.keys() - want.keys(), None)
     for key, value in want.items():
         if seen.get(key) == value:
             continue
@@ -393,11 +396,19 @@ def sidebar(c: Campaign) -> None:
             report.progress(report.fraction(done), label)
         else:
             report.status(key.split(":", 1)[1], value, "map" if key == project else "hammer")
-    with contextlib.suppress(OSError, json.JSONDecodeError):
-        views = json.loads(cache.read_text()) if cache.exists() else {}
+    with contextlib.suppress(OSError):
         views.pop(workspace, None)
         views[view] = want
         cache.write_text(json.dumps(views))
+
+
+def unsidebar(keys: Collection[str], workspace: str | None) -> None:
+    """Clears the bar and pills KEYS of a cached view from WORKSPACE (None: this one)."""
+    for key in keys:
+        if key == "bar":
+            report.clear(workspace)
+        else:
+            report.unstatus(key.split(":", 1)[1], workspace)
 
 
 @contextlib.contextmanager
