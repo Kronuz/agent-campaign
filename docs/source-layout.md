@@ -97,7 +97,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `jobcmds.py` (631 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
   `message`. Boundary: the `job` and `message` command lines over the job store and mail. Opened
   alone to change a job command's options or output.
-- `checks.py` (239 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
+- `checks.py` (249 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
   quest's gate checks as jobs. Boundary: the two commands that audit a campaign and queue its gates.
   Opened alone to add a consistency check or change what verify queues.
 - `land.py` (575 lines): Landing: version pins, task merges, merging main, landing a quest, and
@@ -136,13 +136,13 @@ The campaign tests:
 
 - `test_quests.py` (377 lines): `Quests`, `Ownership`. Creating, starting and owning quests and
   their files.
-- `test_evidence.py` (739): `Evidence`. Criteria and the jobs that prove them. One class of 700
+- `test_evidence.py` (743): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
 - `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
   Everything that moves main: merging, the direct path, CI and push, interrupted landings, clean-up.
-- `test_reviews.py` (370): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
+- `test_reviews.py` (371): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
   the review binds to.
-- `test_campaigns.py` (670): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
+- `test_campaigns.py` (672): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
   queue they share.
 - `test_usage.py` (337): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
 - `test_messages.py` (220): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
@@ -161,6 +161,6 @@ The job queue tests:
 - `test_job_store.py` (255): `WorkerCache`, `JobIndex`, `CiCache`, `GitMirrors`, and the `recording`
   helper. The caches and indexes beside the job records.
 
-Unchanged: `test_quiet.py` (424), `test_scenarios.py` (291), `test_pace.py` (155),
+Unchanged: `test_quiet.py` (424), `test_scenarios.py` (293), `test_pace.py` (155),
 `test_cli.py` (114), `test_install.py` (72), `test_agents.py` (62), `test_context.py` (37), each one
 topic.

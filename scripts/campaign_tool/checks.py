@@ -20,7 +20,7 @@ from .jobs import all_jobs, load_job, matches_inputs, quest_jobs, resolve_job, t
 from .journals import journal_place, journal_state
 from .leads import stuck_warnings
 from .repo import ancestor, frozen, has_ref, main_branch, rev, same_repo
-from .reuse import build_test, check_spec, docs_note, job_at, shape, submit
+from .reuse import build_test, check_spec, docs_note, job_at, job_with_key, shape, submit
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, deferred, gates, locate, select, validate
 from .status import print_problem, problems
@@ -129,6 +129,16 @@ def passed_before(jobs: list[Json], spec: Json, commit: str) -> str:
     return last["spec"]["commit"] if last is not None and last["state"]["state"] == "done" else ""
 
 
+def reusable(spec: Json, commit: str, exact: bool) -> bool:
+    """Whether `submit` hands back an earlier job for SPEC at COMMIT instead of queuing one: the same
+    code tree, or unless EXACT a passed twin. A reused check is evidence here, so it is never held."""
+    old = job_with_key(spec)
+    if old is not None and old["state"].get("state") in ("queued", "running", "done"):
+        return not old["state"].get("slimmed")
+    twin = None if exact else job_at(spec, commit, merged=True)
+    return twin is not None and twin["state"].get("state") == "done" and not twin["state"].get("slimmed")
+
+
 def submit_checks(
     c: Campaign,
     qid: str,
@@ -165,7 +175,7 @@ def submit_checks(
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
             continue
-        if hold and not check.get("later") and check["minutes"] >= SLOW_MINUTES:
+        if hold and not check.get("later") and check["minutes"] >= SLOW_MINUTES and not reusable(spec, commit, exact):
             jobs = quest_jobs(all_jobs(), c.ident, qid) if jobs is None else jobs
             if at := passed_before(jobs, spec, commit):
                 end = "it reruns at the round's end (State ready for review, or land)"

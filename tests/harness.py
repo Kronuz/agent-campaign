@@ -335,6 +335,12 @@ class CampaignCase(unittest.TestCase):
         self.git(self.home, "commit", "-q", "-m", f"review {pid} {lens}")
         return commit
 
+    def ready_for_review(self, wt: Path, pid: str) -> str:
+        """Commits State `ready for review` in the quest's journal: the round's end, where verify runs slow checks."""
+        rel = f".campaign/demo/journal/{pid}.md"
+        text = re.sub(r"^State:.*\n", "", (wt / rel).read_text(), flags=re.M)
+        return self.commit(wt, {rel: f"State: ready for review\n{text}"})
+
     def wait_until(self, predicate: Any, timeout: float = 30) -> None:
         end = time.time() + timeout
         while time.time() < end:

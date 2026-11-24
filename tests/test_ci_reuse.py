@@ -44,7 +44,7 @@ class CiReuse(CampaignCase):
 
     def quest_green_at_head(self, change: str) -> tuple[Path, str]:
         """Quest b changes lib/util.py's line CHANGE; its check and CI pass at its head."""
-        b = self.started("b", files="lib/**")
+        b = self.started("b", files="lib/**", check="unit:light:5=python3 app.py")  # quick: verify never holds it
         head = self.commit(b, {"lib/util.py": LINES.replace("L1 = 1", f"L1 = {change}")})
         self.verified("b")
         self.ci({head: "success"})

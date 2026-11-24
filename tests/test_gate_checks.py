@@ -81,10 +81,6 @@ class SlowOnce(CampaignCase):
         """Each check's first word after its name in verify's output: a job id, or "held,"."""
         return dict(re.findall(r"^(unit|slow): (\S+)", out, re.M))
 
-    def set_state(self, wt: Path, state: str) -> None:
-        rel = ".campaign/demo/journal/q.md"
-        self.commit(wt, {rel: re.sub(r"^State: .*$", f"State: {state}", (wt / rel).read_text(), flags=re.M)})
-
     def test_a_slow_check_that_passed_earlier_is_held_while_iterating(self) -> None:
         _, x = self.iterating()
         out = self.ok(self.home, "verify", "q").out
@@ -101,7 +97,7 @@ class SlowOnce(CampaignCase):
 
     def test_at_ready_for_review_the_slow_check_runs(self) -> None:
         wt, _ = self.iterating()
-        self.set_state(wt, "ready for review")
+        self.ready_for_review(wt, "q")
         found = self.queued(self.ok(self.home, "verify", "q").out)
         self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
         self.assertNotEqual(found["slow"], found["unit"])

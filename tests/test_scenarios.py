@@ -108,6 +108,7 @@ class Scenarios(CampaignCase):
         self.fails(self.home, "land", "decoder", match="security review not accepted")
         self.review("decoder", "security", "CHANGES", findings=(("S1", "yes", "defect"),))
         self.commit(wt, {"lib/util.py": "def decode(b):\n    return bytes(b[:16])\n"}, "fix S1")
+        self.ready_for_review(wt, "decoder")
         self.verified("decoder")
         rerun = self.ok(self.home, "job", "rerun", fuzz).out.split(":")[0]
         self.ok(self.home, "wait", rerun)
@@ -132,6 +133,7 @@ class Scenarios(CampaignCase):
         )
         probe = self.submit(wt, "--quest", "wal", "--", "grep -q 'index.fsync' lib/util.py")
         self.ok(self.home, "wait", probe)
+        self.ready_for_review(wt, "wal")
         self.verified("wal")
         self.ok(self.home, "accept", "wal", "durability", "--confirm", f"D1={probe}")
         self.ok(self.home, "land", "wal")
