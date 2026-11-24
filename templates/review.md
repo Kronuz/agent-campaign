@@ -22,6 +22,7 @@ REJECT: the approach is wrong; the quest is re-planned.
 |---|---|---|---|---|---|
 
 Blocking: yes or no. Kind: defect (wrong behavior), gap (unproven claim or missing test), nit. A
+failing probe is blocking until root-caused to a finding whose fix has a fails-without test. A
 finding that would remove or narrow user-visible behavior offers options, including keeping it,
 and is never blocking.
 

@@ -44,7 +44,7 @@ The reviewer carries every question the lead names; the lens decides the emphasi
 | `correctness` | Does the code do what the quest file says on every path? Error paths free what they allocate and leave data consistent; tests fail without what they test; limits are load-bearing; scope stays inside the quest file; no second mechanism where one exists (one shape everywhere). |
 | `security` | Who is the attacker (network peer, authenticated client, local user, malicious file, compromised dependency) and what do they gain? Input validated before use; bounds on lengths, depth, connections, memory; integer overflow in sizes and offsets; secrets out of logs and with tight modes; TLS and certificate checks; pinned dependencies. Probes feed truncated, oversized and malformed input to the real decoder. |
 | `durability` | What survives a crash at every step? Ordering of writes, flushes and renames; recovery from torn writes and partial files; behavior on full disk and I/O errors; concurrency of readers with writers; for a new on-disk or wire format or a changed durability mechanism, a crash model run as a job. |
-| `design` | Before the code: is the shape right, are the decisions that are expensive to reverse (bytes on disk, wire format, public API, ordering protocol) settled and justified, is there a simpler mechanism, does every criterion have a rerunnable check? Rule once, with one text fix round; then probes run as jobs (an executable model, a test) settle disputes. |
+| `design` | Before the code: is the shape right, are the decisions that are expensive to reverse (bytes on disk, wire format, public API, ordering protocol) settled and justified, is there a simpler mechanism, does every criterion have a rerunnable check? A fix round's new mechanism or state machine: does its lifecycle table answer every state and event? Rule once, with one text fix round; then probes run as jobs (an executable model, a test) settle disputes. |
 | `system` | One question `campaign check` raised: two quests defining one contract differently, a contract changing under its consumers, one file with two writers, sequencing that assumes something unlanded. Name who acts. |
 
 ## How a review runs
@@ -54,9 +54,14 @@ The reviewer carries every question the lead names; the lens decides the emphasi
 2. **Probe the rest.** One probe per suspicion, as a job, from a script kept under
    `.scratch/<campaign>/review-<ID>-<lens>/` (a one-line `.purpose`) in the home checkout. Each blocking finding names the test its
    fix must add; the suite passing it confirms the fix, with no second review.
-3. **Stop when the named risks are answered.** A consequential question you cannot settle is a
+3. **A failing probe stays blocking** until it is root-caused to a finding whose fix has a
+   fails-without test. "Unreachable" is shown by a run, never argued, and the lead never relabels
+   a failing probe as non-blocking.
+4. **A re-review covers the whole mechanism.** Once a finding's fix lands in a lifecycle or state
+   machine, the re-review checks every state and event of that mechanism, not the fix's diff.
+5. **Stop when the named risks are answered.** A consequential question you cannot settle is a
    blocking gap, not a reason to keep digging. List non-blocking notes in a line each.
-4. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
+6. **Write the review file** from `templates/review.md`: `Commit:` (the commit reviewed),
    `Verdict:` (APPROVE, CHANGES or REJECT), the evidence relied on, what was checked, a findings
    table (ID, Blocking yes or no, Kind defect, gap or nit), and "Not run". An APPROVE has no
    blocking row; a CHANGES whose findings are all nits is an APPROVE.
