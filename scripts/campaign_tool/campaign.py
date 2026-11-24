@@ -36,7 +36,7 @@ from .core import (
 from .jobs import all_jobs, quest_jobs
 from .journals import decisions, journal_place, journal_text, milestone_groups, state_of
 from .mail import recorded_lead, settle_mail
-from .repo import ancestor, code_tree, common_dir, frozen, has_ref, main_branch, rev, toplevel
+from .repo import ancestor, code_tree, common_dir, frozen, has_ref, main_branch, on_commits, rev, toplevel
 from .state import (
     branches,
     clashes,
@@ -204,9 +204,15 @@ def touched(c: Campaign, name: str, branch: str, jobs: list[Json], idle: float) 
     ]
     if not ended or not branch or idle <= 0:
         return False
-    stamps = {git(r, "log", "-1", "--format=%ct", branch, check=False) for r in {c.repo(p), c.home}}
-    last = max((float(x) for x in stamps if x.isdigit()), default=float("-inf"))
+    heads = {(r, rev(r, branch)) for r in {c.repo(p), resolved(c.home)} if has_ref(r, branch)}
+    last = max((commit_time(r, sha) for r, sha in heads), default=float("-inf"))
     return last > max(ended) and now - last < idle
+
+
+def commit_time(repo: Path, sha: str) -> float:
+    """When commit SHA was made: asked of git once, then remembered (`on_commits`)."""
+    stamp = on_commits(("ctime", str(repo), sha), lambda: git(repo, "log", "-1", "--format=%ct", sha, check=False))
+    return float(stamp) if str(stamp).isdigit() else float("-inf")
 
 
 def newest_change(worktree: Path) -> float:
