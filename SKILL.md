@@ -238,7 +238,9 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
   a lifecycle is re-reviewed as the whole mechanism, not its diff. A failing probe stays blocking
   until root-caused to a finding with a fails-without; the lead never relabels it non-blocking.
 - **Two fix rounds, then stop.** A third means the quest or design is wrong: re-plan or ask the
-  owner.
+  owner. When every earlier finding is fixed and the new one sits in the same mechanism, the lead
+  runs a third round with the lifecycle table and the class sweep, and informs the owner; a changed
+  goal or design still goes to the owner.
 - **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
   what is still disputed, never another text round.
 - **What a quest must pass changes only on the record:** `set ID --check NAME=CMD` (`--later`)

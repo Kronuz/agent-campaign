@@ -1,7 +1,7 @@
 {
   "group: core": {
-    "words": 4397,
-    "tokens": 6784
+    "words": 4440,
+    "tokens": 6842
   },
   "group: references": {
     "words": 10039,
@@ -20,8 +20,8 @@
     "tokens": 374
   },
   "lead": {
-    "words": 4397,
-    "tokens": 6784
+    "words": 4440,
+    "tokens": 6842
   },
   "lead, launching": {
     "words": 841,
