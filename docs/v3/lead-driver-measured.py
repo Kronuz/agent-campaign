@@ -281,6 +281,80 @@ def day_of(t: float) -> str:
     return f"B{n}" if n < 0 else f"A+{n + 1}"
 
 
+OUTAGES: list[tuple[float, float]] = []  # set by main from the transcripts (`outages`)
+RESETS = re.compile(r'"resetsAt":(\d+)')
+
+
+def outages(logs: list[Path]) -> list[tuple[float, float]]:
+    """Intervals the account's API refused every call for a usage limit: from each refusal
+    (`"apiError":"usage_limit_reached"`) to the reset it names or the next real response in any of
+    LOGS, whichever comes first; overlapping ones merged and clipped to the windows."""
+    refused: list[tuple[float, float]] = []
+    answered: list[float] = []
+    for log in logs:
+        with log.open(errors="replace") as f:
+            for line in f:
+                if '"type":"assistant"' not in line:
+                    continue
+                i = line.find('"timestamp":"')
+                t = stamp(line[i + 13 : line.find('"', i + 13)]) if i >= 0 else 0.0
+                if not SINCE - DAY <= t <= UNTIL:
+                    continue
+                if '"apiError":"usage_limit_reached"' in line:
+                    m = RESETS.search(line)
+                    refused.append((t, float(m[1]) if m else t))
+                elif '"model":"<synthetic>"' not in line and '"isApiErrorMessage":true' not in line:
+                    answered.append(t)
+    answered.sort()
+    out: list[list[float]] = []
+    for t, reset in sorted(refused):
+        k = bisect.bisect_right(answered, t)
+        end = min(reset, answered[k] if k < len(answered) else reset)
+        a, b = max(t, SINCE), min(end, UNTIL)
+        if b <= a:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def bucket(t: float) -> str:
+    """T's day, or "OUT <day>" inside a usage-limit outage, so outage hours can be set apart."""
+    return f"OUT {day_of(t)}" if any(a <= t < b for a, b in OUTAGES) else day_of(t)
+
+
+def window_buckets(win: str) -> list[str]:
+    """The day buckets a window sums: before, after, and each "w/o outage" without OUT buckets."""
+    days = ["B-3", "B-2", "B-1"] if win.startswith("before") else ["A+1", "A+2", "A+3"]
+    return days if win.endswith("w/o outage") else [*days, *(f"OUT {d}" for d in days)]
+
+
+def window_days(win: str) -> float:
+    """A window's length in days, less its outage time for a "w/o outage" window."""
+    w0, w1 = WINDOWS["before" if win.startswith("before") else "after"]
+    out = sum(max(0.0, min(b, w1) - max(a, w0)) for a, b in OUTAGES) if win.endswith("w/o outage") else 0.0
+    return (w1 - w0 - out) / DAY
+
+
+def window_intervals(win: str) -> list[tuple[float, float]]:
+    w0, w1 = WINDOWS["before" if win.startswith("before") else "after"]
+    if not win.endswith("w/o outage"):
+        return [(w0, w1)]
+    out, a = [], w0
+    for o0, o1 in sorted(OUTAGES):
+        if o1 <= a or o0 >= w1:
+            continue
+        if o0 > a:
+            out.append((a, o0))
+        a = max(a, o1)
+    return [*out, (a, w1)] if a < w1 else out
+
+
+WINS = ("before", "before w/o outage", "after", "after w/o outage")
+
+
 def account(
     snaps: dict[str, list[tuple[float, dict[str, Json]]]],
     jobs: dict[tuple[str, str], list[tuple[float, float, int]]],
@@ -298,6 +372,7 @@ def account(
                 SINCE,
                 UNTIL,
                 *times,
+                *(x for o in OUTAGES for x in o if SINCE < x < UNTIL),
                 *(LEAD_DRIVER + k * DAY for k in range(-3, 4) if SINCE < LEAD_DRIVER + k * DAY < UNTIL),
             }
         )
@@ -312,8 +387,8 @@ def account(
                     labelled = [*labelled, (a0, b0, 3)]
                 for a, b, lab in segments(a0, b0, labelled):
                     name = LABELS[lab] if lab < NOTHING else f"nothing moving it ({status})"
-                    hours[c][day_of(a)][name] += (b - a) / H
-                    hours[c][day_of(a)][f"in flight ({status})"] += (b - a) / H
+                    hours[c][bucket(a)][name] += (b - a) / H
+                    hours[c][bucket(a)][f"in flight ({status})"] += (b - a) / H
                     if lab == NOTHING:
                         win = "before" if a < LEAD_DRIVER else "after"
                         per_quest[c][q][f"{win} {status}"] += (b - a) / H
@@ -343,9 +418,14 @@ def stretches(idle: dict[tuple[str, str], list[tuple[float, float]]]) -> Json:
                 else:
                     run.append([a, b])
             merged += [(a, b) for a, b in run]
-        for win, (w0, w1) in WINDOWS.items():
-            parts = [min(b, w1) - max(a, w0) for a, b in merged if min(b, w1) > max(a, w0)]
-            days = (w1 - w0) / DAY
+        for win in WINS:
+            parts = [
+                min(b, w1) - max(a, w0)
+                for w0, w1 in window_intervals(win)
+                for a, b in merged
+                if min(b, w1) > max(a, w0)
+            ]
+            days = window_days(win)
             out[f"{c} {win}"] = {
                 "stretches": len(parts),
                 "h_per_24h": sum(parts) / H / days,
@@ -395,25 +475,32 @@ def load_usage(usage_dir: Path) -> dict[str, Json]:
 def table(acc: Json) -> str:
     """Per campaign and status: nothing-moving hours by day, each window's total and rate per 24 h."""
     days = ["B-3", "B-2", "B-1", "A+1", "A+2", "A+3"]
+    outs = sorted({d for c in HOMES for d in acc["hours"][c] if d.startswith("OUT ")})
+    cols = [*days, *outs]
     lengths = {d: DAY / H for d in days}
     lengths["A+3"] = (TODO_MAIL - (LEAD_DRIVER + 2 * DAY)) / H
     rows = [
-        "| Campaign | Hours | " + " | ".join(days) + " | Before /24 h | After /24 h |",
-        "|---" * 10 + "|",
+        "| Campaign | Hours | " + " | ".join(cols) + " | " + " | ".join(f"{w} /24 h" for w in WINS) + " |",
+        "|---" * (2 + len(cols) + len(WINS)) + "|",
     ]
     for c in HOMES:
         h = acc["hours"][c]
         for status in FLIGHT:
             for kind in (f"nothing moving it ({status})", f"in flight ({status})"):
-                vals = [h.get(d, {}).get(kind, 0.0) for d in days]
-                before = sum(vals[:3]) / 3
-                after = sum(vals[3:]) / ((TODO_MAIL - LEAD_DRIVER) / DAY)
-                label = kind.replace("nothing moving it", "nothing moving").replace("in flight", "in flight")
+                vals = [h.get(d, {}).get(kind, 0.0) for d in cols]
+                rates = [sum(h.get(d, {}).get(kind, 0.0) for d in window_buckets(w)) / window_days(w) for w in WINS]
+                label = kind.replace("nothing moving it", "nothing moving")
                 rows.append(
-                    f"| {c} | {label} | " + " | ".join(f"{v:.1f}" for v in vals) + f" | {before:.1f} | {after:.1f} |"
+                    f"| {c} | {label} | "
+                    + " | ".join(f"{v:.1f}" for v in vals)
+                    + " | "
+                    + " | ".join(f"{r:.1f}" for r in rates)
+                    + " |"
                 )
     rows.append(
-        f"\nA+3 is {lengths['A+3']:.2f} h long; the after rate divides by {(TODO_MAIL - LEAD_DRIVER) / DAY:.3f} days."
+        f"\nA+3 is {lengths['A+3']:.2f} h long. A day column excludes its OUT column's hours. Days per window: "
+        + ", ".join(f"{w} {window_days(w):.3f}" for w in WINS)
+        + "."
     )
     return "\n".join(rows)
 
@@ -422,16 +509,23 @@ def summary(acc: Json) -> str:
     """Per window, active and review together (what the lead moves): nothing-moving hours per 24 h,
     in-flight hours per 24 h, their share, the range over whole days, and nothing-moving counting
     a quest waiting only on an unlanded `after` as unmoved too."""
-    full = {"before": ["B-3", "B-2", "B-1"], "after": ["A+1", "A+2"]}
-    every = {"before": full["before"], "after": [*full["after"], "A+3"]}
+    whole_days = {"before": ["B-3", "B-2", "B-1"], "after": ["A+1", "A+2"]}
     rows = [
         "| Campaign | Window | Nothing moving /24 h | In flight /24 h | Share | Whole days, min-max | With `after` waits /24 h |",
         "|---|---|---|---|---|---|---|",
     ]
     for c in [*HOMES, "both"]:
         cs = list(HOMES) if c == "both" else [c]
-        for win, (w0, w1) in WINDOWS.items():
-            days = (w1 - w0) / DAY
+        for win in WINS:
+            days = window_days(win)
+            every = window_buckets(win)
+            # whole days: a day with its OUT hours, or (w/o outage) only days no outage touched
+            touched = {d.removeprefix("OUT ") for x in HOMES for d in acc["hours"][x] if d.startswith("OUT ")}
+            full = [
+                [d] if win.endswith("w/o outage") else [d, f"OUT {d}"]
+                for d in whole_days[win.split()[0]]
+                if not (win.endswith("w/o outage") and d in touched)
+            ]
 
             def get(d: str, kind: str, cs: list[str] = cs) -> float:
                 return sum(
@@ -441,10 +535,10 @@ def summary(acc: Json) -> str:
             def dep(d: str, cs: list[str] = cs) -> float:
                 return sum(acc["hours"][x].get(d, {}).get("waiting on a dependency", 0.0) for x in cs)
 
-            idle = sum(get(d, "nothing moving it") for d in every[win]) / days
-            flight = sum(get(d, "in flight") for d in every[win]) / days
-            whole = [get(d, "nothing moving it") for d in full[win]]
-            withdep = sum(get(d, "nothing moving it") + dep(d) for d in every[win]) / days
+            idle = sum(get(d, "nothing moving it") for d in every) / days
+            flight = sum(get(d, "in flight") for d in every) / days
+            whole = [sum(get(d, "nothing moving it") for d in ds) for ds in full] or [0.0]
+            withdep = sum(get(d, "nothing moving it") + dep(d) for d in every) / days
             rows.append(
                 f"| {c} | {win} | {idle:.1f} | {flight:.1f} | {100 * idle / flight:.1f}% | "
                 f"{min(whole):.1f}-{max(whole):.1f} | {withdep:.1f} |"
@@ -473,7 +567,7 @@ def lead_hours(usage: dict[str, Json]) -> Json:
         ts.sort()
         days: dict[str, float] = defaultdict(float)
         for a, b in itertools.pairwise(ts):
-            days[day_of(a)] += min(b - a, GAP) / H
+            days[bucket(a)] += min(b - a, GAP) / H
         out[c] = dict(sorted(days.items()))
     return out
 
@@ -498,10 +592,19 @@ def main() -> int:
     ids = {c: {q for _, s in snaps[c] for q in s} for c in HOMES}
     runs, counts = agent_runs(usage, ids)
     jobs = job_intervals()
+    leads = [
+        log
+        for u in usage.values()
+        for sess in u.get("lead", [])
+        for log in CLAUDE.glob(f"*/{sess.get('session')}.jsonl")
+    ]
+    agents = [log for log in CLAUDE.glob("*/*/subagents/agent-*.jsonl") if log.stat().st_mtime >= SINCE]
+    OUTAGES[:] = outages([*leads, *agents])
     result: Json = {
         "windows": {k: [iso(x), iso(y)] for k, (x, y) in WINDOWS.items()},
         "runs": counts,
-        "snapshots": {n: len(v) for n, v in snaps.items()},
+        "state_commits": {n: len(v) - 1 for n, v in snaps.items()},
+        "outages": [[iso(a), iso(b), round((b - a) / H, 2)] for a, b in OUTAGES],
     }
     result["lead_active_h"] = lead_hours(usage)
     for variant in VARIANTS:
@@ -512,8 +615,10 @@ def main() -> int:
         result["windows"],
         "\nagent runs:",
         counts,
-        "\nsnapshots:",
-        result["snapshots"],
+        "\nstate.json commits read:",
+        result["state_commits"],
+        "\nusage-limit outages (start, end, h):",
+        result["outages"],
         "\n",
     )
     print(
