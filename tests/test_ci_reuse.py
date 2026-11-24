@@ -91,10 +91,13 @@ class CiReuse(CampaignCase):
         self.ci({first: "failure"})
         self.fails(self.home, "land", "b", match=f"CI at {first[:12]} (carried to {second[:12]}")
         red = self.runs[head][0]
-        self.runs[head] = [red, {**red, "databaseId": 99, "conclusion": "success"}]  # a rerun after the merge's run
+        rerun = {**red, "conclusion": "success", "attempt": 2, "updatedAt": "2026-11-24T11:07:00Z"}
+        self.runs[head] = [rerun]  # `gh run rerun`: in place, the same id, after the merge's run
         (self.root / "gh.json").write_text(json.dumps(self.runs))
         self.ok(self.home, "land", "b")  # the newest finished run, not the nearest commit's
-        self.assertEqual(self.quest("b")["landed"][0]["ci"], {"commit": head, "runs": [99], "carried": True})
+        self.assertEqual(
+            self.quest("b")["landed"][0]["ci"], {"commit": head, "runs": [red["databaseId"]], "carried": True}
+        )
 
     def test_a_red_run_at_the_clean_merge_still_refuses(self) -> None:
         b, _ = self.quest_green_at_head("10")

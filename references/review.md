@@ -11,7 +11,9 @@ A mechanical edit needs the suite and CI; a behavior change needs these.
    codes and happy paths.
 2. **A failing test per fix,** in the suite, run once: a revert or mutant job tagged `--for A1
    --fails-without` passes when the test fails: it fails without the fix. It holds until the code
-   its mutation reverts changes, so it never reruns at a new head. Nothing else needs a mutant.
+   its mutation reverts, or a file its command names (the test), changes, so it never reruns at a
+   new head. A mutant commit is the head with the fix reverted; a mutation a script makes that the
+   command does not show holds until any file of the quest's set changes. Nothing else needs a mutant.
 3. **An oracle or property test** where one exists: a reference implementation, a round trip, an
    invariant, an exhaustive small domain, a frozen copy of the old code.
 4. **Asserts are live only in Debug.** A claim that an `assert` guards something needs a Debug
@@ -35,6 +37,7 @@ set it is newer than the head's code, so a code commit re-holds until the State 
 | review, or landing | any | any | queues (the lead owns this phase) |
 | any | any | a probe or measurement without `--for` | queues |
 | any | any | `--force` | queues |
+| any | any | `job rerun` of a mutant that still holds | queues nothing, says it is still valid |
 
 A result an earlier job already answers is reused whatever the State. The test harness turns the
 hold off with `CAMPAIGN_EVIDENCE_HOLD=0`; only the hold's own tests and `test_scenarios` run with it.

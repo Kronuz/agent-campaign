@@ -157,7 +157,16 @@ def gh_json(repo: Path, args: list[str], kept: Callable[[Any], float]) -> tuple[
 
 def ci_runs(commit: str) -> list[str]:
     """The `gh` arguments listing the CI runs at COMMIT: one query serves every question about them."""
-    return ["run", "list", "--commit", commit, "--json", "databaseId,status,conclusion,name", "--limit", "50"]
+    return [
+        "run",
+        "list",
+        "--commit",
+        commit,
+        "--json",
+        "databaseId,status,conclusion,name,updatedAt,attempt",
+        "--limit",
+        "50",
+    ]
 
 
 def newest(runs: Any) -> list[Json]:
@@ -281,11 +290,22 @@ def ci_state(repo: Path, commit: str, later: list[str]) -> str:
     return "success"
 
 
-def ci_run_ids(repo: Path, commit: str, later: list[str]) -> list[int]:
-    """The ids of the gating CI runs (`ci_state`'s) at COMMIT."""
+def gating_runs(repo: Path, commit: str, later: list[str]) -> list[Json]:
+    """The gating CI runs (`ci_state`'s) at COMMIT."""
     code, listed = gh_json(repo, ci_runs(ci_commit(repo, commit)), runs_kept)
     runs = newest(listed) if code == 0 else []
-    return [r["databaseId"] for r in runs if r.get("name") not in later and "databaseId" in r]
+    return [r for r in runs if r.get("name") not in later and "databaseId" in r]
+
+
+def ci_run_ids(repo: Path, commit: str, later: list[str]) -> list[int]:
+    """The ids of the gating CI runs (`ci_state`'s) at COMMIT."""
+    return [r["databaseId"] for r in gating_runs(repo, commit, later)]
+
+
+def finished(run: Json) -> tuple[str, int, int]:
+    """When a run last finished, to rank runs by: its latest completion (an in-place rerun keeps its
+    id and gains an attempt and a later `updatedAt`), then its attempt and id."""
+    return str(run.get("updatedAt") or ""), int(run.get("attempt") or 1), int(run.get("databaseId") or 0)
 
 
 class CiGate(NamedTuple):
@@ -349,7 +369,7 @@ QUEUED = "; CI queued at {}, carried when done"  # what a red carried gate adds 
 
 def ci_gate(c: Campaign, p: Json, target: str, ask: Callable[[str], str] | None = None) -> CiGate:
     """CI's verdict on landing TARGET (ASK's, default `ci_state`): its own runs once finished, else the
-    newest finished runs (the highest run id) at a commit `ci_carried` finds; the landed main runs CI
+    newest finished runs (the latest completion, `finished`) at a commit `ci_carried` finds; the landed main runs CI
     after (`main_ci_problems`). A red carried verdict names a nearer run still in flight (QUEUED), whose
     result replaces it. Undecided, the nearest runs say why."""
     repo = c.repo(p)
@@ -362,7 +382,7 @@ def ci_gate(c: Campaign, p: Json, target: str, ask: Callable[[str], str] | None 
     done = [g for g in found if decided(g.state)]
     if not done:
         return next((g for g in found if not g.state.startswith("no CI")), own)
-    gate = max(done, key=lambda g: max(ci_run_ids(repo, g.commit, later), default=0))
+    gate = max(done, key=lambda g: max(map(finished, gating_runs(repo, g.commit, later)), default=("", 0, 0)))
     flying = next((g for g in found[: found.index(gate)] if pending(g.state)), None)
     if flying is None or gate.state == "success":
         return gate

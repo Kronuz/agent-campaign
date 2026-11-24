@@ -94,37 +94,45 @@ def rounds(jobs: list[Json]) -> dict[str, list[Json]]:
 
 
 def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
-    """Why a quest's last GUARD_HOURS of evidence look queued at every commit, counted in rounds (one
-    per head): at least GUARD_NEVER cancelled before any job started, or GUARD_UNPROVEN that ran and
-    met no new criterion (first proven by a job tagged for it); "" otherwise. Names the counts, the
-    job-hours waited, and the lead's step."""
+    """Why a quest's last GUARD_HOURS of evidence (jobs tagged `--for`) look queued at every commit,
+    counted in rounds (one per head): at least GUARD_NEVER cancelled before any job started, or
+    GUARD_UNPROVEN that ran and newly met no criterion (met at its head, not at the previous round's);
+    "" otherwise. Names the counts, the job-hours waited, and the lead's step."""
     since = now - GUARD_HOURS * 3600
-    mine = quest_jobs(jobs, c.ident, pid)
-    window = [j for j in mine if float(j["spec"].get("submitted") or 0) >= since]
-    first: dict[str, tuple[float, str]] = {}
-    for j in mine:
-        ended = float(j["state"].get("ended") or 0)
-        for t in j.get("tags", []) if j["state"].get("state") == "done" else ():
-            for cid in t.get("for", []) if (t.get("campaign"), t.get("quest")) == (c.ident, pid) else ():
-                first[cid] = min(first.get(cid, (ended, j["id"])), (ended, j["id"]))
-    proving = {jid for ended, jid in first.values() if ended >= since}
-    never = barren = 0
-    for group in rounds(window).values():
-        if not any(j["state"].get("started") for j in group):
-            never += any(j["state"].get("state") == "cancelled" for j in group)
-        elif not any(j["id"] in proving for j in group):
-            barren += 1
+    mine = (c.ident, pid)
+
+    def proves(j: Json) -> list[str]:
+        return [x for t in j.get("tags", []) if (t.get("campaign"), t.get("quest")) == mine for x in t.get("for", [])]
+
+    tagged = [j for j in quest_jobs(jobs, c.ident, pid) if proves(j)]
+    order = sorted(rounds(tagged).values(), key=lambda g: min(float(j["spec"].get("submitted") or 0) for j in g))
+    never = barren = newly = 0
+    waited = 0.0
+    before: set[str] = set()
+    for group in order:
+        met = {x for j in group if j["state"].get("state") == "done" for x in proves(j)}
+        if max(float(j["spec"].get("submitted") or 0) for j in group) >= since:
+            if not any(j["state"].get("started") for j in group):
+                never += any(j["state"].get("state") == "cancelled" for j in group)
+            elif not met - before:
+                barren += 1
+            newly += len(met - before)
+            waited += sum(
+                max(
+                    0.0,
+                    float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]),
+                )
+                for j in group
+            )
+        if any(j["state"].get("started") for j in group):
+            before = met
     if never < GUARD_NEVER and barren < GUARD_UNPROVEN:
         return ""
-    waited = sum(
-        max(0.0, float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]))
-        for j in window
-    )
-    heads = len(rounds(window))
+    heads = sum(1 for g in order if max(float(j["spec"].get("submitted") or 0) for j in g) >= since)
     return (
         f"{pid} queued evidence at {heads} heads in the last {GUARD_HOURS} h: {never} "
-        f"{'round was' if never == 1 else 'rounds were'} cancelled before any job started, {barren} ran and met "
-        f"no new criterion, {len(proving)} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
+        f"{'round was' if never == 1 else 'rounds were'} cancelled before any job started, {barren} ran and "
+        f"newly met no criterion, {newly} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
         "contributor to iterate in its worktree under `quiet light` and submit one round per State ready for review"
     )
 

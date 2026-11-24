@@ -90,6 +90,26 @@ class Hold(CampaignCase):
         self.held(wt, "the journal State is 'fixing D1'", tagged, verify=False)  # its unit check is reused
         self.assertEqual(self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST), tagged)  # reused: not held
 
+    def test_row_3_a_bold_or_missing_state_line_holds(self) -> None:
+        wt = self.iterating()
+        rel = ".campaign/demo/journal/fix.md"
+        self.commit(wt, {rel: (wt / rel).read_text().replace("State: working", "**State:** working")})
+        self.held(wt, "the journal State is '(no State line)'")
+
+    def test_row_8_rerun_of_a_mutant_that_still_holds_queues_nothing_at_any_state(self) -> None:
+        wt = self.iterating()
+        set_state(self, wt, "fix", "ready for review")
+        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "main")
+        mutant = self.submit(wt, *args, "--", TEST)
+        plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "60")
+        set_state(self, wt, "fix", "fixing")
+        self.commit(wt, {"lib/util.py": "X = 5\n"})
+        before = self.jobs()
+        out = self.ok(self.home, "job", "rerun", mutant).out
+        self.assertIn(f"{mutant} still holds at ", out)
+        self.assertEqual(self.jobs(), before)
+
     def test_row_4_a_tasked_quest_s_verify_queues_once_every_task_merged(self) -> None:
         self.iterating()
         self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
@@ -161,7 +181,9 @@ class Mutants(CampaignCase):
         plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
         self.ok(self.home, "wait", plain, "--timeout", "60")
         self.assertFalse(self.met(), "a fails-without result held though the code it mutates changed")
-        self.assertIn("the code its mutation reverts changed (app.py): submit a mutant", self.ok(wt, "brief").out)
+        self.assertIn(
+            "the code its mutation reverts, or its test, changed (app.py): submit a mutant", self.ok(wt, "brief").out
+        )
 
     def test_a_mutant_commit_holds_until_the_lines_it_reverts_change(self) -> None:
         wt = self.fixed()
@@ -192,6 +214,71 @@ class Mutants(CampaignCase):
         self.moved_on(wt, plain, mutant, {"app.py": "print(1 + 1)\n"})
 
 
+CHECK = (
+    "import subprocess, sys\nout = subprocess.run([sys.executable, 'app.py'], capture_output=True, text=True).stdout\n"
+    "assert out.split()[0] == '2', out\n"
+)
+MUTATE = "from pathlib import Path\np = Path('app.py')\np.write_text(p.read_text().replace('print(2)', 'print(1)'))\n"
+
+
+class MutantFootprint(CampaignCase):
+    """What a fails-without result answers for: the correctness review's C3, C4 and C5."""
+
+    def fixed(self) -> Path:
+        """Quest fix: app.py prints 2 (the fix), check.py tests it, at State ready for review."""
+        wt = self.started("fix", files="app.py,check.py,mutate.py,lib/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\nprint('tail')\n", "check.py": CHECK, "mutate.py": MUTATE})
+        set_state(self, wt, "fix", "ready for review")
+        return wt
+
+    def met(self) -> bool:
+        return bool(re.search(r"(?m)^ +A1  met ", self.ok(self.home, "status", "fix").out))
+
+    def proven(self, wt: Path, mutant: str) -> None:
+        plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "python3 check.py")
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "90", timeout=120)
+        self.assertTrue(self.met())
+
+    def moved(self, wt: Path, files: dict[str, str]) -> bool:
+        """Commits FILES, proves the plain test at the new head, and says whether A1 is still met."""
+        self.commit(wt, files)
+        plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", "python3 check.py")
+        self.ok(self.home, "wait", plain, "--timeout", "90", timeout=120)
+        return self.met()
+
+    def test_a_mutation_made_by_a_script_moves_with_the_quest_s_files(self) -> None:
+        wt = self.fixed()
+        cmd = "python3 mutate.py && python3 check.py"  # names mutate.py and check.py, not app.py
+        self.proven(wt, self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--", cmd))
+        self.assertFalse(self.moved(wt, {"app.py": "print(1 + 1)\nprint('tail')\n"}))
+
+    def test_an_increment_leaves_the_quest_s_own_commit_the_quest_s_code(self) -> None:
+        wt = self.fixed()
+        sed = "sed -i.bak 's/print(2)/print(1)/' app.py"
+        mutant = self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--", f"{sed} && python3 check.py")
+        self.proven(wt, mutant)
+        at = self.git(wt, "rev-parse", "HEAD")
+        self.commit(wt, {"lib/util.py": "X = 2\n"}, "more work")
+        self.ok(self.home, "verify", "fix", "--commit", at)
+        self.ok(self.home, "wait", "--quest", "fix", "--timeout", "90", timeout=120)
+        self.ok(self.home, "land", "fix", "--upto", at, "--reason", "the fix alone is safe")
+        self.assertFalse(self.moved(wt, {"app.py": "print(1 + 1)\nprint('tail')\n"}))
+
+    def test_a_mutant_commit_moves_with_the_test_it_ran(self) -> None:
+        wt = self.fixed()
+        self.commit(wt, {"app.py": "print(1)\nprint('tail')\n"}, "mutant: revert the fix")
+        mutant_commit = self.git(wt, "rev-parse", "HEAD")
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", mutant_commit)
+        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+        self.proven(wt, self.submit(wt, *args, "--", "python3 check.py"))
+        self.assertTrue(self.moved(wt, {"lib/util.py": "X = 5\n"}))  # another file: it holds
+        self.assertFalse(self.moved(wt, {"check.py": "print('checked')\n"}))  # the test it ran changed
+
+
 class Guard(CampaignCase):
     ids = itertools.count()
 
@@ -203,7 +290,7 @@ class Guard(CampaignCase):
         state: str,
         *,
         started: bool,
-        tag: str = "",
+        tag: str = "A1",
         age_h: float = 3,
         mutant: bool = False,
     ) -> None:
@@ -245,15 +332,16 @@ class Guard(CampaignCase):
         for pid in ("spin", "churn", "fine", "proving"):
             self.started(pid, files=f"{pid}/**")
         self.fake_jobs("spin", self.heads(3), 4, "cancelled", started=False)  # 3 rounds never started
-        self.fake_jobs("churn", self.heads(4), 5, "done", started=True)  # 4 rounds ran, none met anything
+        self.fake_jobs("churn", self.heads(4), 5, "failed", started=True)  # 4 rounds ran, none met anything
         self.fake_jobs("fine", self.heads(2), 9, "cancelled", started=False)  # below both thresholds
-        self.fake_jobs("fine", self.heads(3), 9, "done", started=True)
+        self.fake_jobs("fine", self.heads(3), 9, "failed", started=True)
         self.fake_jobs("fine", self.heads(5), 9, "cancelled", started=False, age_h=30)  # outside the window
-        self.fake_jobs("proving", self.heads(3), 5, "done", started=True)
-        self.fake_jobs("proving", self.heads(1), 5, "done", started=True, tag="A1")  # A1 first met in the window
+        self.fake_jobs("proving", self.heads(3), 5, "failed", started=True)
+        self.fake_jobs("proving", self.heads(1), 5, "done", started=True)  # A1 met at this head, not the last
+        self.fake_jobs("proving", self.heads(5), 5, "cancelled", started=False, tag="")  # probes: never counted
         spin = (
             "spin queued evidence at 3 heads in the last 24 h: 3 rounds were cancelled before any job started, 0 ran "
-            "and met no new criterion, 0 newly met; 24 job-hours waiting. Lead: tell its contributor"
+            "and newly met no criterion, 0 newly met; 24 job-hours waiting. Lead: tell its contributor"
         )
         churn = (
             "churn queued evidence at 4 heads in the last 24 h: 0 rounds were cancelled before any job started, 4 ran"

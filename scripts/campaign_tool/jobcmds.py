@@ -545,7 +545,10 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     for j in map(resolve_job, a.jobs) if c is not None else ():
         for t in [t for t in j.get("tags", []) if t["campaign"] == c.ident and t["quest"] in c.quests]:
             if (why := iterating(c, t["quest"], j["spec"].get("task", ""))) and not still_holds(c, j):
-                force = "submit it again with `job submit --force`"
+                mutant = j["spec"].get("fails_without")
+                force = (
+                    "submit a new mutant at the round's end" if mutant else "submit it again with `job submit --force`"
+                )
                 die(f"{j['id']} is evidence for {t['quest']} {','.join(t['for'])}: {held(why, force)}")
     rerun_jobs(a.jobs, a.commit, a.minutes, c)
     return 0
@@ -567,7 +570,8 @@ def still_holds(c: Campaign | None, job: Json) -> str:
     if not job["spec"].get("fails_without") or not fails_without_met(job):
         return ""
     head = mutant_head(c, job["spec"])
-    return head if head and mutant_holds(job, [head]) else ""
+    quest = c.quests.get(job["spec"].get("quest", "")) if c is not None else None
+    return head if head and mutant_holds(job, [head], quest) else ""
 
 
 def rerun_jobs(
