@@ -1,6 +1,6 @@
 # file-holds: journal
 
-State: waiting on jobs 261124-113524-83863e 261124-113527-3ddb5d 261124-113530-bb27d2 261124-113534-9b0609
+State: waiting on jobs 261124-113530-bb27d2 261124-113534-9b0609
 Quest: .campaign/campaign-v3/quests/file-holds.md (the lead's; never edit it)
 
 Keep this current and commit it with the work, so a fresh contributor can continue. `campaign
@@ -26,7 +26,7 @@ Local (quiet light): `tests/run.py test_file_holds` OK.
 
 | Criterion | Evidence |
 |---|---|
-| A1 | 261124-113524-83863e (test at c972859); 261124-113527-3ddb5d (fails-without: quests.py from 4bbdcae) |
+| A1 | 261124-113524-83863e done exit 0 (test at c972859); 261124-113527-3ddb5d done (fails-without: quests.py from 4bbdcae; FAIL at `set relay files=src/relay.py,src/auth/service.cc should fail`) |
 | A2 | 261124-113530-bb27d2 (shard 1 of 2), 261124-113534-9b0609 (shard 2 of 2): 36 modules, alternating |
 | A3 | CI on the pushed branch at c972859 |
 
