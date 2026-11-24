@@ -589,8 +589,9 @@ def plan(
         for j in pending
         if eligible(j) and ready(j) and (j["state"].get("state") == "running" or slot_of(j["spec"]) not in busy)
     ]
-    # when the first drain falls due: light work running far past it would hold it for hours
-    due = min((due_at(j) for j in ready_drains), default=0.0)
+    # when the first drain falls due, or now while one holds the machine: light work running far past
+    # it would hold it for hours
+    due = min([*(due_at(j) for j in ready_drains), *(now for j in claimed if j not in pending)], default=0.0)
 
     def outlasts(j: Json) -> bool:
         """Whether light job J would run past the queued drain's due by more than DRAIN_HOLD."""

@@ -253,6 +253,14 @@ class Plan(unittest.TestCase):
         self.assertEqual(start[due["id"]]["phase"], "built")
         self.assertNotIn(aside["id"], start)
 
+    def test_light_work_running_far_past_a_drain_holding_the_machine_waits_for_it(self) -> None:
+        """An admitted drain is due now: a light job running past it by more than DRAIN_HOLD waits for it
+        to end, a short one does not."""
+        drain = self.job(1, "exclusive", "running", NOW - 600, phase="run", claimed=NOW - 60, started=NOW - 1)
+        short, long = (self.job(n, "light", "queued", NOW - 60, 1) for n in (2, 3))
+        long["spec"].update(minutes=600, long="a soak")
+        self.assertEqual(self.started(drain, short, long), [short["id"]])
+
     def test_one_drain_is_claimed_at_a_time(self) -> None:
         """Two drains with builds in a lull: the first's build is claimed, the second stays queued until the
         first ends."""
