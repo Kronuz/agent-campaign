@@ -19,6 +19,11 @@ not the story.
   go to `$JOB_OUT`) from scripts under `.scratch/<campaign>/review-<id>-<lens>/` (a one-line
   `.purpose`) in the home checkout, kept so the lead can rerun them. Every finding names its probe
   job or `file:line`.
+- A probe that fails is a blocking finding until you root-cause it to a finding whose fix has a
+  fails-without test. Show "unreachable" with a run, never argue it: "the caller cannot reach this
+  today" is not a reason to make it non-blocking.
+- On a re-review, once a finding's fix lands in a lifecycle or state machine, review the whole
+  mechanism, every state and event, not only the range your prompt names.
 - Stop when the named risks are answered. List non-blocking notes in a line each; do not chase
   improvements outside the quest. A consequential question you cannot settle is a blocking gap,
   not a reason to keep digging. A fix that would remove or narrow user-visible behavior is the

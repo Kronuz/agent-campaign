@@ -68,8 +68,9 @@ at every launch, choosing by the work, never by habit:
 | documentation | docs, guides, READMEs | economical, medium |
 | maintenance | one mechanical change across repositories | economical, medium |
 
-Reviewers use the strong tier at high effort (max for critical quests); for critical quests and
-the plan challenge, a reviewer from another model family when the harness offers one.
+Reviewers use the strong tier at high effort; every review of a critical quest, a re-review
+included, launches at effort max. For critical quests and the plan challenge, a reviewer from
+another model family when the harness offers one.
 
 The **frontier** tier, the most capable model a harness offers above strong, is for targeted hard
 or sensitive work only: research, a critical quest's review, and the design or review of a format,
@@ -233,7 +234,9 @@ The targets live in the **hunt list**, `.campaign/<campaign>/hunt.md` (the lead'
   suite job that passes it at the fixed commit confirms it: `campaign accept ID LENS --confirm
   C1=JOB --confirm C2=JOB`. A job confirms only if it passed at the accepted code in the quest's
   repository, and a blocking defect needs changed code. A fix that changes files the review never
-  saw goes back to the reviewer, unless `--fix-scope REASON` says why it adds no mechanism.
+  saw goes back to the reviewer, unless `--fix-scope REASON` says why it adds no mechanism; a fix in
+  a lifecycle is re-reviewed as the whole mechanism, not its diff. A failing probe stays blocking
+  until root-caused to a finding with a fails-without; the lead never relabels it non-blocking.
 - **Two fix rounds, then stop.** A third means the quest or design is wrong: re-plan or ask the
   owner.
 - **A design is reviewed once,** with one text fix round; the reviewer's probes, run as jobs, settle
