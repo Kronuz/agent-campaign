@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from pathlib import Path
 
 from harness import CampaignCase
 
@@ -134,6 +135,69 @@ class Sidebar(CampaignCase):
         calls.write_text("")
         self.ok(self.home, "set", "b", "status=blocked", "until=owner", "reason=owner")
         self.assertEqual(calls.read_text(), "", "outside cmux nothing is drawn")
+
+    def workspace_cmux(self) -> Path:
+        """A fake cmux logging each call as WORKSPACE>ARGS, with the lead's session in ws-lead."""
+        calls = self.root / "cmux-calls"
+        fake = self.root / "bin" / "cmux"
+        fake.write_text(
+            f'#!/bin/sh\nprintf "%s>" "$CMUX_WORKSPACE_ID" >> {calls}; printf "%s|" "$@" >> {calls}; echo >> {calls}\n'
+        )
+        fake.chmod(0o755)
+        self.env["CMUX_WORKSPACE_ID"] = "ws-lead"
+        self.env["CMUX_SURFACE_ID"] = "surface-lead"
+        self.ok(self.home, "new", "a", "--title", "a", "--risk", "low", "--files", "app.py", "--check", "unit=true")
+        self.ok(self.home, "start", "a")
+        self.assertIn("ws-lead>set-status|campaign-demo-a|a: active|--icon|hammer|", calls.read_text())
+        return calls
+
+    def test_only_the_recorded_lead_draws_the_sidebar(self) -> None:
+        calls = self.workspace_cmux()
+        self.env["CMUX_WORKSPACE_ID"] = "ws-other"  # another campaign's lead, looking in from the home
+        self.env["CMUX_SURFACE_ID"] = "surface-other"
+        calls.write_text("")
+        self.ok(self.home, "status")
+        self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md")
+        self.ok(self.home, "start", "b")
+        sent = [
+            line for line in calls.read_text().splitlines() if "|tree|" not in line
+        ]  # note_lead asks if the lead lives
+        self.assertEqual(sent, [], "a session that is not the lead sends nothing")
+        cache = json.loads((self.home / ".git" / "campaign-sidebar.json").read_text())
+        self.assertEqual([v.partition(" ")[0] for v in cache], ["ws-lead"], "and caches no view")
+
+    def test_the_leads_draw_clears_the_campaign_from_other_workspaces(self) -> None:
+        calls = self.workspace_cmux()
+        path = self.home / ".git" / "campaign-sidebar.json"
+        views = json.loads(path.read_text())
+        [(lead, drawn)] = views.items()
+        ident = lead.partition(" ")[2]
+        views[f"ws-stray {ident}"] = {**drawn, "status:campaign-demo-gone": "gone: active"}  # drawn before the rule
+        views["ws-stray /elsewhere/.campaign/other"] = {
+            "status:campaign-other": "other: 0 landed"
+        }  # another campaign's
+        path.write_text(json.dumps(views))
+        calls.write_text("")
+        self.ok(self.home, "status")
+        stray = sorted(line for line in calls.read_text().splitlines() if line.startswith("ws-stray>"))
+        self.assertEqual(
+            stray,
+            [
+                "ws-stray>clear-progress|",
+                "ws-stray>clear-status|campaign-demo-a|",
+                "ws-stray>clear-status|campaign-demo-gone|",
+                "ws-stray>clear-status|campaign-demo|",
+            ],
+        )
+        mine = [line for line in calls.read_text().splitlines() if line.startswith("ws-lead>") and "rename" not in line]
+        self.assertEqual(mine, [], "the lead's own view is unchanged")
+        after = json.loads(path.read_text())
+        self.assertEqual(
+            sorted(after), sorted([lead, "ws-stray /elsewhere/.campaign/other"]), "the stray view is dropped"
+        )
+        calls.write_text("")
+        self.ok(self.home, "status")
+        self.assertNotIn("ws-stray>", calls.read_text(), "and cleared once")
 
 
 class Map(CampaignCase):
