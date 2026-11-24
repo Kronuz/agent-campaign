@@ -589,9 +589,11 @@ def plan(
         for j in pending
         if eligible(j) and ready(j) and (j["state"].get("state") == "running" or slot_of(j["spec"]) not in busy)
     ]
-    # when the first drain falls due, or now while one holds the machine: light work running far past
-    # it would hold it for hours
-    due = min([*(due_at(j) for j in ready_drains), *(now for j in claimed if j not in pending)], default=0.0)
+    # an admitted drain holds the machine: quiet keeps new light holds out until it ends, and one
+    # started before its hold is granted would cut ahead of it
+    holding = any(j not in pending for j in claimed)
+    # when the first drain falls due: light work running far past it would hold it for hours
+    due = min((due_at(j) for j in ready_drains), default=0.0)
 
     def outlasts(j: Json) -> bool:
         """Whether light job J would run past the queued drain's due by more than DRAIN_HOLD."""
@@ -696,6 +698,8 @@ def plan(
             and now + expected_seconds(j["spec"], took) > free_at
         ):
             continue  # an overdue drain waits: only work that ends before the running work starts
+        if weight and holding:
+            continue  # a drain holds the machine: light work starts once it ends
         if weight and outlasts(j):
             continue  # it would run past a queued drain's due by more than DRAIN_HOLD: it waits for the drains
         if is_late and not is_heavy and late >= max(1, slots // 2):
