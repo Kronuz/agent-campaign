@@ -1,5 +1,5 @@
-"""Gate checks queued by verify: ahead of other light evidence, one identity with job submit, and a
-passed slow one held while the quest iterates."""
+"""Gate checks queued by verify: ahead of other light evidence, and one identity with job submit.
+The hold while a quest iterates is test_evidence_once's."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import re
 from pathlib import Path
 
 from harness import CampaignCase
-
-SLOW = "python3 lib/util.py"
 
 
 class GateChecks(CampaignCase):
@@ -64,74 +62,3 @@ class GateChecks(CampaignCase):
         r = self.ok(wt, "job", "submit", "--quest", "fix", "--", "python3", str(script))
         self.assertEqual(r.out.split(), [gate])  # stdout is only the id
         self.assertIn(f"reused {gate}", r.err)
-
-
-class SlowOnce(CampaignCase):
-    def iterating(self, slow_passes: bool = True) -> tuple[Path, str]:
-        """A quest with a quick and a slow gate check, verified at X, then a code change: (worktree, X)."""
-        wt = self.started("q", files="app.py,lib/**", check="unit:light:5=python3 app.py")
-        self.ok(self.home, "set", "q", "--check", f"slow:light:20={SLOW}")
-        x = self.commit(wt, {"lib/util.py": "X = 2\n" if slow_passes else "raise SystemExit(1)\n"})
-        self.ok(self.home, "verify", "q")
-        self.run_cli(self.home, "wait", "--quest", "q", "--timeout", "90", timeout=120)
-        self.commit(wt, {"app.py": "print(2)\n", "lib/util.py": "X = 3\n"})
-        return wt, x
-
-    def queued(self, out: str) -> dict[str, str]:
-        """Each check's first word after its name in verify's output: a job id, or "held,"."""
-        return dict(re.findall(r"^(unit|slow): (\S+)", out, re.M))
-
-    def test_a_slow_check_that_passed_earlier_is_held_while_iterating(self) -> None:
-        _, x = self.iterating()
-        out = self.ok(self.home, "verify", "q").out
-        found = self.queued(out)
-        self.assertRegex(found["unit"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-        self.assertEqual(found["slow"], "held,")
-        line = next(t for t in out.splitlines() if t.startswith("slow:"))
-        self.assertEqual(
-            line,
-            f"slow: held, slow and passed at {x[:12]}: it reruns at the round's end (State ready for review, or land)",
-        )
-        slow_jobs = [j for j in (self.root / "jobs").glob("*/spec.json") if f'"cmd": "{SLOW}"' in j.read_text()]
-        self.assertEqual(len(slow_jobs), 1)  # only the run at X
-
-    def test_at_ready_for_review_the_slow_check_runs(self) -> None:
-        wt, _ = self.iterating()
-        self.ready_for_review(wt, "q")
-        found = self.queued(self.ok(self.home, "verify", "q").out)
-        self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-        self.assertNotEqual(found["slow"], found["unit"])
-
-    def test_force_runs_the_slow_check(self) -> None:
-        self.iterating()
-        found = self.queued(self.ok(self.home, "verify", "q", "--force").out)
-        self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-
-    def test_a_slow_check_that_failed_is_not_held(self) -> None:
-        self.iterating(slow_passes=False)
-        found = self.queued(self.ok(self.home, "verify", "q").out)
-        self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-
-    def test_a_slow_check_that_never_ran_is_not_held(self) -> None:
-        wt = self.started("q", files="app.py,lib/**", check="unit:light:5=python3 app.py")
-        self.ok(self.home, "set", "q", "--check", f"slow:light:20={SLOW}")
-        self.commit(wt, {"app.py": "print(2)\n"})
-        found = self.queued(self.ok(self.home, "verify", "q").out)
-        self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-
-    def test_a_slow_check_whose_last_run_failed_is_not_held_though_an_earlier_one_passed(self) -> None:
-        wt, _ = self.iterating()
-        self.commit(wt, {"lib/util.py": "raise SystemExit(1)\n"})
-        self.ok(self.home, "verify", "q", "--force")
-        self.run_cli(self.home, "wait", "--quest", "q", "--timeout", "90", timeout=120)
-        self.commit(wt, {"lib/util.py": "X = 4\n"})
-        found = self.queued(self.ok(self.home, "verify", "q").out)
-        self.assertRegex(found["slow"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")
-
-    def test_a_check_under_twenty_minutes_is_never_held(self) -> None:
-        wt = self.started("q", files="app.py,lib/**", check="unit:light:19=python3 app.py")
-        self.commit(wt, {"app.py": "print(2)\n"})
-        self.verified("q")
-        self.commit(wt, {"app.py": "print(3)\n"})
-        found = self.queued(self.ok(self.home, "verify", "q").out)
-        self.assertRegex(found["unit"], r"^\d{6}-\d{6}-[0-9a-f]{6}$")

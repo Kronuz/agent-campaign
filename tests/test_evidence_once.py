@@ -23,6 +23,10 @@ def set_state(case: CampaignCase, wt: Path, pid: str, state: str) -> None:
 
 
 class Hold(CampaignCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.env.pop("CAMPAIGN_EVIDENCE_HOLD")
+
     def iterating(self) -> Path:
         wt = self.started("fix", files="app.py,lib/**")
         set_state(self, wt, "fix", "working")
@@ -204,7 +208,7 @@ class ExaminedJobs(CampaignCase):
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
         self.git(self.home, "commit", "-qam", "criteria")
         self.commit(wt, {"app.py": "print(2)\n"})
-        old = self.submit(wt, "--quest", "fix", "--", "python3 app.py")
+        old = self.submit(wt, "--quest", "fix", "--", "python3 app.py | grep -q .")  # not the unit check
         self.ok(self.home, "wait", old, "--timeout", "60")
         self.commit(wt, {"app.py": "print(2)  # moved on\n"})
         passed = self.submit(wt, "--quest", "fix", "--", TEST)
@@ -220,5 +224,31 @@ class ExaminedJobs(CampaignCase):
         self.assertIn(why, self.ok(self.home, "brief").out)
         examined = f"| A1 | {passed} |\n\nExamined, not proof: {failed} (failed), {old} (older code).\n"
         self.commit(wt, {rel: text.replace("| <A1> | <from `campaign brief`> |", examined)})
+        self.ok(self.home, "verify", "fix")
+        self.run_cli(self.home, "wait", "--quest", "fix", "--timeout", "90")  # exits 1: the examined job failed
+        self.ok(self.home, "land", "fix")
+
+
+class CitedInFlight(CampaignCase):
+    def test_land_waits_for_a_cited_job_still_queued_or_running(self) -> None:
+        """review-sweeps' A3: tags proved it while its row cited a shard still running."""
+        wt = self.started("fix", files="app.py")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        passed = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
+        self.ok(self.home, "wait", passed, "--timeout", "60")
+        shard = self.submit(wt, "--", "sleep 120")  # no quest: verify's wait leaves it running
+        journal = wt / ".campaign/demo/journal/fix.md"
+        text = re.sub(r"^State:.*$", "State: ready for review", journal.read_text(), count=1, flags=re.M)
+        row = f"| A1 | {passed}; shard {shard}: pending |"
+        self.commit(wt, {".campaign/demo/journal/fix.md": text.replace("| <A1> | <from `campaign brief`> |", row)})
         self.verified("fix")
+        state = self.job(shard)["state"]
+        self.assertIn(state, ("queued", "running"))
+        why = f"A1: {shard} {state}: land waits for its result"
+        self.assertIn(why, self.fails(self.home, "land", "fix", match="criteria without evidence").text)
+        self.assertIn(why, self.ok(self.home, "brief").out)
+        self.ok(self.home, "job", "cancel", shard)
         self.ok(self.home, "land", "fix")

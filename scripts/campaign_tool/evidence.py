@@ -272,6 +272,27 @@ def evidence(
     return rows
 
 
+def cited_in_flight(journals: dict[str, str], wanted: Collection[str]) -> dict[str, Json]:
+    """For each criterion whose Evidence rows cite a job still queued or running, a row that keeps it
+    unmet: its proof is not in yet, whatever else proves it."""
+    out: dict[str, Json] = {}
+    for name, text in journals.items():
+        for row in section(text, "Evidence").splitlines():
+            cells = table_cells(row)
+            if len(cells) < 2:
+                continue
+            for jid in dict.fromkeys(JOB_ID.findall(" ".join(cells[1:]))):
+                d = jobs_dir() / jid
+                state = load_job(d)["state"].get("state") if (d / "spec.json").exists() else None
+                if state not in ("queued", "running"):
+                    continue
+                for cid in re.findall(r"\bA\d+\b", cells[0]):
+                    if cid in wanted:
+                        flight = out.setdefault(cid, {"journal": name, "evidence": "", "met": False, "why": []})
+                        flight["why"].append(f"{jid} {state}: land waits for its result")
+    return out
+
+
 def stray_rows(journals: dict[str, str], wanted: Collection[str]) -> list[str]:
     """Criterion rows (a table row whose first cell names a criterion) under another heading than
     Evidence, where landing never reads them."""
@@ -427,7 +448,8 @@ def criteria_evidence(
 ) -> dict[str, list[Json]]:
     """Each criterion's evidence at one of COMMITS: the jobs tagged for it or the gate check its text
     names, CI for a [ci] one (waived when not CI), else its rows in the journals' Evidence tables
-    (journals written before tags, and the other kinds)."""
+    (journals written before tags, and the other kinds). A row citing a job still queued or running
+    keeps its criterion unmet (`cited_in_flight`)."""
     wanted = criteria(c, pid)
     p = c.quests[pid]
     repo = c.repo(p)
@@ -441,7 +463,7 @@ def criteria_evidence(
     )
     named = {x: named_check(c, p, w["whole"], commits) for x, w in wanted.items() if w["kind"] == "job"}
     ran = ci_row(c, p, commits, ci) if any(w["kind"] == "ci" for w in wanted.values()) else {}
-    return {
+    found = {
         x: [tagged_row(repo, commits, tags[x], named.get(x))]
         if x in tags
         else [ran]
@@ -449,6 +471,9 @@ def criteria_evidence(
         else [n for n in [named.get(x)] if n] + rows[x]
         for x, w in wanted.items()
     }
+    for x, flight in cited_in_flight(journals, wanted).items():
+        found[x] = [flight, *({**r, "met": False} for r in found[x])]
+    return found
 
 
 def unmet_why(rows: dict[str, list[Json]], unproven: Collection[str]) -> str:

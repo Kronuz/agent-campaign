@@ -179,6 +179,7 @@ class CampaignCase(unittest.TestCase):
             QUIET_LIGHT_SLOTS="4",
             CAMPAIGN_LIGHT_JOBS="4",
             CAMPAIGN_AUTO_PRUNE="0",  # a test that wants the worker's daily prune turns it on
+            CAMPAIGN_EVIDENCE_HOLD="0",  # evidence queues at every State; test_evidence_once's Hold holds it
             CAMPAIGN_DISK_WARN_GB="0",
             CAMPAIGN_CI_SECONDS="0",  # a gh stub's new answer counts at once; the CI cache's test sets it
             GIT_AUTHOR_NAME="Test",

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from .ci import check_evidence, ci_carried, ci_covers, ci_gate
 from .core import FAILED, CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
-from .evidence import criteria_evidence, evidence_shape, job_problem, rerun_hint
+from .evidence import criteria_evidence, evidence_shape, job_problem, rerun_hint, unmet_why
 from .jobs import job_summary, load_job, quest_jobs
 from .journals import id_ranges, journal_gaps, journal_state, journals_at, landing_journals
 from .mail import answered, inbox
@@ -285,7 +285,7 @@ def landing_gap_kinds(
         gaps.append(
             Gap(
                 "criteria",
-                f"criteria without evidence at {target[:12]}: {id_ranges(unproven)} (`campaign status {pid}` lists them)",
+                f"criteria without evidence at {target[:12]}: {id_ranges(unproven)} ({unmet_why(rows, unproven)}; `campaign status {pid}` lists them)",
             )
         )
     unanswered = [m["id"] for m in inbox(c, pid) if not answered(m, carried.values())] if final else []

@@ -59,7 +59,7 @@ class EvidenceHints(CampaignCase):
         self.assertIn("A1  met", self.ok(self.home, "status", "b").out)
         self.ok(self.home, "land", "b")
 
-    def test_a_fails_without_row_names_its_mutant_not_a_rerun_at_the_head(self) -> None:
+    def test_a_fails_without_row_keeps_its_mutant_and_asks_for_no_rerun(self) -> None:
         wt = self.started("fix", files="app.py")
         self.criterion("fix", "- A1 prints two: a probe\n- A2 prints two: a regression test")
         mutant = self.git(self.home, "rev-parse", "main")  # the code without the fix
@@ -72,9 +72,8 @@ class EvidenceHints(CampaignCase):
         self.ok(self.home, "wait", probe, pre)
         self.commit(wt, {".campaign/demo/journal/fix.md": f"## Evidence\n\n| A1 | {probe}, {pre} |\n"})
         self.verified("fix")
-        refused = self.fails(self.home, "land", "fix", match="evidence jobs ran other code")
-        self.assertIn(f"`campaign job rerun {pre} --commit refs/campaign/demo/fix-a1`", refused.text)
-        self.assertNotIn(f"`campaign job rerun {pre}`", refused.text)
+        self.assertNotIn("campaign job rerun", self.ok(self.home, "brief", "fix").out)
+        self.ok(self.home, "land", "fix")  # the run at main still holds: the code it lacks is the fix
 
     def test_a_bare_ci_citation_names_the_backtick_form(self) -> None:
         wt = self.started("fix", files="app.py")

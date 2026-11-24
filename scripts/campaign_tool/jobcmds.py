@@ -138,6 +138,8 @@ def iterating(c: Campaign, pid: str, task: str = "") -> str:
     """The committed journal State of a quest (or its task) while it iterates; "" at State ready for
     review, the round's end, when its evidence and gate checks run, and for a journal that declares no
     State (none, or no State line)."""
+    if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
+        return ""
     p = c.quests[pid]
     t = p.get("tasks", {}).get(task) if task else None
     name, branch = (f"{pid}--{task}", t["branch"]) if t else (pid, p.get("branch", ""))
