@@ -315,17 +315,15 @@ def cmd_set(a: argparse.Namespace) -> int:
                     f"needs, after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, "
                     "--later and --inputs"
                 )
-        forced = ""
         if writes(p) and (fresh := [x for x in clashes(c, a.id) if x not in held]):
             shared = "; ".join(
                 f"{x} ({', '.join(g for g in c.quests[x]['files'] if overlap(p['files'], [g])) or 'every file'})"
                 for x in fresh
             )
-            if not a.force:
-                die(f"{a.id}'s files would overlap {shared} (one writer per file set): narrow files, or --force REASON")
-            forced = f" (forced over {', '.join(fresh)}: {a.force})"
-        elif a.force:
-            die("--force: these files overlap no other quest's held files")
+            die(
+                f"{a.id}'s files would overlap {shared} (one writer per file set): narrow files, "
+                f"or wait for {'them' if len(fresh) > 1 else 'it'} with needs="
+            )
         for other in cross_overlaps(c, a.id) if writes(p) else []:
             if other not in crossed:
                 print(
@@ -408,7 +406,6 @@ def cmd_set(a: argparse.Namespace) -> int:
                 + [f"inputs={x}" for x in a.inputs]
             )
             + (f" (weakened: {'; '.join(weakened)}; why: {a.weaken})" if weakened else "")
-            + forced
         )
         if any(x == "status=blocked" for x in a.assignments):
             notify(f"Blocked: {a.id}", p.get("reason", ""))

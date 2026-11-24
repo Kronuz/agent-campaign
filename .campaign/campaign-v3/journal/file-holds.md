@@ -1,6 +1,6 @@
 # file-holds: journal
 
-State: blocked on lead: add scripts/campaign_tool/cli.py to file-holds' files (set lacks --force)
+State: ready for review
 Quest: .campaign/campaign-v3/quests/file-holds.md (the lead's; never edit it)
 
 Keep this current and commit it with the work, so a fresh contributor can continue. `campaign
@@ -9,52 +9,39 @@ ready for review, fixing <findings>, blocked on <who>: <what>.
 
 ## Doing
 
-Waiting for the lead to widen the file set by scripts/campaign_tool/cli.py.
+Evidence round at the head: A1 and its fails-without, two suite shards, CI.
 
 ## Next
 
-1. Commit the one cli.py line: `p.add_argument("--force", metavar="REASON", help="widen files
-   over a quest that holds them: recorded")` before `p.set_defaults(fn=cmd_set)` (cli.py:175).
-2. Submit A1 (`python3 tests/run.py test_file_holds`) and its fails-without at main's
-   quests.py; the two suite shards; push for CI. State "ready for review", then "waiting on jobs".
+1. Record the round's jobs below; hand back.
 
 ## Blocked on
 
-Lead: `set` has no `--force` (contract: "gains --force REASON only if it lacks one"), and its
-parser is in scripts/campaign_tool/cli.py, outside the file set. No live quest holds cli.py
-(checked state.json: close-readers-quiet, drain-yields, evidence-once, fails-without-honest,
-todo-ci-waiter). Recommendation: `campaign set file-holds
-files=scripts/campaign_tool/quests.py,scripts/campaign_tool/state.py,scripts/campaign_tool/cli.py,tests/test_file_holds.py`.
-Until then cmd_set reads `a.force`, which `set`'s parser does not define: the branch is not
-runnable and must not land.
+Nothing. (Earlier: `set` lacks --force and cli.py is outside the set. Lead's ruling: no flag is
+added; `set` refuses outright. The quest file says so in Contracts and A1.)
 
 ## Evidence
 
-Local only so far (quiet light, on a scratch copy with the cli.py line):
-`tests/run.py -j 2 test_file_holds test_quests`: 28 tests OK. The local no-fix run was
-stopped unfinished (machine busy): the fails-without job is the evidence. Jobs follow once
-cli.py is in the set.
+Local (quiet light): `tests/run.py test_file_holds` OK.
 
 | Criterion | Evidence |
 |---|---|
-| A1 | <no evidence yet> |
-| A2 | <no evidence yet> |
-| A3 | <no evidence yet> |
+| A1 | <jobs below> |
+| A2 | <jobs below> |
+| A3 | <CI> |
 
 ## Result
 
 `set ID files=` on a quest that holds files (`writes`) refuses a set whose `clashes` gains a
-quest it did not have, naming each with the globs it shares ("split (src/auth/**)"); `--force
-REASON` passes and the state commit records "(forced over split: REASON)". New cross-campaign
-overlaps warn, as `start` does. Code: scripts/campaign_tool/quests.py cmd_set; test:
-tests/test_file_holds.py.
+quest it did not have, naming each with the globs they share ("split (src/auth/**)"), and
+changes nothing; the refusal says to narrow files or wait for the holder with needs=. New
+cross-campaign overlaps warn, as `start` does. No flag or record format changes. Code:
+scripts/campaign_tool/quests.py cmd_set; test: tests/test_file_holds.py.
 
 ## Rulings I made
 
-- Narrowing is "gains no clash": only quests that clash after the set and did not before refuse.
-  A quest forced over X keeps X without --force while it narrows or keeps its files.
-- --force is recorded in the state commit message, like --weaken's reason: no record format
-  change (the quest's `reason` is popped by the next set, and `history` is risk/lenses/checks).
-- --force with no new clash is refused ("--force: these files overlap no other quest's held
-  files"), as `--weaken` with nothing to weaken is.
+- Narrowing is "gains no clash": only quests that clash after the set and did not before
+  refuse. A quest started over X with `start --force` keeps X while it narrows or keeps its
+  files.
 - A planned quest's set never refuses: it holds nothing; `start` checks it.
+- The fails-without runs the same test with quests.py from the base, agent-campaign:4bbdcae.
