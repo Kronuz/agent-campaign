@@ -328,7 +328,10 @@ def cmd_set(a: argparse.Namespace) -> int:
             die("--force: these files overlap no other quest's held files")
         for other in cross_overlaps(c, a.id) if writes(p) else []:
             if other not in crossed:
-                print(f"warning: {a.id}'s files may overlap {other}: order them (after={other}) or narrow files", file=sys.stderr)
+                print(
+                    f"warning: {a.id}'s files may overlap {other}: order them (after={other}) or narrow files",
+                    file=sys.stderr,
+                )
         dropped = edit_checks(p, a.check, a.later)
         if a.check or a.later:
             kept = {x["cmd"] for x in deferred(p)}  # a removed deferred check's runs stop counting

@@ -31,8 +31,9 @@ runnable and must not land.
 ## Evidence
 
 Local only so far (quiet light, on a scratch copy with the cli.py line):
-`tests/run.py -j 2 test_file_holds test_quests`: 28 tests OK; test_file_holds with main's
-quests.py: see below once recorded. Jobs follow once cli.py is in the set.
+`tests/run.py -j 2 test_file_holds test_quests`: 28 tests OK. The local no-fix run was
+stopped unfinished (machine busy): the fails-without job is the evidence. Jobs follow once
+cli.py is in the set.
 
 | Criterion | Evidence |
 |---|---|
