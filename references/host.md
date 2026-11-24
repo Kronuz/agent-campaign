@@ -266,6 +266,7 @@ landed journal.
   `campaign status` update the bar (the current milestone's quests), a `campaign-<name>`
   pill (the whole campaign) and a pill per quest in flight, with 🔥 and a count when jobs failed at
   its current code and no journal names them, sending only what changed. Only the recorded lead's
-  session draws them, in its workspace, and its draw clears them from any other; landings, blocked
-  quests and new messages notify. `quiet` adds a pill per hold, in the workspace that submitted
+  session draws them, in its workspace, and its draw clears them from any other (where cmux's one
+  bar per workspace is then redrawn by its own campaign); landings, blocked quests and new messages
+  notify. `quiet` adds a pill per hold, in the workspace that submitted
   the job, and notifies when a hold ran 5 minutes or more.

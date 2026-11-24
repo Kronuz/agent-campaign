@@ -36,8 +36,20 @@ from .core import (
 from .jobs import all_jobs, quest_jobs
 from .journals import decisions, journal_place, journal_text, milestone_groups, state_of
 from .mail import recorded_lead, settle_mail
-from .repo import ancestor, code_tree, frozen, has_ref, main_branch, rev, toplevel
-from .state import branches, clashes, cycles, follow, foreign, locate, register, select, unstarted_waits, validate
+from .repo import ancestor, code_tree, common_dir, frozen, has_ref, main_branch, rev, toplevel
+from .state import (
+    branches,
+    clashes,
+    cycles,
+    follow,
+    foreign,
+    locate,
+    register,
+    registry,
+    select,
+    unstarted_waits,
+    validate,
+)
 
 
 def find_campaign(cwd: Path) -> Campaign:
@@ -384,8 +396,11 @@ def sidebar(c: Campaign) -> None:
     with contextlib.suppress(OSError, ValueError):
         views = json.loads(cache.read_text())
     views = views if isinstance(views, dict) else {}
-    for other in [v for v in views if v != view and v.partition(" ")[2] == c.ident]:
+    strays = [v for v in views if v != view and v.partition(" ")[2] == c.ident]
+    for other in strays:
         unsidebar(views.pop(other), other.partition(" ")[0])  # drawn there by an earlier session
+    if strays:
+        forget_bars({v.partition(" ")[0] for v in strays}, views, cache)
     seen = views.get(view, {})
     unsidebar(seen.keys() - want.keys(), None)
     for key, value in want.items():
@@ -400,6 +415,29 @@ def sidebar(c: Campaign) -> None:
         views.pop(workspace, None)
         views[view] = want
         cache.write_text(json.dumps(views))
+
+
+def forget_bars(workspaces: set[str], views: dict[str, dict[str, str]], cache: Path) -> None:
+    """cmux keeps one bar per workspace, so clearing one there may clear another campaign's: every
+    cached view in WORKSPACES, in this cache (VIEWS) and every registered home's, forgets its bar."""
+
+    def drop(held: dict[str, dict[str, str]]) -> bool:
+        hit = [shown for v, shown in held.items() if v.partition(" ")[0] in workspaces and "bar" in shown]
+        for shown in hit:
+            del shown["bar"]
+        return bool(hit)
+
+    drop(views)
+    homes: set[Path] = set()
+    with contextlib.suppress(OSError):
+        homes = {Path(f.read_text().strip()) for f in registry().iterdir()}
+    for path in {Path(common_dir(h)) / "campaign-sidebar.json" for h in homes if h.is_dir() and common_dir(h)} - {
+        cache
+    }:
+        with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+            held = json.loads(path.read_text())
+            if drop(held):
+                atomic_write(path, json.dumps(held))
 
 
 def unsidebar(keys: Collection[str], workspace: str | None) -> None:
