@@ -33,7 +33,7 @@ from .core import (
     read_json_shared,
     write_json,
 )
-from .jobs import BUILD_FILES, all_jobs, claim, finish, job_key, key_links, load_job, named_paths, resolve_job
+from .jobs import BUILD_FILES, all_jobs, claim, finish, job_key, key_links, load_job, named_code, resolve_job
 from .repo import ancestor, blobs, changed, is_meta, main_branch, merge_base, on_commits, rev, tree_map
 
 
@@ -101,16 +101,6 @@ def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...], cwd: str) -> bool
     return not any(fnmatch.fnmatchcase(parts[-1], g) for g in (*BUILD_FILES, *DEPENDENCY_LISTS)) and any(
         fnmatch.fnmatchcase(path, g) for g in DOC_PATHS
     )
-
-
-@functools.lru_cache(maxsize=1 << 12)
-def named_code(cmd: str, cwd: str) -> tuple[str, ...]:
-    """The paths a command run in CWD makes code, each with what lies under it: every path it names
-    (named_paths) and that path's folder below the root (a script there reads its siblings)."""
-    out: list[str] = []
-    for x in named_paths(cmd, cwd):
-        out += [x, *([x.rsplit("/", 1)[0]] if "/" in x else [])]
-    return tuple(dict.fromkeys(out))
 
 
 def tested_docs(spec: Json) -> list[str]:

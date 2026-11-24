@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -75,10 +76,20 @@ def named_paths(cmd: str, cwd: str) -> list[str]:
     return [x for x in dict.fromkeys(out) if x and not x.startswith("..")]
 
 
+@functools.lru_cache(maxsize=1 << 12)
+def named_code(cmd: str, cwd: str) -> tuple[str, ...]:
+    """The paths a command run in CWD makes code, each with what lies under it: every path it names
+    (named_paths) and that path's folder below the root (a script there reads its siblings)."""
+    out: list[str] = []
+    for x in named_paths(cmd, cwd):
+        out += [x, *([x.rsplit("/", 1)[0]] if "/" in x else [])]
+    return tuple(dict.fromkeys(out))
+
+
 def input_files(repo: Path, commit: str, spec: Json) -> list[str]:
     """The `mode sha path` entries of COMMIT that a job with declared inputs depends on: what its
-    globs match, the build files, and the paths its command names (a named folder, all of it)."""
-    globs, named = spec["inputs"], named_paths(spec["cmd"], spec.get("cwd", ""))
+    globs match, the build files, and what its command makes code (named_code)."""
+    globs, named = spec["inputs"], named_code(spec["cmd"], spec.get("cwd", ""))
 
     def wanted(path: str) -> bool:
         if is_meta(path):

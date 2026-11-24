@@ -22,48 +22,48 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `mirrors.py` (171 lines): Git mirrors: a job's git reaches GitHub through one bare mirror per
   repository. Boundary: the git shim and the mirrors it fills, a mechanism of its own
   (references/host.md). Opened alone when a job's clone or fetch misbehaves.
-- `jobs.py` (389 lines): The job store: a job's identity, its records, the index of terminal jobs,
+- `jobs.py` (400 lines): The job store: a job's identity, its records, the index of terminal jobs,
   and the tags that make it evidence. Boundary: the on-disk job record and its key. Opened alone to
   change what identifies a job or how its records are read and indexed.
-- `reuse.py` (516 lines): Evidence reuse: which job speaks for a commit (its own run, an ancestor's,
+- `reuse.py` (506 lines): Evidence reuse: which job speaks for a commit (its own run, an ancestor's,
   a twin whose read set is unchanged), and queueing jobs. Boundary: the rules for whether a result
   counts at other code, and submit, which applies them. Opened alone when a job is rerun that should
   not be, or reused that should not be.
-- `runner.py` (583 lines): Running jobs: the worker's and jobs' processes, checkouts and build-slot
+- `runner.py` (681 lines): Running jobs: the worker's and jobs' processes, checkouts and build-slot
   locks, one job's run under quiet, its result, and dead runners. Boundary: one job's life from
   claim to result, with the processes and slots it holds. Opened alone when a job's run, kill,
   checkout or slot goes wrong.
-- `state.py` (510 lines): Campaign state: finding a campaign, validating its state, and the
+- `state.py` (538 lines): Campaign state: finding a campaign, validating its state, and the
   relations between quests. Boundary: state.json and what follows from it alone (dependencies,
   file-set overlaps, checks, lenses). Opened alone to add a quest field or change a rule between
   quests.
 - `mail.py` (300 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
   outboxes between machines. Boundary: how a message is stored, delivered and closed. Opened alone
   when a message is lost, repeated or never wakes its reader.
-- `alarm.py` (111 lines): The owner's alarm: a lead whose session holds one tool call unanswered (a
+- `alarm.py` (134 lines): The owner's alarm: a lead whose session holds one tool call unanswered (a
   permission prompt nobody sees), read from Claude Code's transcript. Boundary: reading a lead's
   transcript and telling the owner once per call. Opened alone when a harness changes its transcript
   or the alarm fires wrongly.
-- `journals.py` (187 lines): Journals and the lead's Markdown records: where each journal lives, its
+- `journals.py` (181 lines): Journals and the lead's Markdown records: where each journal lives, its
   sections, and PLAN.md. Boundary: reading the Markdown files agents and the lead write. Opened
   alone to change where a journal lives or how a section or table is parsed.
-- `ci.py` (262 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
+- `ci.py` (545 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
   once per command. Boundary: the tool's only conversation with GitHub (`gh`). Opened alone when CI
   evidence is missing or a command waits on GitHub.
-- `evidence.py` (410 lines): Criteria and their evidence: the quest file's criteria, journal rows,
+- `evidence.py` (449 lines): Criteria and their evidence: the quest file's criteria, journal rows,
   tagged jobs and checks. Boundary: what proves an acceptance criterion. Opened alone to change what
   counts as evidence or how the Evidence table is generated.
-- `reviews.py` (396 lines): Reviews and landing gaps: verdicts, acceptances, drift, and what keeps a
+- `reviews.py` (456 lines): Reviews and landing gaps: verdicts, acceptances, drift, and what keeps a
   quest or task from landing. Boundary: the landing gate's judgment, short of landing itself. Opened
   alone when land refuses, or lets through, what it should not.
-- `campaign.py` (494 lines): The `Campaign`: its state loaded and saved by the one writer, the
+- `campaign.py` (498 lines): The `Campaign`: its state loaded and saved by the one writer, the
   overview, what moves each quest in flight, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
   Opened alone to change how state is written, locked or summarized in the sidebar.
 - `leads.py` (274 lines): Lead notices across campaigns: noting a lead (only from the home, and only
   when no live lead is recorded), redelivering stuck messages,
   telling peers and dependents. Boundary: notices that open other campaigns on the machine. Opened
   alone when a lead is not told about another campaign's work or a dropped dependency.
-- `broadcast.py` (282 lines): Broadcasts to every other campaign's lead: the skill's own changes (a
+- `broadcast.py` (303 lines): Broadcasts to every other campaign's lead: the skill's own changes (a
   commit landing on its main, its install moving), each announced once per receiving campaign, and
   `message --all`. Boundary: what every campaign on the machine must hear, and the record that
   makes it exactly once. Opened alone when a lead misses or doubles a change notice.
@@ -74,7 +74,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   health, and its loop. Boundary: scheduling, one unit: the plan, the charges it reads and the loop
   that runs it only make sense together. Opened alone to change who runs next, or to read why the
   queue is slow.
-- `todo.py` (126 lines): The lead's to-do list: what nothing moves without, critical path first,
+- `todo.py` (135 lines): The lead's to-do list: what nothing moves without, critical path first,
   each item with its command, which status, brief and every wait end with. Boundary: turning the
   overview, what moves each quest and the landing gaps into the lead's next commands. Opened alone
   to add a kind of item or change its order.
@@ -85,28 +85,28 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   against the harness's own record, and the cmux workspace named the same. Boundary: reading a
   harness's record of a session's name and the one line that says how to fix it. Opened alone when a
   harness changes where or how it records a session's name.
-- `status.py` (738 lines): Status and brief: the problems status reports, a quest as status shows
+- `status.py` (742 lines): Status and brief: the problems status reports, a quest as status shows
   it, and both commands' output. Boundary: what the lead and agents read about the campaign's
   present. Opened alone to add a problem status reports or change what status or brief prints.
 - `usage.py` (608 lines): Usage: agents' token use and cost, read from what the harnesses and jobs
   already record. Boundary: the usage command and its per-harness readers (Claude Code, Codex,
   Copilot). Opened alone when a harness changes its log format or a cost is wrong.
-- `wait.py` (285 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
+- `wait.py` (288 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
   arrives, or the lead's to-do list has an item it has not been shown. Boundary: the wait command and what wakes it. Opened alone when a wait wakes too late or
   not at all.
-- `jobcmds.py` (546 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
+- `jobcmds.py` (631 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
   `message`. Boundary: the `job` and `message` command lines over the job store and mail. Opened
   alone to change a job command's options or output.
-- `checks.py` (190 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
+- `checks.py` (202 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
   quest's gate checks as jobs. Boundary: the two commands that audit a campaign and queue its gates.
   Opened alone to add a consistency check or change what verify queues.
-- `land.py` (541 lines): Landing: version pins, task merges, merging main, landing a quest, and
+- `land.py` (575 lines): Landing: version pins, task merges, merging main, landing a quest, and
   cleaning up after it. Boundary: the commands that move main and the branches. Opened alone to
   change how a quest or task lands, or what land leaves behind.
-- `quests.py` (567 lines): The quest commands: `init`, `config`, `new`, `get`, `set`, `start` and
+- `quests.py` (568 lines): The quest commands: `init`, `config`, `new`, `get`, `set`, `start` and
   `accept`. Boundary: the commands that create and edit quests and the campaign's settings. Opened
   alone to add a command option or a settable field.
-- `cli.py` (627 lines): The command line: the parser and `main`. Its docstring is the command's
+- `cli.py` (657 lines): The command line: the parser and `main`. Its docstring is the command's
   `--help` description. Boundary: argument parsing and dispatch, kept apart from what the commands
   do. Opened alone to add a command or change its help.
 
@@ -136,31 +136,31 @@ The campaign tests:
 
 - `test_quests.py` (377 lines): `Quests`, `Ownership`. Creating, starting and owning quests and
   their files.
-- `test_evidence.py` (728): `Evidence`. Criteria and the jobs that prove them. One class of 700
+- `test_evidence.py` (739None): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
-- `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
+- `test_landing.py` (650None): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
   Everything that moves main: merging, the direct path, CI and push, interrupted landings, clean-up.
-- `test_reviews.py` (370): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
+- `test_reviews.py` (370None): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
   the review binds to.
-- `test_campaigns.py` (574): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
+- `test_campaigns.py` (670None): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
   queue they share.
-- `test_usage.py` (337): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
-- `test_messages.py` (220): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
+- `test_usage.py` (337None): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
+- `test_messages.py` (220None): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
   contributors, and the home they share.
-- `test_views.py` (225): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
+- `test_views.py` (233None): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
   show.
 
 The job queue tests:
 
-- `test_job_scheduling.py` (819): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
+- `test_job_scheduling.py` (819None): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
   job runs next and on how many cores.
-- `test_job_reuse.py` (504): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
+- `test_job_reuse.py` (504None): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
   fixtures they share. When a finished job is reused for another commit.
-- `test_job_lifecycle.py` (406): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
+- `test_job_lifecycle.py` (406None): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
   limits, crash, pruning and disk use.
-- `test_job_store.py` (252): `WorkerCache`, `JobIndex`, `CiCache`, `GitMirrors`, and the `recording`
+- `test_job_store.py` (255None): `WorkerCache`, `JobIndex`, `CiCache`, `GitMirrors`, and the `recording`
   helper. The caches and indexes beside the job records.
 
-Unchanged: `test_quiet.py` (424), `test_scenarios.py` (291), `test_pace.py` (155),
-`test_cli.py` (100), `test_install.py` (72), `test_agents.py` (62), `test_context.py` (37), each one
+Unchanged: `test_quiet.py` (424None), `test_scenarios.py` (291None), `test_pace.py` (155None),
+`test_cli.py` (114None), `test_install.py` (72None), `test_agents.py` (62None), `test_context.py` (37None), each one
 topic.

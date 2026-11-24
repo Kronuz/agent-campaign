@@ -270,6 +270,17 @@ class Evidence(CampaignCase):
         self.commit(named, {"tools/probe.sh": "true  # the script the command runs\n"})
         self.assertIn("check probe is not green", self.ok(self.home, "brief", "named").out)
 
+    def test_input_scoped_evidence_is_void_when_a_sibling_of_its_script_changes(self) -> None:
+        """The script a command names runs the files beside it: they are inputs, whatever the globs say."""
+        wt = self.started("sib", files="tools/**", check="unit=python3 app.py")
+        self.ok(self.home, "set", "sib", "--check", "unit=python3 app.py", "--check", "probe=sh tools/probe.sh")
+        self.ok(self.home, "set", "sib", "--inputs", "probe=lib/**", "--weaken", "the probe reads lib/")
+        self.commit(wt, {"tools/probe.sh": 'sh "$(dirname "$0")/helper.sh"\n', "tools/helper.sh": "true\n"})
+        self.verified("sib")
+        self.assertNotIn("check probe is not green", self.ok(self.home, "brief", "sib").out)
+        self.commit(wt, {"tools/helper.sh": "exit 1\n"})  # only the sibling the script calls
+        self.assertIn("check probe is not green", self.ok(self.home, "brief", "sib").out)
+
     def test_inputs_never_replace_the_whole_tree_build_test(self) -> None:
         self.ok(self.home, "new", "solo", "--title", "solo", "--check", "unit=true")
         self.fails(self.home, "set", "solo", "--inputs", "unit=lib/**", "--weaken", "x", match="keep one without them")

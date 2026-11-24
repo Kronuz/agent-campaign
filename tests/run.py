@@ -40,6 +40,14 @@ def alone(test: unittest.TestCase) -> bool:
     return bool(getattr(type(test), "alone", False) or getattr(method, "alone", False))
 
 
+def selected(test: unittest.TestCase, prefix: str) -> bool:
+    """Whether TEST's id starts with PREFIX; a module that failed to load stands for every id in it."""
+    if test.id().startswith("unittest.loader."):
+        module = test.id().rsplit(".", 1)[-1]
+        return module.startswith(prefix) or prefix.startswith(module + ".")
+    return test.id().startswith(prefix)
+
+
 def run(test_id: str) -> tuple[str, int, float, str]:
     start = time.time()
     with subprocess.Popen(
@@ -76,7 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     sys.path.insert(0, str(HERE))
     loaded = unittest.TestLoader().discover(str(HERE), pattern="test_*.py", top_level_dir=str(HERE))
-    tests = [t for t in cases(loaded) if not a.only or any(t.id().startswith(o) for o in a.only)]
+    found = list(cases(loaded))
+    unresolved = [o for o in a.only if not any(selected(t, o) for t in found)]
+    if unresolved or not found:
+        names = ", ".join(map(repr, unresolved))
+        print(f"run.py: no test id starts with {names}" if unresolved else "run.py: no tests found", file=sys.stderr)
+        return 2
+    tests = [t for t in found if not a.only or any(selected(t, o) for o in a.only)]
     broken = [t.id() for t in tests if t.id().startswith("unittest.loader")]
     together = [t.id() for t in tests if not alone(t) and t.id() not in broken]
     apart = [t.id() for t in tests if alone(t)]
