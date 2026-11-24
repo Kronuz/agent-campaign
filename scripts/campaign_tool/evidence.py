@@ -233,7 +233,8 @@ def main_code(repo: Path, commit: str, head: str, quest: Json | None) -> bool:
 def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
     """Where a fails-without job's evidence changed by HEAD: [] while its result holds.
     - A mutant or revert commit (off HEAD's history) reverts the lines its diff from its parent
-      changes; the files its command names (the test it ran) count whole.
+      changes; the files its command names (the test it ran) count whole. A file the same at HEAD as
+      where it ran has not moved (the quest's new test applied to its base).
     - A run at the quest's own commit mutates, in its command, the files it names; a mutation the
       command does not show (a script, a binary) moves with any change to the quest's file set.
     - A run at main's code lacks the whole fix, which the head's own runs test."""
@@ -252,6 +253,7 @@ def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
         return [x for x in moved if not files or any(fnmatch.fnmatch(x, g) for g in files)]
     parent = git(repo, "rev-parse", f"{commit}^")
     mutation, moved = hunks(repo, parent, commit), hunks(repo, parent, head)
+    moved = {x: r for x, r in moved.items() if x in changed(repo, commit, head)}  # same as it ran: unmoved
     lines = [
         x
         for x, ranges in mutation.items()

@@ -278,6 +278,18 @@ class MutantFootprint(CampaignCase):
         self.assertTrue(self.moved(wt, {"lib/util.py": "X = 5\n"}))  # another file: it holds
         self.assertFalse(self.moved(wt, {"check.py": "print('checked')\n"}))  # the test it ran changed
 
+    def test_a_mutant_commit_of_the_new_test_on_the_base_holds(self) -> None:
+        """The quest's new test applied to its base: the head adds the same test, so nothing moved."""
+        wt = self.fixed()
+        self.git(wt, "checkout", "-q", "--detach", "HEAD~2")  # the base: before the fix and its State
+        self.commit(wt, {"check.py": CHECK}, "mutant: the test without the fix")
+        mutant_commit = self.git(wt, "rev-parse", "HEAD")
+        self.git(wt, "checkout", "-q", "quest/demo/fix")
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", mutant_commit)
+        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+        self.proven(wt, self.submit(wt, *args, "--", "python3 check.py"))
+        self.assertTrue(self.moved(wt, {"lib/util.py": "X = 5\n"}))
+
 
 class Guard(CampaignCase):
     ids = itertools.count()
