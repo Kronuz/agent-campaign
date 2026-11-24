@@ -136,31 +136,31 @@ The campaign tests:
 
 - `test_quests.py` (377 lines): `Quests`, `Ownership`. Creating, starting and owning quests and
   their files.
-- `test_evidence.py` (739None): `Evidence`. Criteria and the jobs that prove them. One class of 700
+- `test_evidence.py` (739): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
-- `test_landing.py` (650None): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
+- `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
   Everything that moves main: merging, the direct path, CI and push, interrupted landings, clean-up.
-- `test_reviews.py` (370None): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
+- `test_reviews.py` (370): `Reviews`, `ReviewBinding`, `RiskPolicy`. Who reviews a quest and what
   the review binds to.
-- `test_campaigns.py` (670None): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
+- `test_campaigns.py` (670): `Campaigns`, `QueueHealth`. Several campaigns on one machine and the
   queue they share.
-- `test_usage.py` (337None): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
-- `test_messages.py` (220None): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
+- `test_usage.py` (337): `Usage`. What sessions and jobs cost; owns its `at` timestamp helper.
+- `test_messages.py` (220): `SharedHome`, `SharedHomeMessages`, `Messages`. Mail between leads and
   contributors, and the home they share.
-- `test_views.py` (233None): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
+- `test_views.py` (233): `Style`, `Sidebar`, `Map`. What brief, status, the cmux sidebar and the map
   show.
 
 The job queue tests:
 
-- `test_job_scheduling.py` (819None): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
+- `test_job_scheduling.py` (819): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
   job runs next and on how many cores.
-- `test_job_reuse.py` (504None): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
+- `test_job_reuse.py` (519): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
   fixtures they share. When a finished job is reused for another commit.
-- `test_job_lifecycle.py` (406None): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
+- `test_job_lifecycle.py` (406): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
   limits, crash, pruning and disk use.
-- `test_job_store.py` (255None): `WorkerCache`, `JobIndex`, `CiCache`, `GitMirrors`, and the `recording`
+- `test_job_store.py` (255): `WorkerCache`, `JobIndex`, `CiCache`, `GitMirrors`, and the `recording`
   helper. The caches and indexes beside the job records.
 
-Unchanged: `test_quiet.py` (424None), `test_scenarios.py` (291None), `test_pace.py` (155None),
-`test_cli.py` (114None), `test_install.py` (72None), `test_agents.py` (62None), `test_context.py` (37None), each one
+Unchanged: `test_quiet.py` (424), `test_scenarios.py` (291), `test_pace.py` (155),
+`test_cli.py` (114), `test_install.py` (72), `test_agents.py` (62), `test_context.py` (37), each one
 topic.
