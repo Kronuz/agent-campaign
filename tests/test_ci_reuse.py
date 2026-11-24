@@ -45,7 +45,8 @@ class CiReuse(CampaignCase):
     def quest_green_at_head(self, change: str) -> tuple[Path, str]:
         """Quest b changes lib/util.py's line CHANGE; its check and CI pass at its head."""
         b = self.started("b", files="lib/**", check="unit:light:5=python3 app.py")  # quick: verify never holds it
-        head = self.commit(b, {"lib/util.py": LINES.replace("L1 = 1", f"L1 = {change}")})
+        self.commit(b, {"lib/util.py": LINES.replace("L1 = 1", f"L1 = {change}")})
+        head = self.ready_for_review(b, "b")  # the round's end: its evidence and checks run
         self.verified("b")
         self.ci({head: "success"})
         return b, head
@@ -70,6 +71,30 @@ class CiReuse(CampaignCase):
         (landing,) = self.quest("b")["landed"]
         self.assertEqual(landing["tested"], merge)  # landed at the merge, which CI never ran at
         self.assertEqual(landing["ci"], {"commit": head, "runs": [1], "carried": True})
+
+    def test_the_newest_finished_carried_run_decides_and_a_queued_one_is_named(self) -> None:
+        """Detent msg-77: a flake at the head, a run queued at a clean merge, main merged again."""
+        b, head = self.quest_green_at_head("10")
+        self.ci({head: "failure"})
+        self.commit(self.home, {"other/o.txt": "1\n"})
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        first = self.git(b, "rev-parse", "HEAD")
+        self.ci({first: ""})  # pushed: its run is queued
+        self.commit(self.home, {"other/o.txt": "2\n"})
+        self.git(b, "merge", "-q", "--no-edit", "main")
+        second = self.git(b, "rev-parse", "HEAD")
+        self.verified("b")
+        note = f"CI queued at {first[:12]}, carried when done"
+        at = f"CI at {head[:12]} (carried to {second[:12]} across clean merges)"
+        self.assertIn(f"{at}: failed: build (failure); {note}", self.fails(self.home, "land", "b").text)
+        self.assertIn(note, self.ok(self.home, "brief", "b").out)
+        self.ci({first: "failure"})
+        self.fails(self.home, "land", "b", match=f"CI at {first[:12]} (carried to {second[:12]}")
+        red = self.runs[head][0]
+        self.runs[head] = [red, {**red, "databaseId": 99, "conclusion": "success"}]  # a rerun after the merge's run
+        (self.root / "gh.json").write_text(json.dumps(self.runs))
+        self.ok(self.home, "land", "b")  # the newest finished run, not the nearest commit's
+        self.assertEqual(self.quest("b")["landed"][0]["ci"], {"commit": head, "runs": [99], "carried": True})
 
     def test_a_red_run_at_the_clean_merge_still_refuses(self) -> None:
         b, _ = self.quest_green_at_head("10")

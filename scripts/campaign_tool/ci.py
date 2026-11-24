@@ -339,24 +339,34 @@ def decided(state: str) -> bool:
     return state == "success" or state.startswith("failed:") or state.endswith(" failed")
 
 
+def pending(state: str) -> bool:
+    """Whether a `ci_state` or `ci_job` answer is a run still queued or running."""
+    return state.startswith("running: ") or state.endswith(" is running")
+
+
+QUEUED = "; CI queued at {}, carried when done"  # what a red carried gate adds for a nearer run in flight
+
+
 def ci_gate(c: Campaign, p: Json, target: str, ask: Callable[[str], str] | None = None) -> CiGate:
     """CI's verdict on landing TARGET (ASK's, default `ci_state`): its own runs once finished, else the
-    first finished runs at a commit `ci_carried` finds; the landed main runs CI after
-    (`main_ci_problems`). Undecided, the nearest runs say why."""
+    newest finished runs (the highest run id) at a commit `ci_carried` finds; the landed main runs CI
+    after (`main_ci_problems`). A red carried verdict names a nearer run still in flight (QUEUED), whose
+    result replaces it. Undecided, the nearest runs say why."""
     repo = c.repo(p)
     later = c.state.get("ci_later", [])
     question = ask or (lambda k: ci_state(repo, k, later))
     own = CiGate(question(target), ci_commit(repo, target), False)
     if decided(own.state):
         return own
-    waiting = own
-    for k in ci_carried(c, p, target):
-        gate = CiGate(question(k), ci_commit(repo, k), True)
-        if decided(gate.state):
-            return gate
-        if waiting.state.startswith("no CI"):
-            waiting = gate
-    return waiting
+    found = [own, *(CiGate(question(k), ci_commit(repo, k), True) for k in ci_carried(c, p, target))]
+    done = [g for g in found if decided(g.state)]
+    if not done:
+        return next((g for g in found if not g.state.startswith("no CI")), own)
+    gate = max(done, key=lambda g: max(ci_run_ids(repo, g.commit, later), default=0))
+    flying = next((g for g in found[: found.index(gate)] if pending(g.state)), None)
+    if flying is None or gate.state == "success":
+        return gate
+    return gate._replace(state=gate.state + QUEUED.format(flying.commit[:12]))
 
 
 def ci_landing(c: Campaign, p: Json, target: str) -> Json:
@@ -492,12 +502,11 @@ def ci_waiting(c: Campaign, p: Json) -> bool:
     if not shutil.which("gh") or not p.get("branch") or not has_ref(repo, p["branch"]):
         return False
     head = rev(repo, p["branch"])
-    if c.state.get("ci") == "github" and ci_gate(c, p, head).state.startswith("running: "):
-        return True  # the gate's own read: a clean merge's carried head counts
+    gate = ci_gate(c, p, head).state if c.state.get("ci") == "github" else ""
+    if pending(gate) or QUEUED.partition("{}")[0] in gate:
+        return True  # the gate's own read: a clean merge's carried head, or a nearer run in flight, counts
     names = [x["cmd"][len(CI_CHECK) :].strip() for x in gates(p) if x["cmd"].startswith(CI_CHECK)]
-    return any(
-        ci_gate(c, p, head, lambda k, n=name: ci_job(repo, k, n)).state.endswith(" is running") for name in names
-    )
+    return any(pending(ci_gate(c, p, head, lambda k, n=name: ci_job(repo, k, n)).state) for name in names)
 
 
 def forget_ci() -> None:

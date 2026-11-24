@@ -23,8 +23,9 @@ ready for review, fixing <findings>, blocked on <who>: <what>.
 
 Jobs prove criteria by their tags (`--for A1`); paste `campaign brief`'s generated table here.
 Write the rows of [artifact], [decision] and [manual] criteria (a `path`, a decision id, who
-checked what), name every job you examined, failures included (`campaign brief` lists failed
-jobs no journal names), and answer each message by its id (msg-N).
+checked what). A row cites only what proves its criterion: every job it names must have passed at
+the code. Name the other jobs you examined, failures included, below the table (`campaign brief`
+lists failed jobs no journal names), and answer each message by its id (msg-N).
 
 | Criterion | Evidence |
 |---|---|

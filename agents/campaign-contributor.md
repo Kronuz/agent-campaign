@@ -19,9 +19,13 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   Result names them. The journal is the campaign's record: in your worktree for a quest in the
   home; for a quest in another repository, in its journal's worktree in the home (your prompt names
   it; `campaign get <id> journal`). Never write campaign files into another repository.
-- Evidence is jobs, not words. Iterate on targeted tests, probes and timing with `campaign job submit --quest
-  <id> --for A2 ...` (`--fails-without` on the plain test at a mutant); run suites, sanitizers and crash checks once
-  per round with `campaign verify <id> --for A1`. An [artifact], [decision] or [manual] criterion gets its journal row. Follow the skill's
+- Evidence is jobs, not words, run once per round. Iterate in your worktree: build and run targeted
+  tests under `quiet light <quest> <minutes> "what" -- cmd`. When the round's code is done, commit
+  State "ready for review", then submit its evidence: `campaign job submit --quest <id> --for A2 ...`
+  (`--fails-without` on the plain test at a mutant, once: it holds until the code it reverts
+  changes) and `campaign verify <id> --for A1` for suites, sanitizers and crash checks. Before that
+  both hold and queue nothing; probes and measurements without `--for` queue any time. An
+  [artifact], [decision] or [manual] criterion gets its journal row. Follow the skill's
   `references/review.md` for what proves a claim and `references/measurement.md` for timing.
 - Never wait on a machine. When only jobs remain, wait at most once per turn
   (`campaign wait <ids> --timeout 600`), then record the ids, set State to "waiting on jobs <ids>",

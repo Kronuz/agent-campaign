@@ -34,7 +34,8 @@ They apply the Zen in the global AGENTS.md ("The Zen German keeps").
    recording a landing done by hand needs a reason, which the tool records.
 6. **State lives in files.** `.campaign/<campaign>/` and git hold how the campaign runs; what the
    product is goes to `docs/` of the repository it describes.
-7. **Agents never wait on machines, and measurements never run without isolation.**
+7. **Agents never wait on machines, and measurements never run without isolation.** A
+   contributor's own iteration builds and targeted tests run in its worktree under `quiet light`.
 8. **The owner decides goals, scope, and any removal or narrowing of user-visible behavior.** The
    lead decides the rest and records it in `PLAN.md`. **Campaign never rents machines** or creates
    any other billable resource.
@@ -171,8 +172,12 @@ job passing at the exact commit; it queues no local job.
    (`references/prompts.md`), critical path first, capped by what it can merge and the host's
    light slots. A quest is launchable when it is planned, its `needs` are met and its file set is
    free in its repository; `campaign status` lists them, critical path first.
-2. A contributor builds its task, iterating on targeted test jobs (`--quest ID --task T`); suites, sanitizers
-   and crash checks run once per round (`verify` holds a passed slow one until State `ready for review`). It commits and ends its turn; the lead merges it and starts what it unblocked.
+2. A contributor builds its task, iterating in its worktree under `quiet light`, and submits evidence
+   once per round: until its journal commits State `ready for review`, `job submit --for`, `job
+   rerun` of tagged jobs and `verify` queue nothing new (`--force` releases), while probes without
+   `--for` queue. A passed `--fails-without` job holds until the code its mutation reverts changes;
+   `status`, `check` and `brief` flag a quest whose jobs churn. It commits and ends its turn; the
+   lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits`, never with a loop that retries
    `land`, which hides every refusal. It returns when a job ends, a branch moves, a message arrives
    or the lead's **to-do list** gains an item, at once when the wait starts with one, and again for
@@ -251,7 +256,7 @@ Each criterion names its test or other evidence, and landing reads it from the r
 
 | Criterion | Its evidence |
 |---|---|
-| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it), or the one gate check its text names (`` the `unit` check ``), passed at the quest's code; with `--fails-without` tags, one of those's test failed (exited nonzero) too |
+| `- A1 ...` (untagged) | a job tagged `--for A1` (or a later run of it), or the one gate check its text names (`` the `unit` check ``), passed at the quest's code; with `--fails-without` tags, one of those's test failed (exited nonzero) where the code its mutation reverts is unchanged since |
 | `- A2 [artifact] ...` | a journal row naming a path committed in the quest's repository; with a quote (`` `path`: "text" ``), the text it holds |
 | `- A3 [decision] ...` | a journal row naming an id in `PLAN.md`'s Decisions table |
 | `- A4 [manual] ...` | a journal row saying who checked what; shown as manual, never as automated proof |

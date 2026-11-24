@@ -182,3 +182,34 @@ class Guard(CampaignCase):
             self.assertNotIn("proving queues", out)
         self.assertIn(f"  - {spin}", self.ok(self.wt("spin"), "brief").out)
         self.assertNotIn("queues evidence", self.ok(self.wt("fine"), "brief").out)
+
+
+class ExaminedJobs(CampaignCase):
+    def test_a_row_cites_only_its_proof_and_land_names_what_keeps_it_unmet(self) -> None:
+        """lead-driver-measured's A1 row: a passed job beside a failed one and one at other code."""
+        wt = self.started("fix", files="app.py")
+        journal = wt / ".campaign/demo/journal/fix.md"
+        self.assertIn("A row cites only what proves its criterion", journal.read_text())
+        self.assertNotIn("name every job you examined", journal.read_text())
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a probe"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        old = self.submit(wt, "--quest", "fix", "--", "python3 app.py")
+        self.ok(self.home, "wait", old, "--timeout", "60")
+        self.commit(wt, {"app.py": "print(2)  # moved on\n"})
+        passed = self.submit(wt, "--quest", "fix", "--", TEST)
+        failed = self.submit(wt, "--quest", "fix", "--", "exit 3")
+        self.run_cli(self.home, "wait", passed, failed, "--timeout", "60")
+        rel = ".campaign/demo/journal/fix.md"
+        text = journal.read_text().replace("State: working", "State: ready for review")
+        row = f"| A1 | {passed}, {failed}, {old} |"
+        self.commit(wt, {rel: text.replace("| <A1> | <from `campaign brief`> |", row)})
+        self.verified("fix")
+        why = f"A1: {failed} failed, {old} ran other code"
+        self.assertIn(why, self.fails(self.home, "land", "fix", match="criteria without evidence").text)
+        self.assertIn(why, self.ok(self.home, "brief").out)
+        examined = f"| A1 | {passed} |\n\nExamined, not proof: {failed} (failed), {old} (older code).\n"
+        self.commit(wt, {rel: text.replace("| <A1> | <from `campaign brief`> |", examined)})
+        self.verified("fix")
+        self.ok(self.home, "land", "fix")
