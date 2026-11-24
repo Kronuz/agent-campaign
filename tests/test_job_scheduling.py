@@ -152,11 +152,12 @@ class Batches(unittest.TestCase):
     def test_builds_leave_the_heavy_slot_in_a_replayed_queue(self) -> None:
         """The same queue with its 18 heavy jobs' builds (94 of 391 heavy minutes) as light work: heavy
         holds shrink by exactly the builds and light work keeps its full slots meanwhile, so light jobs
-        wait less (p50 70.4 to 39.3 minutes) and use more (50% to 57%), at 2.83 drains an hour, not 3.08;
-        builds queue behind light work of their priority, so heavy jobs wait more (p50 3.6 to 10.3)."""
+        wait less (p50 87.3 to 67.4 minutes) and use more (45% to 48%), at 2.58 drains an hour, not 2.75;
+        a drain admitted only once no light job runs leaves less for staging to win here, where every
+        claim starts at once and nothing waits in quiet."""
         before, after = self.replay(staged=False), self.replay()
         self.assertAlmostEqual(before["heavy"] - after["heavy"], 94, delta=1)
-        self.assertLess(after["light_wait"], 0.7 * before["light_wait"])
+        self.assertLess(after["light_wait"], 0.85 * before["light_wait"])
         self.assertGreater(after["light_use"], before["light_use"])
         self.assertLessEqual(after["drains"], before["drains"])
 

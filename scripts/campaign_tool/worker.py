@@ -658,6 +658,8 @@ def plan(
     if batch:
         queued.sort(key=lambda j: (j["spec"].get("level") in HEAVY) != room)
     full = bool(batch) and not room and not heavy and not lights  # its drain holds: nothing of ours runs
+    if not full:  # a due drain's turn: its build takes the first free light slot
+        queued.sort(key=lambda j: not (mine(j) and j.get("job", j)["id"] in overdue))
     yielded = False  # a full batch's light work started this tick
     start: list[Json] = []
     skip: list[Json] = []
@@ -685,8 +687,14 @@ def plan(
             lull = prio(of) >= 0 and not wanting and (drain_ok or of["state"].get("state") == "running")
             if of["id"] not in overdue and not lull:
                 continue
-        if overdue and weight and not full and not mine(j) and now + expected_seconds(j["spec"], took) > free_at:
-            continue  # an overdue drain waits: only light work that ends before the running work starts
+        if (
+            overdue
+            and (weight or is_heavy)
+            and not full
+            and not mine(j)
+            and now + expected_seconds(j["spec"], took) > free_at
+        ):
+            continue  # an overdue drain waits: only work that ends before the running work starts
         if weight and outlasts(j):
             continue  # it would run past a queued drain's due by more than DRAIN_HOLD: it waits for the drains
         if is_late and not is_heavy and late >= max(1, slots // 2):

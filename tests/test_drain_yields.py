@@ -135,9 +135,10 @@ def simulate(module: ModuleType, queue: list[dict[str, Any]], tick: float = 30.0
 def metrics(run: dict[str, Any], drain_wait: float = 1200.0) -> dict[str, Any]:
     """Light slot use over the run, light slot-minutes and minutes runnable light work waited beside a free
     slot, minutes a drain held the host (admission to end), hours to empty, light jobs' wait p50 (submit
-    to hold), and each drain's wait from its due (its submit plus DRAIN_WAIT) to its hold, in minutes."""
+    to hold), and each drain's wait from its due (its submit or the last drain's end before its hold,
+    whichever is later, plus DRAIN_WAIT) to its hold, in minutes."""
     holds, end = run["holds"], run["end"]
-    first = min(float(j["spec"]["submitted"]) for j in run["jobs"])
+    first = max(BASE, min(float(j["spec"]["submitted"]) for j in run["jobs"]))
     light = sum(b - a for _, lv, a, b in holds if lv == "light")
     spans = sorted(
         (float(j["state"]["started"]), float(j["state"]["ended"]))
@@ -151,11 +152,13 @@ def metrics(run: dict[str, Any], drain_wait: float = 1200.0) -> dict[str, Any]:
     granted = {key: a for key, lv, a, _ in holds if ":" not in key}
     submitted = {j["id"]: float(j["spec"]["submitted"]) for j in run["jobs"]}
     waits = [a - submitted[key] for key, lv, a, _ in holds if lv == "light" and ":" not in key]
-    drains = {
-        j["id"]: (granted[j["id"]] - submitted[j["id"]] - drain_wait) / 60
-        for j in run["jobs"]
-        if j["spec"]["level"] == "exclusive" and j["id"] in granted
-    }
+    ran = sorted((a, b) for _, lv, a, b in holds if lv == "exclusive")
+    drains = {}  # from its due: its submit or the last drain's end before its hold, plus DRAIN_WAIT
+    for j in run["jobs"]:
+        if j["spec"]["level"] == "exclusive" and j["id"] in granted:
+            last = max((b for _, b in ran if b <= granted[j["id"]]), default=0.0)
+            since = max(submitted[j["id"]], first, last)  # waiting before the queue began is not counted
+            drains[j["id"]] = (granted[j["id"]] - since - drain_wait) / 60
     return {
         "light_use": light / (run["slots"] * (end - first)),
         "idle": run["idle"] / 60,
