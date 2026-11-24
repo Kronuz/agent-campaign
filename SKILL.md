@@ -275,7 +275,7 @@ clears its A/A band decides without an exclusive run.
 Jobs run at their submitted commit, a quest's in its build slot, with the submitter's PATH;
 `--build CMD` builds there under light first. A result is reused for identical code
 (without `.campaign/`), command, directory, level, `--env`, host and toolchain, by read sets, and
-across docs-only commits and merges from `main` touching neither the quest's files nor the job's
+across prose-only commits and merges from `main` touching neither the quest's files nor the job's
 `--inputs GLOBS` (a measurement without them: only docs). Name a mutable input with
 `--env`; rerun with `--force` what depends on more. A strict or exclusive job lasts at most 10
 minutes, a light fuzz or soak 30, each stopped at its deadline (`--long REASON` lifts it, deferred).

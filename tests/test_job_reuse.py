@@ -363,41 +363,70 @@ class Identity(CampaignCase):
         self.fails(self.home, "job", "rerun", jid, match=f"{jid} must fail at the code without the fix")
         self.assertIn(f"{jid} at {before[:12]}", self.ok(self.home, "job", "rerun", jid, "--commit", before).out)
 
-    def test_a_docs_folder_counts_as_named_only_as_a_whole_argument(self) -> None:
+    def test_documentation_is_prose_the_command_does_not_name(self) -> None:
         doc_path = campaign_module().doc_path
+        for prose in ("README.md", "docs/guide.rst", "docs/site/a.mdx", "website/notes.txt"):
+            self.assertTrue(doc_path(prose, "python3 app.py"), prose)
+        for code in ("docs/public/assets/accounts.ndjson", "website/index.html", "docs/run.py", "data/words.txt"):
+            self.assertFalse(doc_path(code, "bash harness/run_all.sh"), code)  # data and site source run
+        for code in ("docs/requirements.txt", "docs/CMakeLists.txt", "tests/README.md", "bench/rows.txt"):
+            self.assertFalse(doc_path(code, ""), code)
         self.assertTrue(doc_path("docs/design/results.md", "docs/design/bench/run.sh row 1000"))
         self.assertFalse(doc_path("docs/perf/notes.md", "docs/perf/run.sh measure"))  # a script's sibling
-        self.assertFalse(doc_path("docs/perf/lib/fit.py", "bash ./docs/perf/run.sh"))
-        self.assertFalse(doc_path("docs/perf/fit.py", "bash run.sh", cwd="docs/perf"))
+        self.assertFalse(doc_path("docs/perf/lib/notes.md", "bash ./docs/perf/run.sh"))
+        self.assertFalse(doc_path("scripts/template.md", "bash scripts/gen.sh"))
+        self.assertFalse(doc_path("docs/perf/n.md", "bash run.sh", cwd="docs/perf"))
         self.assertTrue(doc_path("docs/other/notes.md", "bash run.sh", cwd="docs/perf"))
-        self.assertFalse(doc_path("website/lib/a.js", "node --script=website/lib/b.js"))
+        self.assertFalse(doc_path("website/lib/a.md", "node --script=website/lib/b.js"))
         self.assertFalse(doc_path("docs/design/results.md", "pytest docs/design"))
         self.assertFalse(doc_path("docs/design/results.md", "check docs/"))
         self.assertFalse(doc_path("docs/design/results.md", "cat docs/design/results.md"))
 
     def test_a_docs_script_runs_the_files_in_its_folder(self) -> None:
-        """A script under docs/ that the command names runs its siblings: they are code for the job,
-        documentation outside its folder is not."""
+        """A script under docs/ that the command names runs its siblings, prose included: they are code
+        for the job, prose outside its folder is not."""
         self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets
-        row = 'python3 "$(dirname "$0")/boot.py"\n'
-        self.commit(self.home, {"docs/m/x/row.sh": row, "docs/m/x/boot.py": "print(1)\n", "docs/m/n.md": "n\n"})
+        row = 'cat "$(dirname "$0")/rows.txt"\npython3 "$(dirname "$0")/boot.py"\n'
+        files = {"docs/m/x/row.sh": row, "docs/m/x/boot.py": "print(1)\n", "docs/m/x/rows.txt": "1\n"}
+        self.commit(self.home, {**files, "docs/m/n.md": "n\n"})
         cmd = "bash docs/m/x/row.sh"
         jid = self.submit(self.home, "--", cmd)
         self.ok(self.home, "wait", jid)
-        self.commit(self.home, {"docs/m/n.md": "prose\n", "docs/y/run.py": "print(0)\n"})
-        self.assertEqual(self.submit(self.home, "--", cmd), jid)  # docs elsewhere keep its evidence
+        self.commit(self.home, {"docs/m/n.md": "prose\n", "docs/y/notes.txt": "more\n"})
+        self.assertEqual(self.submit(self.home, "--", cmd), jid)  # prose elsewhere keeps its evidence
         self.commit(self.home, {"docs/m/x/boot.py": "raise SystemExit(1)\n"})
         new = self.submit(self.home, "--", cmd)
         self.assertNotEqual(new, jid)  # the sibling it runs is code
         self.run_cli(self.home, "wait", new)
         self.assertEqual(self.job(new)["state"], "failed")
         self.commit(self.home, {"docs/m/x/boot.py": "print(2)\n"})
+        jid = self.submit(self.home, "--", cmd)
+        self.ok(self.home, "wait", jid)
+        self.commit(self.home, {"docs/m/x/rows.txt": "2\n"})
+        self.assertNotEqual(self.submit(self.home, "--", cmd), jid)  # and so is the prose beside it
         inside = self.submit(self.home / "docs/m/x", "--", "bash row.sh")
         self.ok(self.home, "wait", inside)
         self.commit(self.home, {"docs/m/n.md": "more prose\n"})
         self.assertEqual(self.submit(self.home / "docs/m/x", "--", "bash row.sh"), inside)
-        self.commit(self.home, {"docs/m/x/boot.py": "print(3)\n"})
+        self.commit(self.home, {"docs/m/x/rows.txt": "3\n"})
         self.assertNotEqual(self.submit(self.home / "docs/m/x", "--", "bash row.sh"), inside)  # by its directory
+
+    def test_data_under_docs_is_code_whatever_reads_it(self) -> None:
+        """A script outside docs/ reads a dataset under it: the dataset is code, the prose beside it is not."""
+        self.env["CAMPAIGN_STRACE"] = ""  # whole-tree identity on every platform: no read sets
+        data = "docs/public/assets/accounts.ndjson"
+        files = {"harness/run_all.sh": f"grep -q alice {data}\n", data: '{"name": "alice"}\n'}
+        self.commit(self.home, {**files, "docs/public/guide.md": "g\n"})
+        cmd = "bash harness/run_all.sh"
+        jid = self.submit(self.home, "--", cmd)
+        self.ok(self.home, "wait", jid)
+        self.commit(self.home, {"docs/public/guide.md": "the accounts\n", "README.md": "r\n"})
+        self.assertEqual(self.submit(self.home, "--", cmd), jid)  # prose keeps its evidence
+        self.commit(self.home, {data: '{"name": "bob"}\n'})
+        new = self.submit(self.home, "--", cmd)
+        self.assertNotEqual(new, jid)  # the dataset it reads is code
+        self.run_cli(self.home, "wait", new)
+        self.assertEqual(self.job(new)["state"], "failed")
 
     def test_a_rerun_never_moves_a_commit_the_quests_branch_never_held(self) -> None:
         """A mutant (a commit only a scratch ref holds) is refused without --commit and kept with it; a

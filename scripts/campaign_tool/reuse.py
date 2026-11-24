@@ -79,37 +79,37 @@ def build_test(check: Json) -> bool:
     return not check.get("later") and not check.get("inputs")
 
 
-DOC_PATHS = ("docs/**", "website/**", "*.md")  # documentation: evidence outlives commits that change only these
+# documentation, prose only: evidence outlives commits that change only these
+DOC_PATHS = ("*.md", "docs/*.mdx", "docs/*.rst", "docs/*.txt", "website/*.mdx", "website/*.rst", "website/*.txt")
+DEPENDENCY_LISTS = ("requirements*.txt", "constraints*.txt")  # prose by extension, code by use
 CODE_DIRS = ("tests", "test", "bench", "benches")  # what lies under these runs, whatever its extension
 CARRY_DEPTH = 40  # how many first-parent commits back evidence is looked for (docs-only commits, merges from main)
 
 
 def doc_path(path: str, cmd: str, tested: Sequence[str] = (), cwd: str = "") -> bool:
-    """Whether PATH is documentation that the command CMD, run in CWD, does not name (named_docs),
+    """Whether PATH is documentation that the command CMD, run in CWD, does not name (named_code),
     and that no TESTED glob (config `tested_docs`: docs that tests execute) matches."""
     return docs_unnamed(path, cmd, tuple(tested), cwd)
 
 
 @functools.lru_cache(maxsize=1 << 16)
 def docs_unnamed(path: str, cmd: str, tested: tuple[str, ...], cwd: str) -> bool:
-    named = path in cmd or any(path == x or path.startswith(x + "/") for x in named_docs(cmd, cwd))
+    named = path in cmd or any(path == x or path.startswith(x + "/") for x in named_code(cmd, cwd))
     parts = path.split("/")
     if named or any(fnmatch.fnmatchcase(path, g) for g in tested) or set(parts[:-1]) & set(CODE_DIRS):
         return False
-    return not any(fnmatch.fnmatchcase(parts[-1], g) for g in BUILD_FILES) and any(
+    return not any(fnmatch.fnmatchcase(parts[-1], g) for g in (*BUILD_FILES, *DEPENDENCY_LISTS)) and any(
         fnmatch.fnmatchcase(path, g) for g in DOC_PATHS
     )
 
 
 @functools.lru_cache(maxsize=1 << 12)
-def named_docs(cmd: str, cwd: str) -> tuple[str, ...]:
-    """The documentation a command run in CWD names, as paths whose files and folders count as its
-    code: each docs/ or website/ path it names or enters, and that path's folder (a script there
-    runs its siblings)."""
+def named_code(cmd: str, cwd: str) -> tuple[str, ...]:
+    """The paths a command run in CWD makes code, each with what lies under it: every path it names
+    (named_paths) and that path's folder below the root (a script there reads its siblings)."""
     out: list[str] = []
-    for x in [*named_paths(cmd, cwd), *([cwd] if cwd else [])]:
-        if x.split("/")[0] in ("docs", "website"):
-            out += [x, *([x.rsplit("/", 1)[0]] if "/" in x else [])]
+    for x in named_paths(cmd, cwd):
+        out += [x, *([x.rsplit("/", 1)[0]] if "/" in x else [])]
     return tuple(dict.fromkeys(out))
 
 
@@ -154,7 +154,7 @@ def carried_ancestors(
     )
     main_head = rev(repo, main_branch(repo)) if merged else ""
     own = set(own_code(repo, main_head, commit, cmd, tested, cwd=cwd)) if merged else set()
-    named = [*named_paths(cmd, cwd), *named_docs(cmd, cwd)]
+    named = named_code(cmd, cwd)
     measured = spec.get("level") in HEAVY and not inputs
 
     def touches(path: str) -> bool:

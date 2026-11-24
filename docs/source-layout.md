@@ -152,9 +152,9 @@ The campaign tests:
 
 The job queue tests:
 
-- `test_job_scheduling.py` (814): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
+- `test_job_scheduling.py` (819): `Batches`, `CpuUse`, `Scheduling`, `Slots`, `Contention`. Which
   job runs next and on how many cores.
-- `test_job_reuse.py` (475): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
+- `test_job_reuse.py` (504): `ReadSets`, `FalseReuse`, `Identity`, and the CMake and strace
   fixtures they share. When a finished job is reused for another commit.
 - `test_job_lifecycle.py` (406): `Races`, `Limits`, `Crashes`, `Prune`, `Disk`. A job's heartbeat,
   limits, crash, pruning and disk use.

@@ -377,10 +377,15 @@ class Scheduling(CampaignCase):
         build = self.submit(self.home, "--", "true build")
         run = self.submit(self.home, "--after", build, "--", "true run")
         self.ok(self.home, "wait", run, "--timeout", "60")
-        self.commit(self.home, {"README.md": "app, documented\n", "website/index.html": "<p>app</p>\n"})
+        self.commit(self.home, {"README.md": "app, documented\n", "website/guide.rst": "app\n"})
         self.assertEqual(self.submit(self.home, "--", "true build"), build)
         self.assertEqual(self.submit(self.home, "--after", build, "--", "true run"), run)
-        for code in ({"tests/README.md": "a fixture\n"}, {"bench/notes.md": "rows\n"}, {"docs/CMakeLists.txt": "x\n"}):
+        for code in (
+            {"tests/README.md": "a fixture\n"},
+            {"bench/notes.md": "rows\n"},
+            {"docs/CMakeLists.txt": "x\n"},
+            {"website/index.html": "<p>app</p>\n"},
+        ):
             self.commit(self.home, code)
             new = self.submit(self.home, "--", "true build")
             self.assertNotEqual(new, build, code)
