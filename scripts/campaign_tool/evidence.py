@@ -452,11 +452,11 @@ def criteria_evidence(
 
 
 def unmet_why(rows: dict[str, list[Json]], unproven: Collection[str]) -> str:
-    """What keeps each unproven criterion unmet: the jobs and paths its rows name and why, or "no
-    evidence yet", for the landing gap that lists them."""
+    """What keeps each unproven criterion unmet, for the landing gap that lists them: the jobs and
+    paths its rows name and why, or that nothing it cites proves it."""
     out = []
     for cid in unproven:
-        why = list(dict.fromkeys(w for r in rows.get(cid, []) for w in r["why"])) or ["no evidence yet"]
+        why = list(dict.fromkeys(w for r in rows.get(cid, []) for w in r["why"])) or ["nothing cited proves it"]
         out.append(f"{cid}: {', '.join(why)}")
     return "; ".join(out)
 
