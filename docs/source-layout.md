@@ -37,7 +37,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   relations between quests. Boundary: state.json and what follows from it alone (dependencies,
   file-set overlaps, checks, lenses). Opened alone to add a quest field or change a rule between
   quests.
-- `mail.py` (325 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
+- `mail.py` (329 lines): Messages: mailboxes for quests and leads, waking a lead in cmux, and
   outboxes between machines. Boundary: how a message is stored, delivered and closed. Opened alone
   when a message is lost, repeated or never wakes its reader.
 - `alarm.py` (134 lines): The owner's alarm: a lead whose session holds one tool call unanswered (a
@@ -59,7 +59,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `campaign.py` (547 lines): The `Campaign`: its state loaded and saved by the one writer, the
   overview, what moves each quest in flight, and the sidebar it draws. Boundary: the Campaign object and everything its save does.
   Opened alone to change how state is written, locked or summarized in the sidebar.
-- `leads.py` (286 lines): Lead notices across campaigns: noting a lead (only from the home, and only
+- `leads.py` (274 lines): Lead notices across campaigns: noting a lead (only from the home, and only
   when no live lead is recorded), redelivering stuck messages,
   telling peers and dependents. Boundary: notices that open other campaigns on the machine. Opened
   alone when a lead is not told about another campaign's work or a dropped dependency.
@@ -74,7 +74,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   health, and its loop, which also mails each lead its to-do. Boundary: scheduling, one unit: the plan, the charges it reads and the loop
   that runs it only make sense together. Opened alone to change who runs next, or to read why the
   queue is slow.
-- `todo.py` (288 lines): The lead's to-do list: what nothing moves without, critical path first,
+- `todo.py` (284 lines): The lead's to-do list: what nothing moves without, critical path first,
   each item with its command, which status, brief and every wait end with, and the worker mails to
   the lead until each item is done. Boundary: turning the
   overview, what moves each quest and the landing gaps into the lead's next commands. Opened alone

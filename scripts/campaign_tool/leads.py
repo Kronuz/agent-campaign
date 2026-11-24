@@ -27,7 +27,6 @@ from .mail import (
     notify,
     recorded_lead,
 )
-from .runner import spawn, worker_alive
 from .state import campaigns, changes, consumed, cross_overlaps, overlap
 
 
@@ -58,23 +57,12 @@ def note_lead() -> None:
     entry = leads() / c.name
     seen = {"surface": surface, "workspace": os.environ.get("CMUX_WORKSPACE_ID", "")}
     lead = recorded_lead(c.name)
-    if lead == surface:
-        mailer()
-        return
-    if lead and (campaigns_led_by(surface, but=c.name) or not lead_gone(lead)):
+    if lead == surface or (lead and (campaigns_led_by(surface, but=c.name) or not lead_gone(lead))):
         return
     with contextlib.suppress(OSError):
         leads().mkdir(parents=True, exist_ok=True)
         entry.write_text(json.dumps(seen) + "\n")
     redeliver(c.name, now=True)
-    mailer()
-
-
-def mailer() -> None:
-    """A worker when none runs, to mail the lead its to-do (`lead_todo`): it leaves once no job is
-    queued and no lead's list holds items."""
-    if not worker_alive():
-        spawn(["worker"], jobs_dir() / "worker.log")
 
 
 def redeliver(only: str = "", now: bool = False) -> list[Json]:

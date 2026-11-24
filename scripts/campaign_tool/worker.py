@@ -738,7 +738,7 @@ def cmd_worker(a: argparse.Namespace) -> int:
             jobs = all_jobs()
             from .todo import lead_todo  # noqa: PLC0415  # todo reads this module's slots: a cycle at import
 
-            mailing = lead_todo(jobs, time.time())  # the leads' to-do, as mail
+            mailing = lead_todo(jobs, time.time())  # the leads' to-do, as mail, while one lives
             if not any(j["state"].get("state") in ("queued", "running") for j in jobs):
                 if daily_prune((home / "heartbeat").touch):
                     continue  # whatever arrived while it pruned

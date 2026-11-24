@@ -239,7 +239,7 @@ def mail_todo(c: Campaign, jobs: list[Json], now: float, workspace: str) -> bool
     records[c.ident] = rec
     atomic_write(todo_mail_file(c), json.dumps(records, indent=2) + "\n")
     if text:
-        leave_message(c, "", text, "campaign", settles={"todo": rec["token"]})
+        leave_message(c, "", text, "campaign", quietly=True, settles={"todo": rec["token"]})  # the wake is the notice
     return bool(items)
 
 
@@ -251,7 +251,8 @@ _failed: dict[str, float] = {}  # campaign ident -> when its look last failed, w
 def lead_todo(jobs: list[Json], now: float) -> bool:
     """The worker's tick: at most every SCAN seconds, looks at the registered campaign longest
     unlooked whose recorded lead cmux lists, once `mail_every` passed for it (`mail_todo`); a
-    campaign with no recorded lead is skipped unread. True while a look left items for a live lead."""
+    campaign with no recorded lead is skipped unread. True while cmux lists a recorded lead: the
+    worker stays to mail it."""
     last = _scanned[0]
     if now - float(last["at"]) < SCAN:
         return bool(last["pending"])
@@ -261,11 +262,9 @@ def lead_todo(jobs: list[Json], now: float) -> bool:
         if lead := recorded_lead(f.name):
             led.append((f.name, Path(f.read_text().strip()), lead))
     spaces = surface_spaces() if led else None
-    pending = False
     due: list[tuple[float, Campaign, str]] = []
-    for name, home, lead in led:
-        if spaces is None or lead not in spaces:
-            continue  # no live lead: its items wait for the next one
+    live = [(name, home, lead) for name, home, lead in led if spaces is not None and lead in spaces]
+    for name, home, lead in live:  # without a live lead, the items wait for the next one
         try:
             c = Campaign(home, name)
         except (CampaignError, OSError):
@@ -273,16 +272,13 @@ def lead_todo(jobs: list[Json], now: float) -> bool:
         rec = todo_mail(c).get(c.ident) or {}
         looked = max(float(rec.get("looked", float("-inf"))), _failed.get(c.ident, float("-inf")))
         if now - looked >= mail_every():
-            due.append((looked, c, spaces[lead]))
-        else:
-            pending = pending or bool(rec.get("items"))
+            due.append((looked, c, spaces[lead] if spaces else ""))
     if due:
         _, c, workspace = min(due, key=lambda d: d[0])
         try:
-            pending = mail_todo(c, jobs, now, workspace) or pending
+            mail_todo(c, jobs, now, workspace)
         except Exception as e:  # a campaign the worker cannot read never stops its queue
             _failed[c.ident] = now
             print(f"campaign: the to-do of {c.name} failed: {e}", file=sys.stderr)
-        pending = pending or len(due) > 1  # the others are looked at on the next scans
-    _scanned[0] = {"at": now if len(due) <= 1 else now - SCAN, "pending": pending}
-    return pending
+    _scanned[0] = {"at": now if len(due) <= 1 else now - SCAN, "pending": bool(live)}  # the rest, next tick
+    return bool(live)

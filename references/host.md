@@ -92,7 +92,7 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
 - **Builds for measurements.** `--after` only orders jobs. `--build CMD` runs CMD as a light job (30
   minutes, outside `--minutes`) in the job's checkout; a passed build's command then queues for its
   heavy hold, keeping the slot.
-- **Scheduling.** The worker starts with the first submit or wait, or a command of a recorded lead, and exits when idle and no lead's to-do waits as mail. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
+- **Scheduling.** The worker starts with the first submit or wait and exits when idle while cmux lists no recorded lead, whose to-do it mails. It runs one strict or exclusive job at a time and up to half the CPUs' worth of light
   jobs (a quarter beside it; `CAMPAIGN_LIGHT_JOBS`), in priority order,
   campaigns splitting the light slots, rounded up; within each, the shortest job runs first, and
   one queued over an hour (`CAMPAIGN_AGE`) goes ahead in submit order, so a batch of hour-long jobs

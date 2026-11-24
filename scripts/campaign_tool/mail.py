@@ -179,10 +179,12 @@ def leave_message(
     *,
     wake: bool = True,
     shown: bool = False,
+    quietly: bool = False,
     **extra: Any,
 ) -> str:
-    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies. SHOWN as in
-    `wake_lead`; EXTRA holds what closes a message the tool leaves by itself (`settled`)."""
+    """Leaves a message for a quest ("" for the lead) under a fresh id, and notifies the owner (but
+    QUIETLY). SHOWN as in `wake_lead`; EXTRA holds what closes a message the tool leaves by itself
+    (`settled`)."""
     folder = mailbox(c, pid)
     folder.mkdir(parents=True, exist_ok=True)
     record = c.quests[pid] if pid else c.state
@@ -200,7 +202,8 @@ def leave_message(
             n += 1
         finally:
             tmp.unlink(missing_ok=True)
-    notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
+    if not quietly:
+        notify(f"Message for {pid or c.name}", f"{by}: {text}"[:200])
     if wake:
         announce(c, folder / f"msg-{n}.json", message, pid or "the lead", shown=shown)
     return f"msg-{n}"
@@ -226,7 +229,8 @@ def settle_mail(c: Campaign) -> list[Path]:
     c.closing = []
     for m in inbox(c, "", settled_too=True):
         if (f := mailbox(c, "") / f"{m['id']}.json") not in gone and (why := settled(c, m)):
-            c.state.setdefault("messages", []).append({**m, "closed": why})
+            kept = {k: m[k] for k in ("id", "at", "by")} if "todo" in (m.get("settles") or {}) else m
+            c.state.setdefault("messages", []).append({**kept, "closed": why})  # a to-do's id, not its text
             gone.append(f)
     return gone
 

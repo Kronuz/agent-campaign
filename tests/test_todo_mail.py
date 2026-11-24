@@ -89,18 +89,11 @@ class TodoMail(CampaignCase):
         )
         try:
             self.wait_until(lambda: bool(self.todo_mail()), timeout=30)
-            self.assertIsNone(worker.poll(), "a worker with a list to mail stays")
+            self.assertIsNone(worker.poll(), "a worker stays while its lead lives")
         finally:
             worker.kill()
             worker.wait()
         self.assertIn("`campaign start top`", self.todo_mail()[0]["text"])
-
-    def test_a_lead_command_starts_the_mailer(self) -> None:
-        self.new("top")
-        self.assertFalse(self.todo_mail(), "a command of no lead's starts none")
-        lead = {**self.env, "CMUX_SURFACE_ID": "surface-lead", "CMUX_WORKSPACE_ID": "ws-lead"}
-        subprocess.run([sys.executable, str(CAMPAIGN), "status"], cwd=self.home, env=lead, capture_output=True)
-        self.wait_until(lambda: bool(self.todo_mail()), timeout=30)
 
     def test_a_campaign_with_no_live_lead_gets_no_mail(self) -> None:
         self.new("top")
@@ -134,6 +127,10 @@ class TodoMail(CampaignCase):
         with mock.patch.dict(os.environ, self.env, clear=True):
             c = self.tool.Campaign(self.home, "demo")
             self.assertFalse([m for m in self.tool.inbox(c, "") if "campaign start top" in m["text"]])
+        self.ok(self.home, "config", "suite=python3 app.py")  # a save records the settled ones
+        kept = [m for m in self.state().get("messages", []) if m["by"] == "campaign" and m["id"] != first]
+        self.assertIn(again[0]["id"], [m["id"] for m in kept])
+        self.assertFalse([m for m in kept if "text" in m], "a settled to-do's id stays, not its text")
 
     # A3: items due together go out in one message; an unchanged list inside the interval sends nothing
 

@@ -71,17 +71,16 @@ class Style(CampaignCase):
         self.assertNotIn("🌿", out)
 
 
-def logged(calls: Path) -> str:
-    """The calls a fake cmux logged, but `tree`: note_lead and the worker's to-do mail ask it, at any
-    time, whether the lead lives."""
-    return "".join(x for x in calls.read_text().splitlines(keepends=True) if "|tree|" not in x)
+# `tree` answers nothing and is not logged: the worker asks it whether a lead lives (`lead_todo`), at
+# any moment, and its log lines would interleave with the command's.
+UNTREED = 'case "$*" in *tree*) exit 0;; esac\n'
 
 
 class Sidebar(CampaignCase):
     def test_the_sidebar_follows_the_state_and_sends_only_changes(self) -> None:
         calls = self.root / "cmux-calls"
         fake = self.root / "bin" / "cmux"
-        fake.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >> {calls}; echo >> {calls}\n')
+        fake.write_text(f'#!/bin/sh\n{UNTREED}printf "%s|" "$@" >> {calls}; echo >> {calls}\n')
         fake.chmod(0o755)
         self.env["CMUX_WORKSPACE_ID"] = "ws-test"
         self.env["CMUX_SURFACE_ID"] = "surface-test"  # the lead: only a lead's session names its workspace
@@ -104,57 +103,57 @@ class Sidebar(CampaignCase):
         plan.write_text(plan.read_text().replace("| <M1> | <ids> | <command> |", "| M2 | b | |\n| M1 | a | |"))
         self.git(self.home, "commit", "-q", "-am", "milestones")
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md", "--milestone", "M2")
-        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", logged(calls))
+        self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", calls.read_text())
         self.ok(self.home, "start", "a")
-        log = logged(calls)
+        log = calls.read_text()
         self.assertIn("set-progress|0.0000|--label|demo M1: 0 of 1 quests landed|", log)  # the active one
         self.assertIn("set-status|campaign-demo-a|a: active|--icon|hammer|", log)
         calls.write_text("")
         self.ok(self.home, "status")
         self.assertEqual(
-            logged(calls),
+            calls.read_text(),
             "workspace-action|--workspace|ws-test|--action|rename|--title|demo · lead|\n",
             "named once",
         )
         calls.write_text("")
         self.ok(self.home, "status")
-        self.assertEqual(logged(calls), "", "an unchanged view sends nothing")
+        self.assertEqual(calls.read_text(), "", "an unchanged view sends nothing")
         failed = self.submit(self.home, "--quest", "a", "--", "exit 1")
         self.run_cli(self.home, "wait", failed, "--timeout", "60")
         self.ok(self.home, "status")
-        self.assertIn("set-status|campaign-demo-a|a: active · 🔥 1 failed job|", logged(calls))
+        self.assertIn("set-status|campaign-demo-a|a: active · 🔥 1 failed job|", calls.read_text())
         calls.write_text("")
         self.ok(self.home, "set", "a", "status=blocked", "until=owner", "reason=owner")
-        self.assertIn("clear-status|campaign-demo-a|", logged(calls), "a blocked quest keeps no pill")
+        self.assertIn("clear-status|campaign-demo-a|", calls.read_text(), "a blocked quest keeps no pill")
         self.ok(self.home, "set", "a", "status=active")
         self.commit(self.wt("a"), {"app.py": "print(2)\n"})
         self.verified("a")
         self.ok(self.home, "land", "a")
-        log = logged(calls)
+        log = calls.read_text()
         self.assertIn("notify|--title|Landed a|--body|", log)
         self.assertIn("clear-status|campaign-demo-a|", log)
         self.assertIn("set-progress|0.0000|--label|demo M2: 0 of 1 quests landed · launchable: b|", log)
         calls.write_text("")
         self.ok(self.root, "--campaign", "demo", "new", "c", "--title", "c", "--risk", "low", "--files", "c.py")
-        self.assertEqual(logged(calls), "", "a command run outside the home (a message) draws nothing")
+        self.assertEqual(calls.read_text(), "", "a command run outside the home (a message) draws nothing")
         self.env.pop("CMUX_WORKSPACE_ID")
         calls.write_text("")
         self.ok(self.home, "set", "b", "status=blocked", "until=owner", "reason=owner")
-        self.assertEqual(logged(calls), "", "outside cmux nothing is drawn")
+        self.assertEqual(calls.read_text(), "", "outside cmux nothing is drawn")
 
     def workspace_cmux(self) -> Path:
         """A fake cmux logging each call as WORKSPACE>ARGS, with the lead's session in ws-lead."""
         calls = self.root / "cmux-calls"
         fake = self.root / "bin" / "cmux"
         fake.write_text(
-            f'#!/bin/sh\nprintf "%s>" "$CMUX_WORKSPACE_ID" >> {calls}; printf "%s|" "$@" >> {calls}; echo >> {calls}\n'
+            f'#!/bin/sh\n{UNTREED}printf "%s>" "$CMUX_WORKSPACE_ID" >> {calls}; printf "%s|" "$@" >> {calls}; echo >> {calls}\n'
         )
         fake.chmod(0o755)
         self.env["CMUX_WORKSPACE_ID"] = "ws-lead"
         self.env["CMUX_SURFACE_ID"] = "surface-lead"
         self.ok(self.home, "new", "a", "--title", "a", "--risk", "low", "--files", "app.py", "--check", "unit=true")
         self.ok(self.home, "start", "a")
-        self.assertIn("ws-lead>set-status|campaign-demo-a|a: active|--icon|hammer|", logged(calls))
+        self.assertIn("ws-lead>set-status|campaign-demo-a|a: active|--icon|hammer|", calls.read_text())
         return calls
 
     def test_only_the_recorded_lead_draws_the_sidebar(self) -> None:
@@ -165,7 +164,10 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "status")
         self.ok(self.home, "new", "b", "--title", "b", "--risk", "low", "--files", "README.md")
         self.ok(self.home, "start", "b")
-        self.assertEqual(logged(calls), "", "a session that is not the lead sends nothing")
+        sent = [
+            line for line in calls.read_text().splitlines() if "|tree|" not in line
+        ]  # note_lead asks if the lead lives
+        self.assertEqual(sent, [], "a session that is not the lead sends nothing")
         cache = json.loads((self.home / ".git" / "campaign-sidebar.json").read_text())
         self.assertEqual([v.partition(" ")[0] for v in cache], ["ws-lead"], "and caches no view")
 
@@ -182,7 +184,7 @@ class Sidebar(CampaignCase):
         path.write_text(json.dumps(views))
         calls.write_text("")
         self.ok(self.home, "status")
-        stray = sorted(line for line in logged(calls).splitlines() if line.startswith("ws-stray>"))
+        stray = sorted(line for line in calls.read_text().splitlines() if line.startswith("ws-stray>"))
         self.assertEqual(
             stray,
             [
@@ -192,7 +194,7 @@ class Sidebar(CampaignCase):
                 "ws-stray>clear-status|campaign-demo|",
             ],
         )
-        mine = [line for line in logged(calls).splitlines() if line.startswith("ws-lead>") and "rename" not in line]
+        mine = [line for line in calls.read_text().splitlines() if line.startswith("ws-lead>") and "rename" not in line]
         self.assertEqual(mine, [], "the lead's own view is unchanged")
         after = json.loads(path.read_text())
         self.assertEqual(
@@ -200,7 +202,7 @@ class Sidebar(CampaignCase):
         )
         calls.write_text("")
         self.ok(self.home, "status")
-        self.assertNotIn("ws-stray>", logged(calls), "and cleared once")
+        self.assertNotIn("ws-stray>", calls.read_text(), "and cleared once")
 
     def test_a_campaign_sharing_the_cleared_workspace_redraws_its_bar(self) -> None:
         calls = self.workspace_cmux()
@@ -209,7 +211,7 @@ class Sidebar(CampaignCase):
         self.env["CMUX_SURFACE_ID"] = "surface-other"
         self.ok(other, "init", "--name", "other")
         self.ok(other, "new", "o", "--title", "o", "--risk", "low", "--files", "README.md", "--check", "unit=true")
-        self.assertIn("ws-shared>set-progress|", logged(calls))
+        self.assertIn("ws-shared>set-progress|", calls.read_text())
         path = self.home / ".git" / "campaign-sidebar.json"
         views = json.loads(path.read_text())
         [(lead, drawn)] = views.items()
@@ -218,12 +220,12 @@ class Sidebar(CampaignCase):
         self.env["CMUX_WORKSPACE_ID"] = "ws-lead"
         self.env["CMUX_SURFACE_ID"] = "surface-lead"
         self.ok(self.home, "status")
-        self.assertIn("ws-shared>clear-progress|", logged(calls), "demo's stray bar is cleared, and cmux has one")
+        self.assertIn("ws-shared>clear-progress|", calls.read_text(), "demo's stray bar is cleared, and cmux has one")
         self.env["CMUX_WORKSPACE_ID"] = "ws-shared"
         self.env["CMUX_SURFACE_ID"] = "surface-other"
         calls.write_text("")
         self.ok(other, "status")
-        sent = [line for line in logged(calls).splitlines() if "progress" in line]
+        sent = [line for line in calls.read_text().splitlines() if "progress" in line]
         self.assertEqual(sent, ["ws-shared>set-progress|0.0000|--label|other: 0 of 1 quests landed · launchable: o|"])
 
 
