@@ -98,10 +98,11 @@ campaign usage [--json]       # agent runs and jobs per quest, role and assignme
   one queued over an hour (`CAMPAIGN_AGE`) goes ahead in submit order, so a batch of hour-long jobs
   still delays everyone: plan it; `quiet` arbitrates across sessions. An exclusive
   job drains the machine, blocking new light holds from its request to its end. The worker claims
-  one at a time, in a lull (no runnable light work, the running light jobs ending within 10 minutes)
-  or once it is due, 20 minutes after the last drain (`CAMPAIGN_DRAIN_WAIT`); a claimed drain builds,
-  then waits outside quiet (phase `built`) and asks for its hold once no light job runs, so light
-  work keeps its slots until then. Until it is due it holds no one up; light work ending over 4
+  one at a time in a lull (no runnable light work, the running light jobs ending within 10 minutes);
+  once drains are due, 20 minutes after the last drain (`CAMPAIGN_DRAIN_WAIT`), every due one is
+  claimed, so they run back to back. A claimed drain builds, then waits outside quiet (phase `built`)
+  and is admitted to its hold once no light job runs, so light work keeps its slots until then; from
+  its admission to its end no new light job starts. Until it is due it holds no one up; light work ending over 4
   hours after it falls due waits (`CAMPAIGN_DRAIN_HOLD`). A deferred drain (priority below 0) waits
   while work of higher priority is queued, and falls due 20 minutes after such work last waited.
   Ready heavy jobs run back to back, up to 6 jobs or 30 minutes (`CAMPAIGN_BATCH_JOBS`,

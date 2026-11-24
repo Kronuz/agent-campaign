@@ -262,6 +262,16 @@ class Plan(unittest.TestCase):
             long["spec"].update(minutes=600, long="a soak")
             self.assertEqual(self.started(drain, short, long), [], started)
 
+    def test_due_drains_build_together_while_the_first_waits(self) -> None:
+        """Once drains are due, each one's build is claimed beside the claimed drain's wait, so the due
+        drains run back to back instead of one build per turn."""
+        first = self.job(1, "exclusive", "running", NOW - 3600, phase="built", claimed=NOW - 60)
+        due = [self.job(n, "exclusive", "queued", NOW - 3600) for n in (2, 3)]
+        light = self.job(4, "light", "running", NOW - 3600, claimed=NOW - 60, started=NOW - 60)
+        for d in (first, *due):
+            d["spec"]["build"] = "make"
+        self.assertEqual(self.started(first, *due, light), [d["id"] for d in due])
+
     def test_one_drain_is_claimed_at_a_time(self) -> None:
         """Two drains with builds in a lull: the first's build is claimed, the second stays queued until the
         first ends."""

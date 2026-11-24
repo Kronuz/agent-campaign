@@ -494,9 +494,9 @@ def plan(
     job): the queued jobs to start, in order (a heavy one's state carries its batch), the jobs to skip
     (one they run after did not succeed), and the drain turn's record ({} for none). A heavy job with a
     build starts it as light work (state phase "build"); once built, it waits in the heavy queue's order
-    for its hold (phase "run": the worker admits it). One drain is claimed at a time; it holds no one up
-    until it is due, and takes its hold once no light job runs (a drain claimed earlier waits in phase
-    "built"). A deferred drain (priority below 0) is due only a DRAIN_WAIT after work of higher priority
+    for its hold (phase "run": the worker admits it). One drain is claimed at a time until drains are due, then
+    every due one; a drain holds no one up until it is due, and takes its hold once no light job runs
+    (a drain claimed earlier waits in phase "built"), after which no light job starts until it ends. A deferred drain (priority below 0) is due only a DRAIN_WAIT after work of higher priority
     last waited."""
     claimed = [j for j in jobs if drains(j) and j["state"].get("state") == "running"]
     pending = [  # the drains not yet admitted to their hold
@@ -580,7 +580,7 @@ def plan(
             since = max([since, *(t for p, t in waited.items() if p > prio(j))])
         return since + drain_wait
 
-    # one drain at a time, from its claim (its build, or its wait for admission) to its end; a deferred
+    # one drain at a time in a lull, from its claim (its build, or its wait for admission) to its end; a deferred
     # one claimed before work of higher priority came waits aside, so it holds no other drain back
     drain_busy = any(eligible(j) or j not in pending for j in claimed)
     # the drains that may take the machine: not waiting for their slot (a claimed one holds its own)
@@ -684,8 +684,8 @@ def plan(
             continue
         of = j.get("job", j)  # a phase starts the job it is of: its build, or its command's hold
         if mine(j):
-            if yielded or (drain_busy and of["state"].get("state") == "queued"):
-                continue  # light work goes first after a full batch; one drain is claimed at a time
+            if yielded or (drain_busy and of["state"].get("state") == "queued" and of["id"] not in overdue):
+                continue  # light work goes first after a full batch; one drain is claimed at a time until due
             # it is due, or a lull in light work (a deferred drain has its stretch instead)
             lull = prio(of) >= 0 and not wanting and (drain_ok or of["state"].get("state") == "running")
             if of["id"] not in overdue and not lull:
