@@ -26,12 +26,12 @@ class Quests(CampaignCase):
             time.sleep(0.05)
         self.assertIsNone(waiting.poll())  # nothing has happened yet
         journal = ".campaign/demo/journal/fix.md"
-        state = "State: blocked on the lead: the publication code\n"
+        state = "State: working: the publication code\n"  # no to-do item: the move alone wakes the wait
         self.commit(wt, {journal: state + (wt / journal).read_text().split("\n", 3)[-1]})
         out, _ = waiting.communicate(timeout=30)
         self.assertEqual(waiting.returncode, 0)
         self.assertIn("fix: quest/demo/fix moved to", out)
-        self.assertIn("journal: blocked on the lead: the publication code", out)
+        self.assertIn("journal: working: the publication code", out)
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
 
