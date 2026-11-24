@@ -199,6 +199,30 @@ class Sidebar(CampaignCase):
         self.ok(self.home, "status")
         self.assertNotIn("ws-stray>", calls.read_text(), "and cleared once")
 
+    def test_a_campaign_sharing_the_cleared_workspace_redraws_its_bar(self) -> None:
+        calls = self.workspace_cmux()
+        other = self.repo("other", {"README.md": "other\n"})
+        self.env["CMUX_WORKSPACE_ID"] = "ws-shared"  # another campaign's lead, in its own home
+        self.env["CMUX_SURFACE_ID"] = "surface-other"
+        self.ok(other, "init", "--name", "other")
+        self.ok(other, "new", "o", "--title", "o", "--risk", "low", "--files", "README.md", "--check", "unit=true")
+        self.assertIn("ws-shared>set-progress|", calls.read_text())
+        path = self.home / ".git" / "campaign-sidebar.json"
+        views = json.loads(path.read_text())
+        [(lead, drawn)] = views.items()
+        views[f"ws-shared {lead.partition(' ')[2]}"] = drawn  # demo drawn there before the rule
+        path.write_text(json.dumps(views))
+        self.env["CMUX_WORKSPACE_ID"] = "ws-lead"
+        self.env["CMUX_SURFACE_ID"] = "surface-lead"
+        self.ok(self.home, "status")
+        self.assertIn("ws-shared>clear-progress|", calls.read_text(), "demo's stray bar is cleared, and cmux has one")
+        self.env["CMUX_WORKSPACE_ID"] = "ws-shared"
+        self.env["CMUX_SURFACE_ID"] = "surface-other"
+        calls.write_text("")
+        self.ok(other, "status")
+        sent = [line for line in calls.read_text().splitlines() if "progress" in line]
+        self.assertEqual(sent, ["ws-shared>set-progress|0.0000|--label|other: 0 of 1 quests landed · launchable: o|"])
+
 
 class Map(CampaignCase):
     def test_the_map_shows_intent_result_documents_and_progress(self) -> None:
