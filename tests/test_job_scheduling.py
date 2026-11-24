@@ -394,11 +394,13 @@ class Scheduling(CampaignCase):
             build = new
 
     def test_a_pending_job_is_reused_only_when_it_runs_after_the_same_jobs(self) -> None:
-        slow = self.submit(self.home, "--", "sleep 3")
+        go = self.root / "go"
+        slow = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")  # QUEUED stays pending
         queued = self.submit(self.home, "--after", slow, "--", "true")
         other = self.submit(self.home, "--", "exit 1")
         self.assertNotEqual(self.submit(self.home, "--after", other, "--", "true"), queued)
         self.assertEqual(self.submit(self.home, "--after", slow, "--", "true"), queued)
+        go.touch()
         self.run_cli(self.home, "wait", slow, queued, other, "--timeout", "60")
         self.assertEqual(self.job(queued)["state"], "done")
 

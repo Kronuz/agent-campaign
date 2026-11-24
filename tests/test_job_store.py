@@ -164,11 +164,13 @@ class JobIndex(CampaignCase):
 
 class CiCache(CampaignCase):
     def test_a_ci_answer_lasts_by_how_much_it_can_still_change(self) -> None:
-        """A live run list is asked again after CAMPAIGN_CI_SECONDS, a failed one after five times
-        that (it can be re-run), a passed one after fifteen (a newer run at the commit counts)."""
-        self.env["CAMPAIGN_CI_SECONDS"] = "1"
+        """A live run list is kept CAMPAIGN_CI_SECONDS, a failed one five times that (it can be
+        re-run), a passed one fifteen (a newer run at the commit counts); a kept one is not asked again."""
+        seconds = 1000  # nothing expires while the test runs: it ages the answers on disk itself
+        self.env["CAMPAIGN_CI_SECONDS"] = str(seconds)
         answer = self.root / "ci-answer"
         calls = self.root / "gh-calls"
+        answers = self.root / "jobs" / ".gh"
         fake = self.root / "bin" / "gh"
         fake.write_text(f'#!/bin/sh\necho "$2" >> {calls}\ncat {answer}\n')
         fake.chmod(0o755)
@@ -176,6 +178,7 @@ class CiCache(CampaignCase):
         wt = self.started("fix", files="app.py", check="unit=true")
         self.commit(wt, {"app.py": "print(2)\n"})
         self.verified("fix")
+        self.age(answers)
         for status, conclusion, gap, lasts in (
             ("in_progress", "", "running: build", 1),
             ("completed", "failure", "failed: build (failure)", 5),
@@ -183,16 +186,27 @@ class CiCache(CampaignCase):
         ):
             run = {"name": "build", "databaseId": 7, "status": status, "conclusion": conclusion}
             answer.write_text(json.dumps([run]))
+            asked = time.time()
             out = self.ok(wt, "brief").out
+            took = time.time() - asked
             if gap:
                 self.assertIn(gap, out)
             else:
                 self.assertNotIn("CI at", out)
+            kept = [x["until"] - asked for x in map(json.loads, (f.read_text() for f in answers.glob("*.json")))]
+            kept = [k for k in kept if k > 0]  # the answers aged below are in the past
+            self.assertTrue(kept, f"a {status} {conclusion} answer was not kept")
+            self.assertTrue(all(lasts * seconds <= k <= lasts * seconds + took for k in kept), (status, kept))
             calls.write_text("")
             self.ok(wt, "brief")
             self.assertEqual(calls.read_text(), "", f"a {status} {conclusion} answer was asked again at once")
-            if lasts < 15:
-                time.sleep(lasts + 0.2)  # it expired: the next answer is asked
+            self.age(answers)  # its time passed: the next brief asks again
+
+    @staticmethod
+    def age(answers: Path) -> None:
+        """Ends every answer kept on disk, as if its time had passed."""
+        for f in answers.glob("*.json"):
+            f.write_text(json.dumps({**json.loads(f.read_text()), "until": 0}))
 
 
 class GitMirrors(CampaignCase):

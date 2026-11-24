@@ -20,7 +20,10 @@ class Quests(CampaignCase):
             stdout=subprocess.PIPE,
             text=True,
         )
-        time.sleep(2)
+        seen = self.home / ".git" / "campaign-seen.json"  # the first wait records where it starts
+        deadline = time.time() + 60  # ends a hung test only
+        while not seen.exists() and waiting.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
         self.assertIsNone(waiting.poll())  # nothing has happened yet
         journal = ".campaign/demo/journal/fix.md"
         state = "State: blocked on the lead: the publication code\n"
