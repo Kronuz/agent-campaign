@@ -404,6 +404,76 @@ def gates(p: Json) -> list[Json]:
     return [x for x in p["checks"] if not x.get("later")]
 
 
+SANITIZERS = {"address": "asan", "thread": "tsan", "undefined": "ubsan", "memory": "msan"}
+SANITIZER_FLAG = re.compile(r"-fsanitize=([\w,-]+)")
+SANITIZER_WORD = re.compile(r"(?<![a-z])([atm]|ub)san(?![a-z])|\b(address|thread|undefined|memory) ?sanitizer", re.I)
+SANITIZER_KEY = re.compile(r"sanitiz\w*\s*:(.+)", re.I)  # a matrix or input naming them: `sanitizer: [address]`
+SWITCHED_OFF = re.compile(r"^\s*-?\s*[\w-]+\s*:\s*(false|off|no|0|''|\"\")\s*$", re.I)  # `tsan: false`
+YAML_COMMENT = re.compile(r"(?:^|\s)#.*")
+
+
+def sanitizers(text: str) -> set[str]:
+    """The sanitizers TEXT builds: -fsanitize= flags, and asan, tsan, ubsan and msan words (build
+    types, directories, options) or their long names (ThreadSanitizer)."""
+    found = {SANITIZERS[x] for flags in SANITIZER_FLAG.findall(text) for x in flags.split(",") if x in SANITIZERS}
+    for short, long in SANITIZER_WORD.findall(text):
+        found.add(f"{short}san".lower() if short else SANITIZERS[long.lower()])
+    return found
+
+
+def ci_sanitizers(repo: Path) -> dict[str, tuple[str, str]]:
+    """The sanitizers REPO's GitHub workflows build, each with where (`ci.yml job tsan`) and the name
+    a `ci:` check matches: the job's literal name, else its id, or NAME when the job calls a reusable
+    workflow. Read line by line, without a YAML parser: comments and switched-off keys say nothing."""
+    found: dict[str, tuple[str, str]] = {}
+    for workflow in sorted((repo / ".github" / "workflows").glob("*.y*ml")):
+        jobs: dict[str, Json] = {}
+        job, level, depth, in_jobs = "", 0, 0, False
+        for raw in workflow.read_text(errors="replace").splitlines():
+            line = YAML_COMMENT.sub("", raw).rstrip()
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip())
+            key, _, value = line.strip().lstrip("- ").partition(":")
+            if indent == 0:
+                in_jobs, job, level = key == "jobs", "", 0
+                continue
+            if in_jobs and indent == (level := level or indent):
+                job, depth = key.strip(), 0
+                jobs[job] = {"name": job, "uses": False, "builds": set()}
+            elif job and indent == (depth := depth or indent):
+                if key == "name" and value.strip() and "${{" not in value:
+                    jobs[job]["name"] = value.strip().strip("'\"")
+                jobs[job]["uses"] = jobs[job]["uses"] or key == "uses"
+            if not job or SWITCHED_OFF.match(line):
+                continue
+            jobs[job]["builds"] |= sanitizers(line)
+            if keyed := SANITIZER_KEY.search(line):
+                words = re.findall(r"[a-z]+", keyed.group(1).lower())
+                jobs[job]["builds"] |= {SANITIZERS[w] for w in words if w in SANITIZERS}
+        for ident, j in jobs.items():
+            where = f"{workflow.name} job {ident}" + (", a reusable workflow: NAME is its job's" if j["uses"] else "")
+            for built in sorted(j["builds"]):
+                found.setdefault(built, (where, "NAME" if j["uses"] else j["name"]))
+    return found
+
+
+def ci_owned(checks: list[Json], repo: Path) -> list[str]:
+    """CHECKS' local gate checks that build a sanitizer REPO's CI builds too, each with the `ci:`
+    check to use instead: the sanitizers and the platform matrix are CI's."""
+    local = [(x, sanitizers(x["cmd"])) for x in checks if not x.get("later") and not x["cmd"].startswith(CI_CHECK)]
+    built = ci_sanitizers(repo) if any(found for _, found in local) else {}
+    out: list[str] = []
+    for check, found in local:
+        if mine := sorted(found & set(built)):
+            where, name = built[mine[0]]
+            out.append(
+                f"gate check {check['name']} builds {'/'.join(mine)} locally, which CI builds ({where}): "
+                f"`--check '{check['name']}=ci:{name}'`"
+            )
+    return out
+
+
 def declare_inputs(p: Json, pid: str, items: list[str]) -> None:
     """Applies `--inputs NAME=GLOBS` to the quest's checks: a job of that check is identified by the
     files under GLOBS (and the build files and paths its command names), not by the whole tree. An

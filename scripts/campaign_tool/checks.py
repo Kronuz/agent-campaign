@@ -22,7 +22,7 @@ from .leads import stuck_warnings
 from .repo import frozen, has_ref, main_branch, rev, same_repo
 from .reuse import build_test, check_spec, docs_note, job_at, submit
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
-from .state import branches, deferred, gates, locate, select, validate
+from .state import branches, ci_owned, deferred, gates, locate, select, validate
 from .status import print_problem, problems
 from .worker import long_timeouts, stalls
 
@@ -54,12 +54,13 @@ def cmd_check(a: argparse.Namespace) -> int:
 
 def check_commands(c: Campaign) -> list[tuple[str, str]]:
     """Checks of live quests whose commands waste a light slot: asking for more build jobs than a light
-    hold allows (several light jobs run at once, so each keeps to LIGHT_BUILD_JOBS), or running ctest
-    on past its first failure."""
+    hold allows (several light jobs run at once, so each keeps to LIGHT_BUILD_JOBS), running ctest
+    on past its first failure, or building a sanitizer locally that CI builds."""
     out: list[tuple[str, str]] = []
     for pid, p in c.quests.items():
         if p["status"] in ("landed", "dropped"):
             continue
+        out += [("warning", f"{pid}: {text}") for text in ci_owned(gates(p), c.repo(p))]
         for kind in ("checks", "later"):
             for check in p.get(kind, []):
                 if warning := ctest_warning(check.get("cmd", "")):

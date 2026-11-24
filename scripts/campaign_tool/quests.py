@@ -40,6 +40,7 @@ from .reviews import blob_id, confirmations, drift, live_task, own_diffs, read_r
 from .state import (
     campaigns,
     campaigns_in,
+    ci_owned,
     clashes,
     criteria_hash,
     cross_overlaps,
@@ -159,6 +160,8 @@ def cmd_new(a: argparse.Namespace) -> int:
                 key = "suite" if home else f"suite.{repo.name}"
                 die(f"no gate: --check NAME=CMD, or `campaign config {key}=CMD` (the native build plus tests)")
             checks.insert(0, parse_check(f"suite={suite}"))
+        if local := ci_owned(checks, repo):
+            die(f"{a.id}: {'; '.join(local)}; to keep it local, add it by `campaign set --check` with --weaken REASON")
         refuse_dead(c, csv(a.needs) + csv(a.after))
         c.quests[a.id] = {
             "title": a.title,
@@ -329,6 +332,9 @@ def cmd_set(a: argparse.Namespace) -> int:
                 f"{a.id}: this weakens what it must pass ({'; '.join(weakened)}): --weaken REASON records why "
                 "and voids its review acceptances"
             )
+        local = ci_owned([x for x in gates(p) if x not in before["checks"]], c.repo(p))
+        if local and not a.weaken:
+            die(f"{a.id}: {'; '.join(local)}; --weaken REASON keeps it local")
         after = {k: p[k] for k in before}
         if after != before:
             voided: list[str] = sorted(p.get("accepted", {})) if weakened or p["risk"] != before["risk"] else []
