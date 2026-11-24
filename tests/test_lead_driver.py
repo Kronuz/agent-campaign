@@ -53,9 +53,12 @@ class LeadDriver(CampaignCase):
         """A wait that finds the list empty: what the lead has seen so far."""
         self.assertEqual(self.run_cli(self.home, "wait", "--commits", "--timeout", "1").code, 3)
 
-    def journal(self, pid: str, state: str) -> None:
+    def journal(self, pid: str, state: str, ago: float = 0) -> None:
+        """Sets PID's journal State, as written AGO seconds before now."""
         path = self.wt(pid) / f".campaign/demo/journal/{pid}.md"
         path.write_text(re.sub(r"^State:.*$", f"State: {state}", path.read_text(), count=1, flags=re.M))
+        if ago:
+            os.utime(path, (time.time() - ago,) * 2)
 
     def landed(self, pid: str) -> None:
         self.commit(self.wt(pid), {f"{pid}.py": "done\n"})
@@ -132,7 +135,7 @@ class LeadDriver(CampaignCase):
         job = self.submit(self.wt("tasked--t1"), "--quest", "tasked", "--task", "t1", "--", "true")
         self.ok(self.home, "wait", job)
         self.started("stuck", files="stuck.py")
-        self.journal("stuck", "waiting on jobs J1")  # they ended long ago: its contributor is gone
+        self.journal("stuck", "waiting on jobs J1", ago=3600)  # they ended long ago: its contributor is gone
         self.assertEqual(len(self.state()["quests"]), 18)
         want = [
             "todo: start root: launchable: `campaign start root`",  # two quests wait on it
@@ -493,6 +496,27 @@ class LeadDriver(CampaignCase):
         self.journal("fix", "blocked on owner and lead: the wire format")
         want = "todo: answer fix: its journal waits on the lead: blocked on owner and lead: the wire format"
         self.assertEqual(self.todo(self.ok(self.home, "status").out), [f"{want}: `campaign status fix`"])
+
+    # todo-mail-trust A2: a contributor at work in its worktree, with no job running, is not resumed
+
+    def test_a_worktree_changed_minutes_ago_is_worked_on_not_resumed(self) -> None:
+        wt = self.started("slow", files="app.py")
+        self.commit(wt, {".campaign/demo/journal/slow.md": "State: waiting on jobs J1\n"})
+        jid = self.submit(wt, "--quest", "slow", "--", "true")
+        self.ok(self.home, "wait", jid, "--timeout", "60")
+        resume = "todo: resume slow: its jobs ended: waiting on jobs J1: `campaign status slow`"
+        self.assertIn(resume, self.todo(self.ok(self.home, "status").out), "its contributor is gone")
+        (wt / "app.py").write_text("print(2)\n")
+        os.utime(wt / "app.py", (time.time() - 300,) * 2)
+        out = self.ok(self.home, "status").out
+        self.assertNotIn(resume, self.todo(out), "a file changed 5 min ago: a contributor at work")
+        self.assertIn("in flight: 1 worked on", out)
+        os.utime(wt / "app.py", (time.time() - 1200,) * 2)
+        self.assertIn(resume, self.todo(self.ok(self.home, "status").out), "untouched for 20 min")
+        time.sleep(max(0.0, float(self.job(jid)["ended"]) + 1.1 - time.time()))  # a commit's time is in whole seconds
+        self.git(wt, "commit", "-qam", "more")
+        os.utime(wt / "app.py", (time.time() - 1200,) * 2)
+        self.assertNotIn(resume, self.todo(self.ok(self.home, "status").out), "a commit since its last job ended")
 
     # A2: a wait or brief prints ten items and counts the rest; status prints them all
 

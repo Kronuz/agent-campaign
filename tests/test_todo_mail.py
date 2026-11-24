@@ -60,12 +60,15 @@ class TodoMail(CampaignCase):
         rows = [x.split("\037")[:-1] for x in calls]
         return [r for r in rows if r[1:2] == what.split()[:1] and " ".join(r[1:]).startswith(what)]
 
-    def journal(self, pid: str, state: str, blocked: str = "") -> None:
+    def journal(self, pid: str, state: str, blocked: str = "", ago: float = 0) -> None:
+        """Sets PID's journal State (and Blocked on), as written AGO seconds before now."""
         path = self.wt(pid) / f".campaign/demo/journal/{pid}.md"
         text = re.sub(r"^State:.*$", f"State: {state}", path.read_text(), count=1, flags=re.M)
         if blocked:
             text = re.sub(r"(## Blocked on\n\n)<[^\n]*>", rf"\g<1>{blocked}", text, count=1)
         path.write_text(text)
+        if ago:
+            os.utime(path, (time.time() - ago,) * 2)
 
     # A1: a launchable quest reaches the lead as mail within a tick, with no lead command run
 
@@ -162,6 +165,52 @@ class TodoMail(CampaignCase):
         self.look(301)
         self.assertEqual(len(self.todo_mail()), 2)
 
+    # todo-mail-trust A1: the standing mail matches the list now; an age alone never resends it
+
+    def test_an_item_that_leaves_replaces_the_mail_at_the_next_look(self) -> None:
+        self.new("a", "b")
+        self.look(0)
+        self.ok(self.home, "start", "a")
+        self.look(300)
+        mails = self.todo_mail()
+        self.assertEqual(len(mails), 2, "replaced at the next look, not at the repeat")
+        self.assertNotIn("campaign start a", mails[-1]["text"])
+        self.assertIn("`campaign start b`", mails[-1]["text"])
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            c = self.tool.Campaign(self.home, "demo")
+            self.assertEqual([x["id"] for x in self.tool.inbox(c, "")], [mails[-1]["id"]])
+        self.look(600)
+        self.assertEqual(len(self.todo_mail()), 2, "an unchanged list sends nothing")
+
+    def test_a_changed_gap_replaces_the_mail_at_the_next_look(self) -> None:
+        self.env["CAMPAIGN_IDLE"] = "0"  # no contributor at work: its finish is the lead's
+        self.started("fin", files="fin.py", check="unit=true")
+        brief = self.home / ".campaign/demo/quests/fin.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 one: a test\n- A2 two: a test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.journal("fin", "ready for review")
+        self.look(0)
+        (first,) = self.todo_mail()
+        self.assertRegex(first["text"], r"todo: finish fin .*A1", first["text"])
+        jid = self.submit(self.wt("fin"), "--quest", "fin", "--for", "A1", "--", "true")
+        self.ok(self.home, "wait", jid, "--timeout", "60")
+        self.look(300)
+        mails = self.todo_mail()
+        self.assertEqual(len(mails), 2, f"the gap changed: {mails[-1]['text']}")
+        self.assertNotEqual(first["text"].splitlines()[1:], mails[-1]["text"].splitlines()[1:])
+
+    def test_an_items_age_alone_never_resends(self) -> None:
+        self.started("slow", files="slow.py")
+        journal = self.wt("slow") / ".campaign/demo/journal/slow.md"
+        os.utime(journal, (time.time() - 7200,) * 2)
+        self.look(0)
+        (first,) = self.todo_mail()
+        self.assertIn("todo: resume slow (nothing moved it for 2 h", first["text"])
+        os.utime(journal, (time.time() - 3 * 3600,) * 2)
+        for at in (300, 600, 900):
+            self.look(at)
+        self.assertEqual(len(self.todo_mail()), 1, "only its age changed")
+
     # A7: a line carries its age and evidence, and what the lead must do
 
     def test_a_line_carries_its_age_and_evidence(self) -> None:
@@ -179,7 +228,7 @@ class TodoMail(CampaignCase):
         self.started("asks", files="asks.py")
         jid = self.submit(self.wt("slow"), "--quest", "slow", "--", "true")
         self.ok(self.home, "wait", jid, "--timeout", "60")
-        self.journal("slow", f"waiting on jobs {jid}")
+        self.journal("slow", f"waiting on jobs {jid}", ago=1200)  # its contributor stopped before they ended
         self.journal("asks", "blocked on the lead: which wire format", "Pick JSON or CBOR for the wire.")
         self.look(600)  # after the worker that ran the job last looked
         text = self.todo_mail()[-1]["text"]
