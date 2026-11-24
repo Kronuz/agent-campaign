@@ -287,14 +287,31 @@ def writes(q: Json) -> bool:
     return q.get("status") in ("active", "review") or (q.get("status") == "blocked" and bool(q.get("branch")))
 
 
+def waits_for(c: Campaign, x: str, pid: str) -> bool:
+    """Whether quest X lands after PID by construction: PID is in X's needs or until, or in the needs
+    of a quest those name, transitively (this campaign's ids, bare or NAME:ID)."""
+    own = f"{c.name}:"
+    todo = [*c.quests[x].get("needs", []), *c.quests[x].get("until", [])]
+    seen: set[str] = set()
+    while todo:
+        dep = todo.pop().removeprefix(own)
+        if dep == pid:
+            return True
+        if dep not in seen and dep in c.quests:
+            seen.add(dep)
+            todo += c.quests[dep].get("needs", [])
+    return False
+
+
 def clashes(c: Campaign, pid: str) -> list[str]:
     """The quests holding files (`writes`) that may overlap this one's in its repository: one writer
-    per file set, so `start` refuses them."""
+    per file set, so `start` refuses them. A holder that waits for PID (`waits_for`) never writes
+    beside it."""
     p, repo = c.quests[pid], c.repo(c.quests[pid])
     return [
         x
         for x, q in c.quests.items()
-        if x != pid and writes(q) and c.repo(q) == repo and overlap(p["files"], q["files"])
+        if x != pid and writes(q) and c.repo(q) == repo and overlap(p["files"], q["files"]) and not waits_for(c, x, pid)
     ]
 
 
