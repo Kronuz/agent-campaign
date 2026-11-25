@@ -170,7 +170,8 @@ class Mutants(CampaignCase):
         self.assertTrue(self.met(), "a fails-without result went stale though its mutated code is unchanged")
         brief = self.ok(wt, "brief").out
         self.assertNotIn(mutant, brief.split("evidence, for")[0], "brief asks about the mutant")
-        self.assertIn(f"| A1 | {rerun}; fails without: {mutant} |", brief)
+        # where inputs are traced (Linux) the rerun reuses the pass, and brief says why it still counts
+        self.assertRegex(brief, rf"\| A1 \| {rerun}(?: \([^)]*\))?; fails without: {mutant} \|")
         before = len(list((self.root / "jobs").glob("*/spec.json")))
         out = self.ok(self.home, "job", "rerun", mutant).out
         self.assertIn(f"{mutant} still holds at ", out)
