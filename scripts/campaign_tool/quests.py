@@ -59,6 +59,7 @@ from .state import (
     starved,
     weakening,
     worktree_path,
+    writes,
 )
 
 
@@ -288,6 +289,7 @@ def cmd_set(a: argparse.Namespace) -> int:
         if "status=dropped" not in a.assignments and (why := unparsed_criteria(c, a.id, filled=False)):
             die(why)
         waited, was, waiting = blockers(c), p["status"], dependents(c, a.id)
+        held, crossed = clashes(c, a.id), cross_overlaps(c, a.id)  # overlaps it had: narrowing never refuses
         before = {k: json.loads(json.dumps(p[k])) for k in ("risk", "lenses", "checks")}
         for item in a.assignments:
             key, sep, value = item.partition("=")
@@ -312,6 +314,21 @@ def cmd_set(a: argparse.Namespace) -> int:
                     f"no field {key} to set; the fields are title, status, risk, reason, into, until, repo, milestone, hunt, "
                     f"needs, after, provides, consumes, files and lenses (`campaign get {a.id}`), and --check, "
                     "--later and --inputs"
+                )
+        if writes(p) and (fresh := [x for x in clashes(c, a.id) if x not in held]):
+            shared = "; ".join(
+                f"{x} ({', '.join(g for g in c.quests[x]['files'] if overlap(p['files'], [g])) or 'every file'})"
+                for x in fresh
+            )
+            die(
+                f"{a.id}'s files would overlap {shared} (one writer per file set): narrow files, "
+                f"or wait for {'them' if len(fresh) > 1 else 'it'} with needs="
+            )
+        for other in cross_overlaps(c, a.id) if writes(p) else []:
+            if other not in crossed:
+                print(
+                    f"warning: {a.id}'s files may overlap {other}: order them (after={other}) or narrow files",
+                    file=sys.stderr,
                 )
         dropped = edit_checks(p, a.check, a.later)
         if a.check or a.later:
