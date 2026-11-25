@@ -93,6 +93,31 @@ class Quests(CampaignCase):
         self.assertFalse(waiting.is_alive(), "the message that landed during the look waited for the tick")
         self.assertIn("msg-1 for the lead, from peer: pins moved", out.getvalue())
 
+    def test_the_tools_git_status_never_takes_the_lock_a_commit_needs(self) -> None:
+        """`git status` refreshes a worktree's index under index.lock when it may; the tool's git calls
+        take no such optional lock, so a look at a contributor's worktree never fails its commit."""
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"notes.txt": "notes\n"})
+        tool = campaign_module()
+        stop = threading.Event()
+
+        def look() -> None:  # a touched file is stale in the index: each status wants to rewrite it
+            while not stop.is_set():
+                os.utime(wt / "notes.txt")
+                tool.core.git(wt, "status", "--porcelain", check=False)
+
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            lookers = [threading.Thread(target=look, daemon=True) for _ in range(4)]
+            for t in lookers:
+                t.start()
+            try:
+                for i in range(40):
+                    self.commit(wt, {"app.py": f"print({i})\n"})
+            finally:
+                stop.set()
+                for t in lookers:
+                    t.join(60)
+
     def test_wait_misses_nothing_that_happened_between_two_waits(self) -> None:
         a = self.started("one", files="app.py")
         b = self.started("two", files="README.md")
