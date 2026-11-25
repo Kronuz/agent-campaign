@@ -64,7 +64,7 @@ from .worker import cpu_lines, health_lines, queue_health
 
 GUARD_HOURS = 24  # the window the treadmill guard reads
 GUARD_NEVER = 3  # rounds cancelled before any of their jobs started, in the window
-GUARD_UNPROVEN = 4  # rounds that ran in the window and met no new criterion
+GUARD_UNPROVEN = 4  # rounds that ran in the window and met no criterion at their head
 
 
 def parent(repo: str, commit: str) -> str:
@@ -97,8 +97,8 @@ def rounds(jobs: list[Json]) -> dict[str, list[Json]]:
 def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     """Why a quest's last GUARD_HOURS of evidence (jobs tagged `--for`) look queued at every commit,
     counted in rounds (one per head): at least GUARD_NEVER cancelled before any job started, or
-    GUARD_UNPROVEN that ran and newly met no criterion (met at its head, not at the previous round's);
-    "" otherwise. Names the counts, the job-hours waited, and the lead's step."""
+    GUARD_UNPROVEN that ran and newly met no criterion (one is progress when it meets, at its own head,
+    a criterion not met there before it: re-proving after a merge or a fix counts); "" otherwise. Names the counts, the job-hours waited, and the lead's step."""
     since = now - GUARD_HOURS * 3600
     mine = (c.ident, pid)
 
@@ -109,8 +109,7 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     order = sorted(rounds(tagged).values(), key=lambda g: min(float(j["spec"].get("submitted") or 0) for j in g))
     never = barren = newly = 0
     waited = 0.0
-    before: set[str] = set()
-    for group in order:
+    for group in order:  # one head each: what it meets, it meets there first
         met = {x for j in group if j["state"].get("state") == "done" for x in proves(j)}
         recent = max(float(j["spec"].get("submitted") or 0) for j in group) >= since
         waited += recent * sum(
@@ -118,15 +117,13 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
             for j in group
         )
         if any(j["state"].get("state") in ("queued", "running") for j in group):
-            continue  # undecided until its jobs end: neither barren nor the round the next one follows
+            continue  # undecided until its jobs end
         if recent:
             if not any(j["state"].get("started") for j in group):
                 never += any(j["state"].get("state") == "cancelled" for j in group)
-            elif not met - before:
+            elif not met:
                 barren += 1
-            newly += len(met - before)
-        if any(j["state"].get("started") for j in group):
-            before = met
+            newly += len(met)
     if never < GUARD_NEVER and barren < GUARD_UNPROVEN:
         return ""
     heads = sum(1 for g in order if max(float(j["spec"].get("submitted") or 0) for j in g) >= since)

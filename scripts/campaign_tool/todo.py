@@ -58,6 +58,8 @@ def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, l
     after it, newest first, with its commit time; and the State the code found. In one repository
     "after" is by ancestry, across two (a quest in another repository) by commit time."""
     repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
+    if not (branch and has_ref(repo, branch) and has_ref(c.home, branch)):
+        return "", [], ""  # a quest not started, or its branch gone: no State
     code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
     k, k_at = code.split() if code else ("", "0")
     mine = same_repo(repo, c.home)

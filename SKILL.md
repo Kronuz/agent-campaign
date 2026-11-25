@@ -176,7 +176,7 @@ job passing at the exact commit; it queues no local job.
 2. A contributor builds its task, iterating in its worktree under `quiet light`, and submits evidence
    once per round: commit the code, commit State `ready for review`, submit the round, then commit
    State `waiting on jobs <ids>`. Until a State set at the head releases them, `job submit --for`,
-   `job rerun` and `verify` queue nothing new (the table: `references/review.md`); probes queue. A
+   `job rerun` and `verify` queue nothing new (the table: `references/host.md`); probes queue. A
    passed `--fails-without` job holds until the code its mutation reverts changes; `status`, `check`
    and `brief` flag a quest whose rounds churn. The lead merges it and starts what it unblocked.
 3. The lead waits with one background `campaign wait --commits`, never with a loop that retries

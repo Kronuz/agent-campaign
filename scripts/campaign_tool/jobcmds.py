@@ -147,15 +147,15 @@ READY = "ready for review"  # the journal State that ends a round: its evidence 
 
 
 def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) -> str:
-    """Why the lifecycle table (references/review.md, "When evidence runs") holds a quest's (or
-    task's) evidence and gate checks; "" when they queue: a quest neither active nor in review, a
-    tasked quest's `verify` once every task merged or was dropped, or a State that ends a round
-    (`ready`) set at the head (a commit after the head's code changed it)."""
+    """Why the lifecycle table (references/host.md, "When evidence runs") holds a quest's (or task's)
+    evidence and gate checks, in every status but landed; "" when they queue: a landed quest, a tasked
+    quest's `verify` once every task merged or was dropped, or a State that ends a round (`ready`) set
+    at the head (a commit after the head's code changed it)."""
     if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
         return ""
     p = c.quests[pid]
     tasks = p.get("tasks", {})
-    if p.get("status") not in ("active", "review"):
+    if p.get("status") == "landed":
         return ""
     if verify and tasks and all(t.get("merged") or t.get("status") == "dropped" for t in tasks.values()):
         return ""

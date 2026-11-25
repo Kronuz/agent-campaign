@@ -160,6 +160,32 @@ pending job or quest job of the last 7 days uses. Every deletion and slimming is
 store's `prune.log`. The worker runs it with these defaults once a day when its queue empties;
 `CAMPAIGN_AUTO_PRUNE=0` turns that off.
 
+### When evidence runs
+
+A round is one quest head's evidence: commit the code, commit State `ready for review`, submit the
+round, then commit State `waiting on jobs <ids>`. The State is the journal's first `State:` line. It
+is set at the head when a commit newer than the head's code changed it, so a code commit re-holds
+until the State changes again. The hold reads it in every status but landed (active, review,
+blocked, planned, dropped); only `land`, and a landed quest's deferred checks, queue regardless.
+
+Every command that queues evidence asks one hold decision (`evidence_hold`). What queues nothing
+passes first, at any State: a result an earlier job answers is handed back, and a passed mutant that
+still holds is still valid. Then the table:
+
+| Journal State | Event | Result |
+|---|---|---|
+| ready for review, or waiting on jobs, set at the head | `job submit --for`, `job rerun` (plain, mutant or gate check, any `--commit`), `verify` | queues |
+| ready for review, or waiting on jobs, set before the head | the same | held: "set State at <head>" |
+| any other State | the same | held |
+| any, in a tasked quest whose tasks all merged or were dropped | `verify`, `job rerun` of a gate check | queues |
+| any | `land` queueing what its merge from main voided | queues, named once as queued |
+| any | a probe or measurement without `--for` | queues |
+| any | `--force`, on a command that has it | queues |
+| any | `job rerun` of a mutant that still holds, at any `--commit` | queues nothing, says it is still valid |
+
+`CAMPAIGN_EVIDENCE_HOLD=0` turns the hold off; the test harness sets it, and the hold's own tests
+and `test_scenarios` run with the hold on.
+
 ## Disk
 
 Every disk rule acts on the repositories the machine's campaigns use (their homes and quest

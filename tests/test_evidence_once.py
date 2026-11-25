@@ -26,7 +26,7 @@ ID = r"\d{6}-\d{6}-[0-9a-f]{6}"
 
 
 class Hold(CampaignCase):
-    """The hold's lifecycle table (references/review.md, "When evidence runs"), with the hold on: a test
+    """The hold's lifecycle table (references/host.md, "When evidence runs"), with the hold on: a test
     per row, each asking every entry point that queues evidence (`evidence_hold`)."""
 
     n = itertools.count()
@@ -136,6 +136,21 @@ class Hold(CampaignCase):
         wt, tagged, unit, _ = self.round()
         set_state(self, wt, "fix", "fixing D4")
         self.all_held(self.entries(wt, tagged, unit), "the journal State is 'fixing D4'", self.jobs())
+
+    def test_row_3_every_status_but_landed_holds_by_the_state(self) -> None:
+        """Correctness C17, N10: blocked, planned and dropped read the journal State as active does."""
+        wt, tagged, unit, head = self.round()
+        why = f"State 'ready for review' was set before the head {head}: set State at {head}"
+        for status in ("blocked", "planned", "dropped"):
+            until = ["until=owner"] if status == "blocked" else []
+            self.ok(self.home, "set", "fix", f"status={status}", f"reason={status} in a test", *until)
+            self.all_held(self.entries(wt, tagged, unit), why, self.jobs())
+        self.ok(self.home, "new", "later", "--title", "later", "--risk", "low", "--check", "unit=true")
+        brief = self.home / ".campaign/demo/quests/later.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 holds: a test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        cmd = ("job", "submit", "--quest", "later", "--for", "A1", "--", "true")
+        self.fails(self.home, *cmd, match="held: the journal State is ''")  # planned, no branch: no State
 
     def test_row_3_a_bold_or_missing_state_line_holds(self) -> None:
         wt = self.iterating()
@@ -568,12 +583,23 @@ class Guard(CampaignCase):
         """Design D5(b): a round with a job queued or running is neither barren nor the round before."""
         self.started("fix", files="app.py")
         self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=8)  # A1 met
-        for k in range(3):  # three rounds that re-prove A1: barren
-            self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=7 - k)
+        for k in range(3):  # three rounds that ran and met nothing: barren
+            self.fake_jobs("fix", self.heads(1), 1, "failed", started=True, age_h=7 - k)
         self.fake_jobs("fix", self.heads(1), 1, "running", started=True, age_h=0.5)
         self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
-        self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=0.2)  # a fourth barren round
+        self.fake_jobs("fix", self.heads(1), 1, "failed", started=True, age_h=0.2)  # a fourth barren round
         self.assertIn("fix queued evidence at 6 heads", self.run_cli(self.home, "status").out)
+
+    def test_re_proving_a_criterion_at_a_new_head_is_progress(self) -> None:
+        """Correctness C18: a round meets, at its own head, what no round met there before it, so
+        re-proving A1 after each merge from main or fix is progress, not a barren round."""
+        self.started("fix", files="app.py")
+        for k in range(5):
+            self.fake_jobs("fix", self.heads(1), 2, "done", started=True, age_h=10 - k)
+        out = self.run_cli(self.home, "status").out
+        self.assertNotIn("fix queued evidence", out)
+        self.fake_jobs("fix", self.heads(4), 1, "failed", started=True, age_h=1)  # four that met nothing
+        self.assertIn("4 ran and newly met no criterion, 5 criteria newly met", self.run_cli(self.home, "status").out)
 
 
 class ExaminedJobs(CampaignCase):

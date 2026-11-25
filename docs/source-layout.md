@@ -74,7 +74,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   health, and its loop, which also mails each lead its to-do. Boundary: scheduling, one unit: the plan, the charges it reads and the loop
   that runs it only make sense together. Opened alone to change who runs next, or to read why the
   queue is slow.
-- `todo.py` (358 lines): The lead's to-do list: what nothing moves without, critical path first,
+- `todo.py` (360 lines): The lead's to-do list: what nothing moves without, critical path first,
   each item with its command, which status, brief and every wait end with, and the worker mails to
   the lead until each item is done. Boundary: turning the
   overview, what moves each quest and the landing gaps into the lead's next commands. Opened alone
@@ -86,7 +86,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   against the harness's own record, and the cmux workspace named the same. Boundary: reading a
   harness's record of a session's name and the one line that says how to fix it. Opened alone when a
   harness changes where or how it records a session's name.
-- `status.py` (825 lines): Status and brief: the problems status reports, a quest as status shows
+- `status.py` (822 lines): Status and brief: the problems status reports, a quest as status shows
   it, and both commands' output. Boundary: what the lead and agents read about the campaign's
   present. Opened alone to add a problem status reports or change what status or brief prints.
 - `usage.py` (608 lines): Usage: agents' token use and cost, read from what the harnesses and jobs
@@ -139,7 +139,7 @@ The campaign tests:
   their files.
 - `test_evidence.py` (743): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
-- `test_evidence_once.py` (649): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
+- `test_evidence_once.py` (675): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
   round: what the hold queues while a quest iterates, when a fails-without result stops holding, the
   treadmill guard, and what an Evidence row may cite.
 - `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.

@@ -25,28 +25,8 @@ A mechanical edit needs the suite and CI; a behavior change needs these.
 ### When evidence runs
 
 A round is one quest head's evidence: commit the code, commit State `ready for review`, submit the
-round, then commit State `waiting on jobs <ids>`. The State is the journal's first `State:` line. It
-is set at the head when a commit newer than the head's code changed it, so a code commit re-holds
-until the State changes again.
-
-Every command that queues evidence asks one hold decision (`evidence_hold`). What queues nothing
-passes first, at any State: a result an earlier job answers is handed back, and a passed mutant that
-still holds is still valid. Then the table:
-
-| Quest status | Journal State | Event | Result |
-|---|---|---|---|
-| active or review | ready for review, or waiting on jobs, set at the head | `job submit --for`, `job rerun` (plain, mutant or gate check, any `--commit`), `verify` | queues |
-| active or review | ready for review, or waiting on jobs, set before the head | the same | held: "set State at <head>" |
-| active or review | any other State | the same | held |
-| active or review, tasked, every task merged or dropped | any | `verify`, `job rerun` of a gate check | queues |
-| any other | any | any | queues |
-| any | any | `land` queueing what its merge from main voided | queues, named once as queued |
-| any | any | a probe or measurement without `--for` | queues |
-| any | any | `--force`, on a command that has it | queues |
-| any | any | `job rerun` of a mutant that still holds, at any `--commit` | queues nothing, says it is still valid |
-
-The test harness turns the hold off with `CAMPAIGN_EVIDENCE_HOLD=0`; the hold's own tests and
-`test_scenarios` run with it on.
+round, then commit State `waiting on jobs <ids>`; what queues when is `references/host.md`, "When
+evidence runs".
 
 ### Concurrency claims
 
