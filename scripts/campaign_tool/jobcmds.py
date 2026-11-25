@@ -150,7 +150,7 @@ def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) ->
     """Why the lifecycle table (references/host.md, "When evidence runs") holds a quest's (or task's)
     evidence and gate checks, in every status but landed; "" when they queue: a landed quest, a tasked
     quest's `verify` once every task merged or was dropped, or a State that ends a round (`ready`) set
-    at the head (a commit after the head's code changed it)."""
+    at the head (a commit at or after the head's code changed it)."""
     if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
         return ""
     p = c.quests[pid]
@@ -596,41 +596,43 @@ def gate_check(spec: Json, quest: Json) -> str:
 
 
 def holders_of(job: Json, c: Campaign | None) -> list[Holder]:
-    """The lifecycle tables a rerun of JOB answers to: each quest it is tagged as evidence for, in the
-    campaign its tag names, and the quest whose gate check it is."""
-    out: list[Holder] = []
-    for t in job.get("tags", []):
-        if (h := campaign_at(t["campaign"], c)) is not None and t["quest"] in h.quests:
-            out.append((h, t["quest"], False))
+    """The lifecycle tables a rerun of JOB answers to, one per quest: the quest whose gate check it is,
+    as a gate check (tagged or not, as `verify` decides it), and each quest it is tagged as evidence
+    for, in the campaign its tag names."""
+    out: dict[tuple[str, str], Holder] = {}
     spec = job["spec"]
     h = campaign_at(spec.get("campaign") or "", c)
     if h is not None and spec.get("quest") in h.quests and gate_check(spec, h.quests[spec["quest"]]):
-        out.append((h, spec["quest"], True))
-    return out
+        out[h.ident, spec["quest"]] = (h, spec["quest"], True)
+    for t in job.get("tags", []):
+        if (h := campaign_at(t["campaign"], c)) is not None and t["quest"] in h.quests:
+            out.setdefault((h.ident, t["quest"]), (h, t["quest"], False))
+    return list(out.values())
 
 
-def held_rerun(job: Json, why: str) -> str:
-    """What a held rerun says: the job, what it proves, the hold, and its own way past it."""
+def held_rerun(job: Json, why: str, gate: bool) -> str:
+    """What a held rerun says: the job, what it proves, the hold, and its own way past it (GATE: a
+    gate check's)."""
     spec, tags = job["spec"], job.get("tags", [])
-    if tags:
-        what = f"is evidence for {tags[0]['quest']} {','.join(tags[0]['for'])}"
-    else:
+    if gate:
         what = f"is {spec.get('quest')}'s gate check"
+    else:
+        what = f"is evidence for {tags[0]['quest']} {','.join(tags[0]['for'])}"
     force = (
         "submit a new mutant at the round's end"
         if spec.get("fails_without")
         else f"`campaign verify {spec.get('quest')} --force`"
-        if not tags
+        if gate
         else "submit it again with `job submit --force`"
     )
     return f"{job['id']} {what}: {held(why, force)}"
 
 
-def mutant_head(c: Campaign | None, spec: Json) -> str:
+def mutant_head(c: Campaign, spec: Json) -> str:
     """The head of the quest a fails-without job ran for, where its result may still hold; "" when
     it has none."""
     with contextlib.suppress(CampaignError, KeyError):
-        if c is not None and spec.get("quest") in c.quests and spec.get("commit"):
+        if spec.get("quest") in c.quests and spec.get("commit"):
             p = c.quests[spec["quest"]]
             task = p.get("tasks", {}).get(spec.get("task", ""), {})
             return rev(Path(spec["repo"]), task.get("branch") or p["branch"])
@@ -638,12 +640,15 @@ def mutant_head(c: Campaign | None, spec: Json) -> str:
 
 
 def still_holds(c: Campaign | None, job: Json) -> str:
-    """The quest head where a passed fails-without job still holds, else "": its rerun asks nothing."""
+    """The quest head where a passed fails-without job still holds, else "": its rerun asks nothing.
+    The quest is read in the job's own campaign (its spec's), wherever the rerun runs."""
     if not job["spec"].get("fails_without") or not fails_without_met(job):
         return ""
-    head = mutant_head(c, job["spec"])
-    quest = c.quests.get(job["spec"].get("quest", "")) if c is not None else None
-    return head if head and mutant_holds(job, [head], quest) else ""
+    h = campaign_at(job["spec"].get("campaign") or "", c)
+    if h is None:
+        return ""
+    head = mutant_head(h, job["spec"])
+    return head if head and mutant_holds(job, [head], h.quests.get(job["spec"].get("quest", ""))) else ""
 
 
 def rerun_jobs(
@@ -724,13 +729,14 @@ def rerun_jobs(
     for jid in order:  # every job passes the hold before any is queued
         spec = aims[jid][0]
         after = [known.get(x, "(new)") if x in found else x for x in spec["after"]]
-        kind, said = evidence_hold(c, {**spec, "after": after}, holders_of(found[jid], c) if hold else [], found[jid])
+        holders = holders_of(found[jid], c) if hold else []
+        kind, said = evidence_hold(c, {**spec, "after": after}, holders, found[jid])
         if kind == "valid":
             print(f"{jid} still holds at {said[:12]}: the code its mutation reverts is unchanged, so it stays evidence")
             known[jid] = jid
             del specs[jid]
         elif kind == "held":
-            refused.append(held_rerun(found[jid], said))
+            refused.append(held_rerun(found[jid], said, any(gate for _, _, gate in holders)))
         else:
             known[jid] = said if kind == "reused" else "(new)"
     if refused:

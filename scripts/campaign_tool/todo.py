@@ -45,32 +45,48 @@ def first_command(gaps: list[str], fallback: str) -> str:
     return fallback
 
 
+ROUND_END = re.compile(r"(?:ready for review|waiting on jobs)\b", re.I)
+
+
 def ready(state: str) -> bool:
-    """A journal State that ends a round: ready for review, or waiting on the round's jobs."""
-    return bool(READY.match(state) or JOB_WAIT.search(state))
+    """A journal State that ends a round, the table's two: "ready for review" or "waiting on jobs",
+    each with any detail after it."""
+    return bool(ROUND_END.match(state))
 
 
 State = tuple[int, str, str]  # a journal commit's time, its State, and the commit
+_states: dict[tuple[str, ...], tuple[str, list[State], str]] = {}
 
 
 def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[State], str]:
     """The head's code commit; the State (the journal's first State line) at each journal commit at or
     after it, newest first, with its commit time; and the State the code found. In one repository
-    "after" is by ancestry, across two (a quest in another repository) by commit time."""
+    "after" is by ancestry, across two (a quest in another repository) by commit time. Read once per
+    command and head."""
     repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
     if not (branch and has_ref(repo, branch) and has_ref(c.home, branch)):
         return "", [], ""  # a quest not started, or its branch gone: no State
-    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
+    key = (str(repo), str(c.home), path, rev(repo, branch), rev(c.home, branch))
+    if key not in _states:
+        _states[key] = read_states(c.home, repo, path, key[3], key[4])
+    return _states[key]
+
+
+def read_states(home: Path, repo: Path, path: str, head: str, journal: str) -> tuple[str, list[State], str]:
+    """`journal_states` at the code's HEAD and the journal's JOURNAL commit. In one repository it walks
+    only the commits since the code; across two, the journal's history back to the code's time."""
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", head, "--", ".", ":(exclude).campaign")
     k, k_at = code.split() if code else ("", "0")
-    mine = same_repo(repo, c.home)
+    mine = same_repo(repo, home)
+    base = f"{k}^" if mine and k and has_ref(home, f"{k}^") else ""  # the code's parent bounds the walk
     after: list[State] = []
-    for line in git(c.home, "log", "--format=%H %ct", branch, "--", path).splitlines():
+    for line in git(home, "log", "--format=%H %ct", f"{base}..{journal}" if base else journal, "--", path).splitlines():
         commit, at = line.split()
-        shown = git(c.home, "show", f"{commit}:{path}", check=False)
+        shown = git(home, "show", f"{commit}:{path}", check=False)
         if k and (ancestor(repo, commit, k) and commit != k if mine else int(at) < int(k_at)):
             return k, after, state_of(shown)
         after.append((int(at), state_of(shown), commit))
-    return k, after, state_of("")
+    return k, after, state_of(git(home, "show", f"{base}:{path}", check=False) if base else "")
 
 
 def set_at_head(states: list[State], found: str) -> bool:
@@ -144,7 +160,11 @@ def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None
             items.append(item("review", k, text, f"campaign set {k} status=review"))
         elif doing.get(k, ("",))[0] == "lead":
             why = doing[k][1]
-            if READY.match(state):
+            code, states, found = journal_states(c, p, k, p["branch"])
+            if READY.match(state) and not set_at_head(states, found):  # the hold keeps the round open
+                why = f"State {state!r} was set before the head {code[:12]}: set State at {code[:12]}"
+                items.append(item("resume", k, f"resume {k}: {why}", f"campaign status {k}"))
+            elif READY.match(state):
                 items.append(
                     item(
                         "finish",

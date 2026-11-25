@@ -279,6 +279,105 @@ class Hold(CampaignCase):
                 self.assertIn(f"{mutant} still holds at ", out)
             self.assertEqual(self.jobs(), before)
 
+    def test_row_9_a_still_valid_mutant_reran_from_outside_any_campaign(self) -> None:
+        """Correctness C23: the mutant's quest is read in its own campaign, wherever the rerun runs."""
+        wt = self.iterating()
+        set_state(self, wt, "fix", "ready for review")
+        self.commit(wt, {"app.py": "print(1)\n"}, "mutant: revert the fix")
+        cut = self.git(wt, "rev-parse", "HEAD")
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", cut)
+        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+        mutant = self.submit(wt, *args, "--", TEST)
+        plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "60")
+        head = self.commit(wt, {"lib/util.py": "X = 5\n"})[:12]  # another file: the mutant still holds
+        for state in ("working", f"ready for review at {head}"):
+            set_state(self, wt, "fix", state)
+            before = self.jobs()
+            for extra in ((), ("--commit", "main"), ("--commit", "quest/demo/fix")):
+                out = self.ok(self.root, "job", "rerun", mutant, *extra).out
+                self.assertIn(f"{mutant} still holds at ", out, f"{state}: {extra}")
+            self.assertEqual(self.jobs(), before)
+
+    def test_row_4_a_tagged_gate_check_reruns_as_verify_queues_it(self) -> None:
+        """Correctness C24: `verify --for A1` tags its gate check; once every task merged, its rerun is
+        decided as a gate check, as `verify` decides the same check."""
+        wt, _, _, _ = self.round()
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        task = self.wt("fix--lib")
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        own = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")
+        self.ok(self.home, "wait", own, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+        set_state(self, wt, "fix", "working")
+        gate = re.search(rf"(?m)^unit: ({ID})", self.ok(self.home, "verify", "fix", "--for", "A1").out)
+        assert gate is not None
+        self.ok(self.home, "wait", gate[1], "--timeout", "60")
+        self.commit(wt, {"app.py": "print(2)  # after the merge\n"})
+        self.assertRegex(self.ok(self.home, "job", "rerun", gate[1]).out, rf"(?m)^{ID}: {gate[1]} at ")
+        self.assertRegex(self.ok(self.home, "verify", "fix").out, rf"(?m)^unit: {ID} \(reused\)")
+
+    def test_row_3_only_the_table_s_two_states_release(self) -> None:
+        """Correctness C26, design N20: "ready for review" and "waiting on jobs", each with any detail,
+        end a round; every other State holds, however it reads."""
+        wt, tagged, unit, head = self.round()
+        for state in ("waiting on CI run 7", "ready to land", "done with the build", "working; waiting on jobs 1"):
+            set_state(self, wt, "fix", state)
+            self.all_held(self.entries(wt, tagged, unit), f"the journal State is {state!r}", self.jobs())
+        set_state(self, wt, "fix", f"Waiting on jobs {tagged} (the round at {head})")
+        self.all_queued(self.entries(wt, tagged, unit))
+
+    def test_row_6_a_landed_quest_holds_nothing(self) -> None:
+        """Design N19 (R27): a landed quest keeps no State; its deferred checks rerun on main, `verify
+        --deferred` and a `--for` job queue regardless."""
+        self.ok(
+            self.home,
+            "new",
+            "fast",
+            "--title",
+            "fast",
+            "--risk",
+            "low",
+            "--files",
+            "app.py",
+            "--check",
+            "unit=true",
+            "--later",
+            "soak=grep -q 2 app.py",
+        )
+        brief = self.home / ".campaign/demo/quests/fast.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.ok(self.home, "start", "fast")
+        wt = self.wt("fast")
+        self.commit(wt, {"app.py": "print(2)\n"})
+        set_state(self, wt, "fast", "working")
+        self.assertIn("soak: held: the journal State is 'working'", self.ok(self.home, "verify", "fast", "--all").out)
+        set_state(self, wt, "fast", "ready for review")
+        tagged = self.submit(wt, "--quest", "fast", "--for", "A1", "--", TEST)
+        self.ok(self.home, "wait", tagged, "--timeout", "60")
+        self.verified("fast")
+        self.ok(self.home, "land", "fast")
+        later = self.quest("fast")["landed"][-1]["later"]
+        self.ok(self.home, "wait", *later, "--timeout", "60")
+        self.commit(self.home, {"app.py": "print(2)  # after landing\n"})  # main moves: each is new work
+        self.assertRegex(
+            self.ok(self.home, "job", "rerun", later[0], "--commit", "main").out, rf"(?m)^{ID}: {later[0]} at "
+        )
+        self.assertRegex(self.ok(self.home, "verify", "fast", "--deferred").out, rf"(?m)^soak: {ID}")
+        self.submit(self.home, "--quest", "fast", "--for", "A1", "--commit", "main", "--", f"{TEST} # landed")
+
+    def test_row_2_the_to_do_says_resume_never_finish(self) -> None:
+        """Design D9 (R15): a round passed at State ready for review, then new code: the to-do tells the
+        lead to resume the contributor (set State at the head), never to finish with what the hold refuses."""
+        wt, tagged, unit, head = self.round()
+        self.env["CAMPAIGN_IDLE"] = "0"  # the contributor stopped: nothing moves the quest but the lead
+        todo = [x.strip() for x in self.ok(self.home, "status").out.splitlines() if x.strip().startswith("todo:")]
+        line = f"todo: resume fix: State 'ready for review' was set before the head {head}: set State at {head}: `campaign status fix`"
+        self.assertIn(line, todo)
+        self.assertFalse([x for x in todo if x.startswith("todo: finish fix")], todo)
+
 
 class Mutants(CampaignCase):
     def fixed(self) -> Path:
@@ -432,6 +531,39 @@ class MutantFootprint(CampaignCase):
     def mutant_ref(self, commit: str) -> tuple[str, ...]:
         self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", commit)
         return ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+
+    def test_a_task_s_mutant_holds_across_its_task_merge(self) -> None:
+        """Correctness C21: a faithful revert cut from a task's head, proven; the task merges, which
+        leaves the lines it reverts as they were at its parent, so it still holds."""
+        wt = self.started("fix", files="app.py,check.py,lib/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.ok(self.home, "start", "fix", "--task", "t1", "--files", "app.py,check.py")
+        task = self.wt("fix--t1")
+        self.commit(task, {"app.py": "print(2)\n", "check.py": CHECK})
+        self.commit(task, {"app.py": "print(1)\n"}, "mutant: revert the fix")
+        cut = self.git(task, "rev-parse", "HEAD")
+        self.git(task, "reset", "-q", "--hard", "HEAD~1")
+        args = self.mutant_ref(cut)
+        mutant = self.submit(task, *args[:2], "--task", "t1", *args[2:], "--", "python3 check.py")
+        plain = self.submit(task, "--quest", "fix", "--task", "t1", "--for", "A1", "--", "python3 check.py")
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "90", timeout=120)
+        time.sleep(1.1)  # the head a mutant ran at is read by commit time, to the second
+        self.ok(self.home, "task", "merge", "fix", "t1")
+        self.assertTrue(self.at_head(wt, "python3 check.py"))
+
+    def test_an_in_command_mutant_goes_stale_when_the_file_it_edits_is_renamed(self) -> None:
+        """Correctness C25: `differ` reads a rename as both paths; the command edits app.py, which the
+        head renames."""
+        wt = self.fixed()
+        sed = "sed -i.bak 's/print(2)/print(1)/' app.py"
+        self.proven(
+            wt, self.submit(wt, "--quest", "fix", "--for", "A1", "--fails-without", "--", f"{sed} && python3 check.py")
+        )
+        self.git(wt, "mv", "app.py", "lib/app_main.py")
+        self.commit(wt, {"check2.py": CHECK.replace("'app.py'", "'lib/app_main.py'")}, "rename the app")
+        self.assertFalse(self.at_head(wt, "python3 check2.py"))
 
     def test_a_mutant_commit_goes_stale_when_its_test_is_renamed(self) -> None:
         """Correctness C14: the test it ran, moved and weakened in one commit, is a change to it."""
@@ -590,16 +722,35 @@ class Guard(CampaignCase):
         self.fake_jobs("fix", self.heads(1), 1, "failed", started=True, age_h=0.2)  # a fourth barren round
         self.assertIn("fix queued evidence at 6 heads", self.run_cli(self.home, "status").out)
 
-    def test_re_proving_a_criterion_at_a_new_head_is_progress(self) -> None:
-        """Correctness C18: a round meets, at its own head, what no round met there before it, so
-        re-proving A1 after each merge from main or fix is progress, not a barren round."""
+    def test_re_proving_with_every_job_passing_is_not_barren(self) -> None:
+        """Design D8: five rounds at five heads, each re-proving A1 with every job passing (after a merge
+        or a fix), are not barren; four that fail are."""
         self.started("fix", files="app.py")
         for k in range(5):
             self.fake_jobs("fix", self.heads(1), 2, "done", started=True, age_h=10 - k)
-        out = self.run_cli(self.home, "status").out
-        self.assertNotIn("fix queued evidence", out)
-        self.fake_jobs("fix", self.heads(4), 1, "failed", started=True, age_h=1)  # four that met nothing
-        self.assertIn("4 ran and newly met no criterion, 5 criteria newly met", self.run_cli(self.home, "status").out)
+        self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
+        self.fake_jobs("fix", self.heads(4), 1, "failed", started=True, age_h=1)
+        self.assertIn("4 ran and newly met no criterion, 1 criterion newly met", self.run_cli(self.home, "status").out)
+
+    def test_re_proving_one_criterion_while_another_fails_is_barren(self) -> None:
+        """Design D8 (probe G4): six rounds, A1 re-proved and A2 failed in each. After the first, none
+        newly meets a criterion and each has a failed job: barren."""
+        self.started("fix", files="app.py")
+        for k in range(6):
+            head = self.heads(1)
+            self.fake_jobs("fix", head, 1, "done", started=True, age_h=12 - 2 * k, tag="A1")
+            self.fake_jobs("fix", head, 1, "failed", started=True, age_h=12 - 2 * k, tag="A2")
+        self.assertIn("5 ran and newly met no criterion, 1 criterion newly met", self.run_cli(self.home, "status").out)
+
+    def test_a_round_meets_a_criterion_by_its_passed_test_never_its_mutant(self) -> None:
+        """Correctness C22: five rounds whose test of A1 failed while its mutant "failed without the fix"
+        (as everything does where the fix is broken) meet nothing: barren, flagged."""
+        self.started("fix", files="app.py")
+        for k in range(5):
+            head = self.heads(1)
+            self.fake_jobs("fix", head, 1, "failed", started=True, age_h=10 - k)
+            self.fake_jobs("fix", head, 1, "done", started=True, age_h=10 - k, mutant=True)
+        self.assertIn("5 ran and newly met no criterion, 0 criteria newly met", self.run_cli(self.home, "status").out)
 
 
 class ExaminedJobs(CampaignCase):
@@ -670,6 +821,12 @@ class RoundOrder(CampaignCase):
             r"then (?:set|commit) State .?waiting on jobs"
         )
         skill = Path(__file__).resolve().parent.parent
-        for rel in ("SKILL.md", "agents/campaign-contributor.md", "references/prompts.md", "references/review.md"):
+        for rel in (
+            "SKILL.md",
+            "agents/campaign-contributor.md",
+            "references/prompts.md",
+            "references/review.md",
+            "references/host.md",
+        ):
             text = " ".join((skill / rel).read_text().split())
             self.assertRegex(text, order, rel)

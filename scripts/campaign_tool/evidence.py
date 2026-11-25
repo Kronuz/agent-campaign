@@ -257,8 +257,9 @@ def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
     """Where a fails-without job's evidence changed by HEAD: [] while its result holds.
     - A mutant or revert commit (off HEAD's history) reverts the lines its diff from its parent
       changes; the files its command names (the test it ran) count whole, a rename as a change.
-    - One whose change was the head's when it ran (the quest's new test on its base), or a run at main's code
-      with the quest's code from a ref, moves with any change to the quest's file set since it ran.
+    - One whose change was the head's when it ran (the quest's new test on its base, cut from that
+      head's line), or a run at main's code with the quest's code from a ref, moves with any change to
+      the quest's file set since it ran. One cut from a line merged later (a task's) is a revert.
     - A run at the quest's own commit mutates, in its command, the files it names; a mutation the
       command does not show (a script, a binary) moves with any change to the quest's file set.
     - Any other run at main's code lacks the whole fix, which the head's own runs test."""
@@ -279,7 +280,7 @@ def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
     mutation, moved = hunks(repo, parent, commit), hunks(repo, parent, head)
     then = ran_at(repo, head, int(float(spec.get("submitted") or 0)))
     unchanged = [x for x in mutation if x not in differ(repo, commit, then or head)]
-    if unchanged:  # its change was the head's own: the head's files at the base, as they were then
+    if unchanged and (not then or ancestor(repo, parent, then)):  # the head's own change, on its base
         return set_moved(repo, then, head, quest) if then else unchanged
     lines = [
         x

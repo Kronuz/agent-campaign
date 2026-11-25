@@ -24,7 +24,7 @@ task; your prompt names its worktree, branch, quest file, journal and assignment
   it, commit State "ready for review", submit its evidence, then set State "waiting on jobs <ids>":
   `campaign job submit --quest <id> --for A2 ...` (`--fails-without` on the plain test at a mutant,
   once: it holds until the code it reverts changes) and `campaign verify <id> --for A1` for suites,
-  sanitizers and crash checks. A code commit after the State holds both until it is set again;
+  sanitizers and crash checks. A code commit after the State holds both until a later commit changes the State;
   probes and measurements without `--for` queue any time. An [artifact], [decision] or [manual]
   criterion gets its journal row. Follow the skill's `references/review.md` for what proves a claim
   and `references/measurement.md` for timing.

@@ -163,10 +163,11 @@ store's `prune.log`. The worker runs it with these defaults once a day when its 
 ### When evidence runs
 
 A round is one quest head's evidence: commit the code, commit State `ready for review`, submit the
-round, then commit State `waiting on jobs <ids>`. The State is the journal's first `State:` line. It
-is set at the head when a commit newer than the head's code changed it, so a code commit re-holds
-until the State changes again. The hold reads it in every status but landed (active, review,
-blocked, planned, dropped); only `land`, and a landed quest's deferred checks, queue regardless.
+round, then commit State `waiting on jobs <ids>`. The State is the journal's first `State:` line;
+only these two, at its start and with any detail after them, end a round. It is set at the head
+when a commit at or after the head's code changed it, so a code commit holds again until a later
+commit changes the State. The hold reads it in every status but landed (active, review, blocked,
+planned, dropped); a landed quest holds nothing, and `land` queues what its merge from main voided.
 
 Every command that queues evidence asks one hold decision (`evidence_hold`). What queues nothing
 passes first, at any State: a result an earlier job answers is handed back, and a passed mutant that
