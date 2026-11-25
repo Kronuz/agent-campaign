@@ -202,7 +202,7 @@ def slot_lock_try(slot: Path) -> TextIO | None:
     lock.parent.mkdir(parents=True, exist_ok=True)
     while True:
         if lock.is_dir():  # an older runner's lock: wait while the runner its pid names lives
-            with contextlib.suppress(FileNotFoundError, ValueError):
+            with contextlib.suppress(FileNotFoundError, NotADirectoryError, ValueError):
                 if not runs(int((lock / "pid").read_text()), " _run "):
                     shutil.rmtree(lock, ignore_errors=True)
             if lock.is_dir():
@@ -228,9 +228,10 @@ def slot_idle(slot: Path) -> bool:
     if not lock.exists():
         return True
     if lock.is_dir():
-        with contextlib.suppress(FileNotFoundError, ValueError):
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError, ValueError):
             return not runs(int((lock / "pid").read_text()), " _run ")
-        return False
+        if lock.is_dir():
+            return False  # a runner is writing its pid
     fh = slot_lock_try(slot)
     if fh is not None:
         fh.close()
@@ -480,6 +481,16 @@ def admission(d: Path, limit: float) -> str:
     return ""
 
 
+def admitted(job: Json, wait_max: float) -> str:
+    """Waits for the worker to admit JOB (phase "built") to its hold, then records its start in its
+    state: "" once admitted, else "cancelled" or "timeout"."""
+    d = job["dir"]
+    why = admission(d, time.time() + wait_max) or ("cancelled" if (d / "cancel").exists() else "")
+    job["state"] = {**load_job(d)["state"], **({} if why else {"phase": "run", "started": time.time()})}
+    write_json(d / "state.json", job["state"])
+    return why
+
+
 def admit(job: Json) -> bool:
     """Admits a built job (its runner waits in `admission`) to its hold, with the state plan gave it."""
     try:
@@ -496,9 +507,11 @@ def cmd_run(a: argparse.Namespace) -> int:
     job = load_job(d)
     spec, st = job["spec"], job["state"]
     me = os.getpid()
-    # a staged job's build is light work: its hold, and so its start, comes once the worker admits it
+    # a staged job's build is light work: its hold, and so its start, comes once the worker admits it;
+    # a drain claimed before its turn (phase "built", no build) waits for that admission too
     staged = st.get("phase") == "build"
-    began = {"build": {"started": time.time()}} if staged else {"started": time.time()}
+    gated = st.get("phase") == "built" and not spec.get("build")
+    began = {"build": {"started": time.time()}} if staged else {} if gated else {"started": time.time()}
     st.update(state="running", runner=me, sid=os.getsid(0), boot=boot_id(), host=HOST, **began)
     write_json(d / "state.json", st)
     job["state"] = st
@@ -558,11 +571,17 @@ def cmd_run(a: argparse.Namespace) -> int:
                 clear_stale_trees(slot, env.get("CMAKE_GENERATOR", ""), sources, lambda x: print(x, file=note))
         except OSError as e:  # the job still runs, and fails on its own if the tree was the cause
             print(f"campaign: clearing stale build trees failed: {e}", file=sys.stderr)
+    wait_max = float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
+    if gated:
+        why = admitted(job, wait_max)
+        if why:
+            release(spec, d)
+            finish(job, -1, why, fence=me)
+            return 0
     if spec.get("build"):  # built under light in this checkout, then run at the job's level
         what = f"build for {spec.get('what') or spec['cmd'][:60]}"
         built = [*quiet_argv(), "light", f"job-{d.name}-build", str(LIGHT_RUN), what, "--", "bash", "-c", spec["build"]]
         light_env = {"CMAKE_BUILD_PARALLEL_LEVEL": str(LIGHT_BUILD_JOBS), **env}
-        wait_max = float(os.environ.get("CAMPAIGN_WAIT_MAX", str(24 * 3600)))
         since = float(st.get("build", {}).get("started") or time.time())
         code, cancelled, timed_out = attend(built, cwd, light_env, d, limit=time.time() + 60 * LIGHT_RUN + wait_max)
         sweep(os.getsid(0), beat)
@@ -570,9 +589,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         if code == 0 and not cancelled and not timed_out and staged:
             st["phase"] = "built"
             write_json(d / "state.json", st)
-            why = admission(d, time.time() + wait_max) or ("cancelled" if (d / "cancel").exists() else "")
-            st = job["state"] = {**load_job(d)["state"], **({} if why else {"phase": "run", "started": time.time()})}
-            write_json(d / "state.json", st)
+            why = admitted(job, wait_max)
             cancelled, timed_out = why == "cancelled", why == "timeout"
         if code != 0 or cancelled or timed_out:
             (ad / "exit").write_text(str(code))

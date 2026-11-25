@@ -70,19 +70,25 @@ def die(message: str) -> NoReturn:
     raise CampaignError(message)
 
 
-def sh(args: list[str], cwd: Path | None = None, check: bool = True) -> str:
-    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, errors="replace")
+def sh(args: list[str], cwd: Path | None = None, check: bool = True, env: dict[str, str] | None = None) -> str:
+    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, errors="replace", env=env)
     if check and p.returncode != 0:
         die(f"{shlex.join(args)}: {(p.stderr or p.stdout).strip()}")
     return p.stdout.strip()
 
 
+def git_env() -> dict[str, str]:
+    """The environment of every git call: no optional locks, so a `git status` refreshing the index of
+    a contributor's worktree never takes the index.lock its own commit needs."""
+    return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+
 def git(repo: Path, *args: str, check: bool = True) -> str:
-    return sh(["git", "-C", str(repo), *args], check=check)
+    return sh(["git", "-C", str(repo), *args], check=check, env=git_env())
 
 
 def git_ok(repo: Path, *args: str) -> bool:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True).returncode == 0
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=git_env()).returncode == 0
 
 
 def stamp(t: float | None = None) -> str:
