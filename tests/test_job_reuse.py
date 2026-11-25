@@ -261,9 +261,12 @@ class Identity(CampaignCase):
     def test_a_job_runs_with_its_campaigns_env_and_its_own_env_wins(self) -> None:
         self.env["CMAKE_GENERATOR"] = "Unix Makefiles"  # what the worker happened to inherit
         show = 'echo "$CMAKE_GENERATOR ${DEMO:-unset}" > "$JOB_OUT/env"'
-        queued = self.submit(self.home, "--after", self.submit(self.home, "--", "sleep 1"), "--", show)
+        go = self.root / "go"
+        gate = self.submit(self.home, "--", f"while [ ! -e {go} ]; do sleep 0.1; done")
+        queued = self.submit(self.home, "--after", gate, "--", show)
         self.ok(self.home, "config", "env=CMAKE_GENERATOR=Ninja,DEMO=1")
         mine = self.submit(self.home, "--env", "DEMO=2", "--", show)
+        go.touch()  # QUEUED runs only now, after the setting
         self.ok(self.home, "wait", queued, mine, "--timeout", "60")
         seen = {j: (self.root / "jobs" / j / "a1" / "out" / "env").read_text().split() for j in (queued, mine)}
         self.assertEqual(seen[queued], ["Ninja", "1"], "a job queued before the setting runs with it")

@@ -39,50 +39,65 @@ def branch_heads(c: Campaign) -> dict[tuple[str, str], str]:
     return heads
 
 
-def watch(paths: list[Path], timeout: float) -> None:
-    """Sleeps up to TIMEOUT seconds, waking as soon as an entry of one of the directories PATHS is
-    created, replaced or removed: kqueue on macOS and the BSDs, inotify on Linux, else a plain sleep."""
-    dirs = list(dict.fromkeys(p for p in paths if p.is_dir()))
-    fds: list[int] = []
-    kq: Any = None
-    try:
-        if dirs and sys.platform != "linux" and sys.platform != "win32" and hasattr(os_select, "kqueue"):
-            kq = os_select.kqueue()
-            changes = []
-            for d in dirs:
-                with contextlib.suppress(OSError):
-                    fd = os.open(d, getattr(os, "O_EVTONLY", os.O_RDONLY))
-                    fds.append(fd)
-                    note = os_select.KQ_NOTE_WRITE | os_select.KQ_NOTE_DELETE | os_select.KQ_NOTE_RENAME
-                    changes.append(
-                        os_select.kevent(
-                            fd, os_select.KQ_FILTER_VNODE, os_select.KQ_EV_ADD | os_select.KQ_EV_CLEAR, note
-                        )
-                    )
-            kq.control(changes, 1, timeout)
-            return
-        if dirs and sys.platform == "linux":
-            import ctypes  # noqa: PLC0415  # Linux only
+def watched(paths: list[Path]) -> list[Path]:
+    """The directories among PATHS, once each, in order."""
+    return list(dict.fromkeys(p for p in paths if p.is_dir()))
 
-            libc = ctypes.CDLL(None, use_errno=True)
-            fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-            if fd >= 0:
-                fds.append(fd)
-                # IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE
-                if sum(
-                    libc.inotify_add_watch(fd, os.fsencode(d), 0x8 | 0x40 | 0x80 | 0x100 | 0x200) >= 0 for d in dirs
-                ):
-                    os_select.select([fd], (), (), timeout)
-                    return
-    except OSError:
-        pass
-    finally:
-        if kq is not None:
-            kq.close()
-        for fd in fds:
+
+class Watch:
+    """The directories PATHS, watched from its creation on: an entry of one created, replaced or
+    removed after it, even before wait() is called, wakes wait(). kqueue on macOS and the BSDs,
+    inotify on Linux, else wait() is a plain sleep."""
+
+    def __init__(self, paths: list[Path]) -> None:
+        self.paths = watched(paths)
+        self.fds: list[int] = []
+        self.kq: Any = None
+        self.inotify = -1
+        with contextlib.suppress(OSError):
+            if self.paths and sys.platform not in ("linux", "win32") and hasattr(os_select, "kqueue"):
+                self.kq = os_select.kqueue()
+                note = os_select.KQ_NOTE_WRITE | os_select.KQ_NOTE_DELETE | os_select.KQ_NOTE_RENAME
+                changes = []
+                for d in self.paths:
+                    with contextlib.suppress(OSError):
+                        fd = os.open(d, getattr(os, "O_EVTONLY", os.O_RDONLY))
+                        self.fds.append(fd)
+                        flags = os_select.KQ_EV_ADD | os_select.KQ_EV_CLEAR
+                        changes.append(os_select.kevent(fd, os_select.KQ_FILTER_VNODE, flags, note))
+                self.kq.control(changes, 0, 0)  # registered now: what changes from here on is kept
+            elif self.paths and sys.platform == "linux":
+                import ctypes  # noqa: PLC0415  # Linux only
+
+                libc = ctypes.CDLL(None, use_errno=True)
+                fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+                if fd >= 0:
+                    self.fds.append(fd)
+                    # IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE
+                    mask = 0x8 | 0x40 | 0x80 | 0x100 | 0x200
+                    if sum(libc.inotify_add_watch(fd, os.fsencode(d), mask) >= 0 for d in self.paths):
+                        self.inotify = fd
+
+    def wait(self, timeout: float) -> None:
+        """Sleeps up to TIMEOUT seconds, or until a watched directory changed since the watch began."""
+        with contextlib.suppress(OSError):
+            if self.kq is not None:
+                self.kq.control(None, 1, timeout)
+                return
+            if self.inotify >= 0:
+                os_select.select([self.inotify], (), (), timeout)
+                return
+        time.sleep(timeout)
+
+    def __enter__(self) -> Watch:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self.kq is not None:
+            self.kq.close()
+        for fd in self.fds:
             with contextlib.suppress(OSError):
                 os.close(fd)
-    time.sleep(timeout)
 
 
 def wait_events(c: Campaign, timeout: float) -> int:
@@ -175,31 +190,34 @@ def wait_events(c: Campaign, timeout: float) -> int:
     listed: Json = {"items": []}
     code = 0
     while True:
-        reap()
-        exchange()
-        watch_leads()
-        watch_calls()
-        heads, ended = current()
-        waiting = messages()
-        moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
-        finished = sorted(set(ended) - seen_jobs)
-        arrived = sorted(set(waiting) - seen_messages)
-        listed = listing(heads)
-        if moved or finished or arrived or due(listed["items"]):
-            break
-        running = mine
-        idle = not any(j["state"].get("state") not in TERMINAL for j in running)
-        flying = any(p["status"] in FLIGHT for p in c.quests.values())  # by the state, not by branches mid-landing
-        if not flying and not peers(c) and idle and not listed["items"]:
-            print("nothing to wait for: no quest in flight and no job of this campaign")
-            return 0
-        if timeout and time.time() - start >= timeout:
-            print(f"nothing new after {timeout:g}s")
-            code = 3
-            break
-        if any(j["state"].get("state") == "queued" for j in running):
-            ensure_worker()
-        watch(places(), tick)
+        with Watch(places()) as watching:  # watched before the looks below: nothing slips between
+            reap()
+            exchange()
+            watch_leads()
+            watch_calls()
+            heads, ended = current()
+            waiting = messages()
+            moved = sorted(k for k, h in heads.items() if seen_heads.get(k) != h)
+            finished = sorted(set(ended) - seen_jobs)
+            arrived = sorted(set(waiting) - seen_messages)
+            listed = listing(heads)
+            if moved or finished or arrived or due(listed["items"]):
+                break
+            running = mine
+            idle = not any(j["state"].get("state") not in TERMINAL for j in running)
+            flying = any(p["status"] in FLIGHT for p in c.quests.values())  # by the state, not by branches mid-landing
+            if not flying and not peers(c) and idle and not listed["items"]:
+                print("nothing to wait for: no quest in flight and no job of this campaign")
+                return 0
+            if timeout and time.time() - start >= timeout:
+                print(f"nothing new after {timeout:g}s")
+                code = 3
+                break
+            if any(j["state"].get("state") == "queued" for j in running):
+                ensure_worker()
+            if watching.paths != watched(places()):  # a job began: watch its directory too
+                continue
+            watching.wait(tick)
     for key in moved:
         name, branch = key.split(" ", 1)
         print(f"{name}: {branch} moved to {heads[key][:12]}; journal: {journal_state(c, name, branch)}")

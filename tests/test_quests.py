@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
+from typing import Any
+from unittest import mock
 
-from harness import CAMPAIGN, CampaignCase
+from harness import CAMPAIGN, CampaignCase, campaign_module
 
 
 class Quests(CampaignCase):
@@ -20,15 +26,18 @@ class Quests(CampaignCase):
             stdout=subprocess.PIPE,
             text=True,
         )
-        time.sleep(2)
+        seen = self.home / ".git" / "campaign-seen.json"  # the first wait records where it starts
+        deadline = time.time() + 60  # ends a hung test only
+        while not seen.exists() and waiting.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
         self.assertIsNone(waiting.poll())  # nothing has happened yet
         journal = ".campaign/demo/journal/fix.md"
-        state = "State: blocked on the lead: the publication code\n"
+        state = "State: working: the publication code\n"  # no to-do item: the move alone wakes the wait
         self.commit(wt, {journal: state + (wt / journal).read_text().split("\n", 3)[-1]})
         out, _ = waiting.communicate(timeout=30)
         self.assertEqual(waiting.returncode, 0)
         self.assertIn("fix: quest/demo/fix moved to", out)
-        self.assertIn("journal: blocked on the lead: the publication code", out)
+        self.assertIn("journal: working: the publication code", out)
         self.ok(self.home, "set", "fix", "status=dropped", "reason=done here")
         self.assertIn("no quest in flight", self.ok(self.home, "wait", "--commits").out)
 
@@ -53,6 +62,61 @@ class Quests(CampaignCase):
             out, _ = waiting.communicate(timeout=60)
             self.assertLess(time.time() - start, 20, f"the {event} waited for the tick:\n{out}")
             self.assertIn("pins moved" if event == "message" else "done exit 0", out)
+
+    def test_wait_wakes_on_an_event_that_lands_while_it_looks(self) -> None:
+        """A message written while the wait reads the state (here, while it makes the to-do list)
+        wakes it: the directories are watched before the look, not after it."""
+        self.started("fix", files="app.py")
+        tool = campaign_module()
+        made = tool.wait.todo
+        sent: list[bool] = []
+
+        def todo(*args: Any) -> Any:  # the look's last read: the message lands after messages() ran
+            if not sent:
+                sent.append(True)
+                self.ok(self.home, "message", "demo:", "pins moved", "--from", "peer")
+            return made(*args)
+
+        out = io.StringIO()
+        env = {**self.env, "CAMPAIGN_WAIT_TICK": "3600"}  # a missed event would sleep the whole tick
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(tool.wait, "todo", todo):
+            c = tool.Campaign(self.home, "demo")
+
+            def wait() -> None:
+                with contextlib.redirect_stdout(out):
+                    tool.wait.wait_events(c, 0)
+
+            waiting = threading.Thread(target=wait, daemon=True)
+            waiting.start()
+            waiting.join(60)  # ends a hung test only: the wait takes about a second alone
+        self.assertTrue(sent)
+        self.assertFalse(waiting.is_alive(), "the message that landed during the look waited for the tick")
+        self.assertIn("msg-1 for the lead, from peer: pins moved", out.getvalue())
+
+    def test_the_tools_git_status_never_takes_the_lock_a_commit_needs(self) -> None:
+        """`git status` refreshes a worktree's index under index.lock when it may; the tool's git calls
+        take no such optional lock, so a look at a contributor's worktree never fails its commit."""
+        wt = self.started("fix", files="app.py")
+        self.commit(wt, {"notes.txt": "notes\n"})
+        tool = campaign_module()
+        stop = threading.Event()
+
+        def look() -> None:  # a touched file is stale in the index: each status wants to rewrite it
+            while not stop.is_set():
+                os.utime(wt / "notes.txt")
+                tool.core.git(wt, "status", "--porcelain", check=False)
+
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            lookers = [threading.Thread(target=look, daemon=True) for _ in range(4)]
+            for t in lookers:
+                t.start()
+            try:
+                for i in range(40):
+                    self.commit(wt, {"app.py": f"print({i})\n"})
+            finally:
+                stop.set()
+                for t in lookers:
+                    t.join(60)
 
     def test_wait_misses_nothing_that_happened_between_two_waits(self) -> None:
         a = self.started("one", files="app.py")
