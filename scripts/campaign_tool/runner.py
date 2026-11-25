@@ -202,7 +202,7 @@ def slot_lock_try(slot: Path) -> TextIO | None:
     lock.parent.mkdir(parents=True, exist_ok=True)
     while True:
         if lock.is_dir():  # an older runner's lock: wait while the runner its pid names lives
-            with contextlib.suppress(FileNotFoundError, ValueError):
+            with contextlib.suppress(FileNotFoundError, NotADirectoryError, ValueError):
                 if not runs(int((lock / "pid").read_text()), " _run "):
                     shutil.rmtree(lock, ignore_errors=True)
             if lock.is_dir():
@@ -228,9 +228,10 @@ def slot_idle(slot: Path) -> bool:
     if not lock.exists():
         return True
     if lock.is_dir():
-        with contextlib.suppress(FileNotFoundError, ValueError):
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError, ValueError):
             return not runs(int((lock / "pid").read_text()), " _run ")
-        return False
+        if lock.is_dir():
+            return False  # a runner is writing its pid
     fh = slot_lock_try(slot)
     if fh is not None:
         fh.close()

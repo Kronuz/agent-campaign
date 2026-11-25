@@ -788,6 +788,42 @@ class Slots(CampaignCase):
         for (_, end), (start, _) in zip(held, held[1:]):
             self.assertGreaterEqual(start, end, f"two runners held the slot at once: {held}")
 
+    def test_a_lock_directory_replaced_by_the_lock_file_mid_look_is_read_as_the_file(self) -> None:
+        """A runner that saw an older runner's lock directory, which another runner removed and
+        replaced by the lock file before this one read the pid, takes or waits on the file lock."""
+        tool = campaign_module()
+        slot = self.root / "jobs" / "slots" / "s"
+        lock = slot.with_name("s.lock")
+        lock.parent.mkdir(parents=True)
+        lock.touch()  # what the other runner put where the directory was
+        real = Path.is_dir
+        looked: list[Path] = []
+
+        def stale(path: Path) -> bool:  # the first look still sees the directory
+            if path == lock and not looked:
+                looked.append(path)
+                return True
+            return real(path)
+
+        def swapped() -> Any:
+            looked.clear()
+            return mock.patch.object(Path, "is_dir", autospec=True, side_effect=stale)
+
+        with swapped():
+            self.assertTrue(tool.runner.slot_idle(slot))
+        with swapped():
+            held = tool.runner.slot_lock_try(slot)
+        self.assertIsNotNone(held)
+        self.assertEqual(looked, [lock])
+        try:
+            with swapped():
+                self.assertFalse(tool.runner.slot_idle(slot))  # the file is locked now
+            with swapped():
+                self.assertIsNone(tool.runner.slot_lock_try(slot))
+        finally:
+            assert held is not None
+            held.close()
+
 
 class Contention(CampaignCase):
     alone = True  # times builds against an exclusive benchmark
