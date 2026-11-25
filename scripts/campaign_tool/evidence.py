@@ -1,4 +1,5 @@
-"""Criteria and their evidence: the quest file's criteria, journal rows, tagged jobs and checks."""
+"""Criteria and their evidence: the quest file's criteria, journal rows, tagged jobs and checks; and
+when evidence runs, the one State decision (`iterating`)."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .ci import ci_covers, ci_gate, ci_job
 from .core import CI_CHECK, CI_CITE, FAILED, CampaignError, Json, csv, die, git, jobs_dir, section, table_cells
 from .jobs import FAILS_WITHOUT, NO_RUN, all_jobs, derived, load_job
-from .journals import decisions
+from .journals import decisions, state_of
 from .repo import (
     SHA,
     ancestor,
@@ -33,6 +34,100 @@ from .state import gates
 
 if TYPE_CHECKING:  # annotations only: they import this module, so importing them here is a cycle
     from .campaign import Campaign
+
+
+ROUND_END = re.compile(r"(?:ready for review|waiting on jobs)\b", re.I)
+
+
+def ready(state: str) -> bool:
+    """A journal State that ends a round, the table's two: "ready for review" or "waiting on jobs",
+    each with any detail after it."""
+    return bool(ROUND_END.match(state))
+
+
+State = tuple[int, str, str]  # a journal commit's time, its State, and the commit
+_states: dict[tuple[str, ...], tuple[str, list[State], str]] = {}
+
+
+def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[State], str]:
+    """The head's code commit; the State (the journal's first State line) at each journal commit at or
+    after it, newest first, with its commit time; and the State the code found. In one repository
+    "after" is by ancestry, across two (a quest in another repository) by commit time. Read once per
+    command and head."""
+    repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
+    if not (branch and has_ref(repo, branch) and has_ref(c.home, branch)):
+        return "", [], ""  # a quest not started, or its branch gone: no State
+    key = (str(repo), str(c.home), path, rev(repo, branch), rev(c.home, branch))
+    if key not in _states:
+        _states[key] = read_states(c.home, repo, path, key[3], key[4])
+    return _states[key]
+
+
+def read_states(home: Path, repo: Path, path: str, head: str, journal: str) -> tuple[str, list[State], str]:
+    """`journal_states` at the code's HEAD and the journal's JOURNAL commit. In one repository it walks
+    only the commits since the code; across two, the journal's history back to the code's time."""
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", head, "--", ".", ":(exclude).campaign")
+    k, k_at = code.split() if code else ("", "0")
+    mine = same_repo(repo, home)
+    base = f"{k}^" if mine and k and has_ref(home, f"{k}^") else ""  # the code's parent bounds the walk
+    after: list[State] = []
+    for line in git(home, "log", "--format=%H %ct", f"{base}..{journal}" if base else journal, "--", path).splitlines():
+        commit, at = line.split()
+        shown = git(home, "show", f"{commit}:{path}", check=False)
+        if k and (ancestor(repo, commit, k) and commit != k if mine else int(at) < int(k_at)):
+            return k, after, state_of(shown)
+        after.append((int(at), state_of(shown), commit))
+    return k, after, state_of(git(home, "show", f"{base}:{path}", check=False) if base else "")
+
+
+def set_at_head(states: list[State], found: str) -> bool:
+    """Whether the State was set at the head: a commit at or after the head's code changed its value
+    (`journal_states`' STATES and FOUND)."""
+    return bool(states) and any(s != states[0][1] for s in [found, *(x[1] for x in states)])
+
+
+READY = "ready for review"  # the journal State that ends a round: its evidence runs then
+
+
+def journal_of(p: Json, pid: str, task: str = "") -> tuple[str, str]:
+    """The journal and branch a quest's (or task's) evidence answers to: a live task's own, else the
+    quest's (a merged or dropped task's jobs answer to the quest)."""
+    t = p.get("tasks", {}).get(task) if task else None
+    if t and not t.get("merged") and t.get("status") != "dropped":
+        return f"{pid}--{task}", t["branch"]
+    return pid, p.get("branch", "")
+
+
+def committed_state(c: Campaign, pid: str, task: str = "") -> str:
+    """The journal State at the head, as committed (what `iterating` reads)."""
+    p = c.quests[pid]
+    _, states, found = journal_states(c, p, *journal_of(p, pid, task))
+    return states[0][1] if states else found
+
+
+def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) -> str:
+    """The one State decision (references/host.md, "When evidence runs"): why a quest's (or task's)
+    round is open, so its evidence and gate checks hold; "" when they queue: a landed quest, a tasked
+    quest's `verify` once every task merged or was dropped, or a committed State that ends a round
+    (`ready`) set at the head (a commit at or after the head's code changed it). The hold, the to-do,
+    and the hints of `status` and `land` all ask it."""
+    if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
+        return ""
+    p = c.quests[pid]
+    tasks = p.get("tasks", {})
+    if p.get("status") == "landed":
+        return ""
+    if verify and tasks and all(t.get("merged") or t.get("status") == "dropped" for t in tasks.values()):
+        return ""
+    code, states, found = journal_states(c, p, *journal_of(p, pid, task))
+    state = states[0][1] if states else found
+    if not ready(state):
+        return f"the journal State is {state!r}" + (f": set State {READY} at {code[:12]}" if code else "")
+    return (
+        ""
+        if set_at_head(states, found)
+        else f"State {state!r} was set before the head {code[:12]}: set State at {code[:12]}"
+    )
 
 
 PROOF = ("job", "artifact", "decision", "manual", "ci")  # what a criterion's evidence must be; job by default
@@ -253,20 +348,46 @@ def ran_at(repo: Path, head: str, at: int) -> str:
     return git(repo, "rev-list", "-1", "--first-parent", f"--before={at}", head) if at else ""
 
 
+DOTTED = re.compile(r"(?<![\w./-])[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+(?![\w/-])")  # a dotted id: test_x.Case.test_y
+
+
+def module_named(path: str, cmd: str) -> bool:
+    """Whether CMD names the Python file PATH by its dotted module id (`run.py test_x.Case.test_y`,
+    `-m unittest tests.test_x`): the id starts with the module's dotted path or a tail of it."""
+    if not path.endswith(".py"):
+        return False
+    parts = path[:-3].split("/")
+    tails = {".".join(parts[i:]) for i in range(len(parts))}
+    ids = [x for x in DOTTED.findall(cmd) if not x.endswith(".py")]  # a file name is no module id
+    return any(x == t or x.startswith(f"{t}.") for x in ids for t in tails)
+
+
+def own_line(repo: Path, spec: Json, quest: Json | None, head: str) -> str:
+    """The head of the line a job ran on: its task's branch while it lives, the head the task merged
+    at after; HEAD for a quest's job."""
+    t = (quest or {}).get("tasks", {}).get(spec.get("task") or "")
+    if not t:
+        return head
+    if t.get("branch") and has_ref(repo, t["branch"]):
+        return rev(repo, t["branch"])
+    return t.get("merged") or head
+
+
 def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
     """Where a fails-without job's evidence changed by HEAD: [] while its result holds.
     - A mutant or revert commit (off HEAD's history) reverts the lines its diff from its parent
       changes; the files its command names (the test it ran) count whole, a rename as a change.
-    - One whose change was the head's when it ran (the quest's new test on its base, cut from that
-      head's line), or a run at main's code with the quest's code from a ref, moves with any change to
-      the quest's file set since it ran. One cut from a line merged later (a task's) is a revert.
+    - One whose change was the head's when it ran (the new test on its base, cut from the line it ran
+      on: the quest's, or its task's, `own_line`), or a run at main's code with the quest's code from a
+      ref, moves with any change to the quest's file set since it ran. One cut from another line is a
+      revert.
     - A run at the quest's own commit mutates, in its command, the files it names; a mutation the
       command does not show (a script, a binary) moves with any change to the quest's file set.
     - Any other run at main's code lacks the whole fix, which the head's own runs test."""
     repo, commit, cmd, cwd = Path(spec["repo"]), spec["commit"], spec["cmd"], spec.get("cwd") or ""
 
     def named(paths: Collection[str]) -> list[str]:
-        return [x for x in paths if x in cmd or (cwd and os.path.relpath(x, cwd) in cmd)]
+        return [x for x in paths if x in cmd or (cwd and os.path.relpath(x, cwd) in cmd) or module_named(x, cmd)]
 
     if main_code(repo, commit, head, quest):
         cuts = [r["commit"] for r in spec.get("refs", {}).values() if same_repo(Path(r["repo"]), repo)]
@@ -278,7 +399,7 @@ def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
         return set_moved(repo, commit, head, quest)
     parent = git(repo, "rev-parse", f"{commit}^")
     mutation, moved = hunks(repo, parent, commit), hunks(repo, parent, head)
-    then = ran_at(repo, head, int(float(spec.get("submitted") or 0)))
+    then = ran_at(repo, own_line(repo, spec, quest, head), int(float(spec.get("submitted") or 0)))
     unchanged = [x for x in mutation if x not in differ(repo, commit, then or head)]
     if unchanged and (not then or ancestor(repo, parent, then)):  # the head's own change, on its base
         return set_moved(repo, then, head, quest) if then else unchanged

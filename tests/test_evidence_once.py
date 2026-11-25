@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
-from harness import CampaignCase
+from harness import CAMPAIGN, CampaignCase
 
 TEST = "python3 app.py | grep -q 2"
 
@@ -23,6 +26,73 @@ def set_state(case: CampaignCase, wt: Path, pid: str, state: str) -> None:
 
 
 ID = r"\d{6}-\d{6}-[0-9a-f]{6}"
+
+
+STATES = (  # the journal template's States, the store's odd ones (design R18), and others
+    "working",
+    "ready for review",
+    "Ready for review at 1081cb8",
+    "waiting on jobs 261125-000000-aaaaaa",
+    "Waiting on jobs 261125-000000-aaaaab (the round)",
+    "waiting on job 261125-000000-aaaaac",
+    "waiting on the jobs 261125-000000-aaaaad",
+    "waiting on CI 45590762068",
+    "fixing C1; waiting on jobs 261125-000000-aaaaae",
+    "fixing C29, D10",
+    "ready to land (shards and gate check passed; CI green)",
+    "ready to land: every criterion has its job",
+    "ready for landing",
+    "done: every criterion met",
+    "Done",
+    "blocked on lead: design check of the lifecycle table",
+    "blocked on owner: a decision",
+    "**State:** working",
+    "",
+)
+
+
+def read_corpus() -> list[str]:
+    """The States in CAMPAIGN_STATE_CORPUS (a file, one a line), when set."""
+    path = os.environ.get("CAMPAIGN_STATE_CORPUS")
+    return Path(path).read_text().splitlines() if path else []
+
+
+READERS = """
+import json, re, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from campaign_tool.campaign import find_campaign
+from campaign_tool.checks import landing_refusal
+from campaign_tool.evidence import committed_state, iterating
+from campaign_tool.jobcmds import evidence_hold, holders_of
+from campaign_tool.jobs import all_jobs, jobs_dir, load_job
+from campaign_tool.repo import rev
+from campaign_tool.reviews import landing_gap_kinds
+from campaign_tool.todo import todo
+
+wt, tagged, corpus = Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
+journal = wt / ".campaign/demo/journal/fix.md"
+base = subprocess.run(["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+out = []
+for state in corpus.read_text().splitlines():  # each State the one commit after the new code
+    subprocess.run(["git", "-C", str(wt), "reset", "-q", "--hard", base], check=True)
+    text = re.sub(r"^State:.*$", lambda m: f"State: {state}", journal.read_text(), count=1, flags=re.M)
+    journal.write_text(text)
+    subprocess.run(["git", "-C", str(wt), "commit", "-q", "--allow-empty", "-am", "state"], check=True)
+    c = find_campaign(Path.cwd())
+    jobs = all_jobs()
+    head = rev(c.repo(c.quests["fix"]), "quest/demo/fix")
+    job = load_job(jobs_dir() / tagged)
+    rerun = evidence_hold(c, {**job["spec"], "commit": head}, holders_of(job, c), job)[0]
+    items = [x for x in todo(c, jobs)["items"] if x["quest"] == "fix"]
+    gaps = landing_gap_kinds(c, "fix", head, final=True, ci=True, jobs=jobs)
+    out.append({
+        "state": state, "committed": committed_state(c, "fix"), "hold": iterating(c, "fix"), "rerun": rerun,
+        "kinds": [x["kind"] for x in items], "todo": "\\n".join(f"{x['text']}: `{x['cmd']}`" for x in items),
+        "gaps": "\\n".join(g.text for g in gaps), "land": landing_refusal(c, "fix", gaps, merged=False),
+    })
+print(json.dumps(out))
+"""
 
 
 class Hold(CampaignCase):
@@ -47,6 +117,14 @@ class Hold(CampaignCase):
 
     def jobs(self) -> int:
         return len(list((self.root / "jobs").glob("*/spec.json")))
+
+    def code(self, wt: Path) -> str:
+        """The head's code commit (its newest commit outside the campaign's files), as the hold names it."""
+        return self.git(wt, "log", "-1", "--format=%H", "--", ".", ":(exclude).campaign")[:12]
+
+    def refused(self, state: str, wt: Path) -> str:
+        """What the hold says to a State that ends no round, committed at WT's head."""
+        return f"the journal State is {state!r}: set State ready for review at {self.code(wt)}"
 
     def queued(self, wt: Path, cmd: str = TEST) -> tuple[str, str]:
         """A contributor's `job submit --for` and the lead's `verify`, both queued: their job ids."""
@@ -135,7 +213,7 @@ class Hold(CampaignCase):
     def test_row_3_any_other_state_holds(self) -> None:
         wt, tagged, unit, _ = self.round()
         set_state(self, wt, "fix", "fixing D4")
-        self.all_held(self.entries(wt, tagged, unit), "the journal State is 'fixing D4'", self.jobs())
+        self.all_held(self.entries(wt, tagged, unit), self.refused("fixing D4", wt), self.jobs())
 
     def test_row_3_every_status_but_landed_holds_by_the_state(self) -> None:
         """Correctness C17, N10: blocked, planned and dropped read the journal State as active does."""
@@ -158,7 +236,7 @@ class Hold(CampaignCase):
         self.commit(wt, {rel: (wt / rel).read_text().replace("State: working", "**State:** working")})
         refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", TEST)
         self.assertIn(
-            "--for A1 held: the journal State is '(no State line)'. Evidence runs once per round", refused.err
+            f"--for A1 held: {self.refused('(no State line)', wt)}. Evidence runs once per round", refused.err
         )
         self.assertEqual(refused.out, "")  # no id: nothing was queued
         self.assertNotIn("command:", refused.err)  # nothing reads as queued before the hold
@@ -170,7 +248,7 @@ class Hold(CampaignCase):
         set_state(self, wt, "fix", "working")
         said = self.entries(wt, tagged, unit, where=self.root)
         self.all_held(
-            {k: v for k, v in said.items() if k.startswith("rerun")}, "the journal State is 'working'", self.jobs()
+            {k: v for k, v in said.items() if k.startswith("rerun")}, self.refused("working", wt), self.jobs()
         )
 
     def test_reused_or_still_valid_first_at_any_state(self) -> None:
@@ -324,7 +402,7 @@ class Hold(CampaignCase):
         wt, tagged, unit, head = self.round()
         for state in ("waiting on CI run 7", "ready to land", "done with the build", "working; waiting on jobs 1"):
             set_state(self, wt, "fix", state)
-            self.all_held(self.entries(wt, tagged, unit), f"the journal State is {state!r}", self.jobs())
+            self.all_held(self.entries(wt, tagged, unit), self.refused(state, wt), self.jobs())
         set_state(self, wt, "fix", f"Waiting on jobs {tagged} (the round at {head})")
         self.all_queued(self.entries(wt, tagged, unit))
 
@@ -377,6 +455,128 @@ class Hold(CampaignCase):
         line = f"todo: resume fix: State 'ready for review' was set before the head {head}: set State at {head}: `campaign status fix`"
         self.assertIn(line, todo)
         self.assertFalse([x for x in todo if x.startswith("todo: finish fix")], todo)
+
+    def followed(self) -> tuple[list[str], list[str], str]:
+        """With nothing moving fix but the lead: its to-do lines, every `campaign job rerun` or `campaign
+        verify` the to-do, `status fix` and `land fix` show, and what `land fix` said."""
+        self.env["CAMPAIGN_IDLE"] = "0"
+        todo = [x.strip() for x in self.ok(self.home, "status").out.splitlines() if x.strip().startswith("todo:")]
+        land = self.run_cli(self.home, "land", "fix").text
+        listed = "\n".join(todo) + self.ok(self.home, "status", "fix").out + land
+        return todo, list(dict.fromkeys(re.findall(r"`(campaign (?:job rerun|verify) [^`]+)`", listed))), land
+
+    def test_row_3_the_to_do_resumes_at_a_state_the_hold_refuses(self) -> None:
+        """Correctness C29, design D10 (R16, probe_r4c): "ready to land" or "done", set at the head after
+        new code. The to-do says resume with the hold's reason, never finish, and neither `status` nor
+        `land` names a command the hold refuses."""
+        wt, _, _, head = self.round()
+        for state in (f"ready to land: every criterion has its job at {head}", f"done: round 2 at {head}"):
+            set_state(self, wt, "fix", state)
+            todo, shown, land = self.followed()
+            self.assertIn(f"todo: resume fix: {self.refused(state, wt)}: `campaign status fix`", todo)
+            self.assertFalse([x for x in todo if x.startswith("todo: finish fix")], todo)
+            self.assertEqual(shown, [], land)
+            at = self.git(wt, "rev-parse", "HEAD")[:12]  # the branch's head: the code and the State after it
+            self.assertIn(f"evidence jobs ran other code than {at}: reruns held: {self.refused(state, wt)}", land)
+            self.assertIn(f"(verify held: {self.refused(state, wt)})", land)
+
+    def test_row_1_the_to_do_finishes_with_what_the_hold_queues(self) -> None:
+        """The control of C29: State ready for review set at the head; the to-do says finish, and every
+        command it, `status` and `land` show queues."""
+        wt, tagged, _, head = self.round()
+        set_state(self, wt, "fix", f"ready for review at {head}")
+        todo, shown, _ = self.followed()
+        self.assertTrue([x for x in todo if x.startswith("todo: finish fix")], todo)
+        self.assertEqual(shown, [f"campaign job rerun {tagged}", "campaign verify fix"])
+        for cmd in shown:
+            self.assertNotIn("held:", self.ok(self.home, *cmd.split()[1:]).text, cmd)
+
+    def test_the_four_readers_agree_on_every_state(self) -> None:
+        """C29's class: the hold (a rerun's `evidence_hold`), the to-do, `status`'s gaps and `land`'s
+        refusal answer each State, committed at the head after new code, by one decision (`iterating`).
+        The States are the table's, the store's odd ones (R18), and with CAMPAIGN_STATE_CORPUS (a file,
+        one State a line) every State version in the campaigns' journals."""
+        wt, tagged, _, head = self.round()
+        corpus = self.root / "states.txt"
+        states = [*STATES, *read_corpus()]
+        corpus.write_text("\n".join(dict.fromkeys(x for x in states if x.strip())))
+        self.env["CAMPAIGN_IDLE"] = "0"
+        script = self.root / "readers.py"
+        script.write_text(READERS)
+        run = subprocess.run(
+            [sys.executable, str(script), str(CAMPAIGN.parent), str(wt), tagged, str(corpus)],
+            cwd=self.home,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=3000,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr[-3000:])
+        said = json.loads(run.stdout)
+        self.assertEqual(len(said), len(corpus.read_text().splitlines()))
+        claims = re.compile(r"(?:ready|done)\b", re.I)
+        wrong: list[str] = []
+        for x in said:
+            hold, state = x["hold"], x["state"]
+            commands = re.findall(r"`campaign (?:job rerun|verify) ", x["gaps"] + x["land"] + x["todo"])
+            checks = {
+                "the rerun's hold": (x["rerun"] == "held") == bool(hold),
+                "the committed State": x["committed"] == state,
+                "no finish or review while held": not hold or not {"finish", "review"} & set(x["kinds"]),
+                "resume with the hold's reason": not (hold and claims.match(state))
+                or f"resume fix: {hold}" in x["todo"],
+                "status and land name no held command": not hold or not commands,
+                "status names the rerun when it queues": bool(hold) or f"`campaign job rerun {tagged}`" in x["gaps"],
+            }
+            wrong += [f"{state!r}: {k} ({x})" for k, ok in checks.items() if not ok]
+        self.assertEqual(wrong, [], f"{len(wrong)} disagreements over {len(said)} States at {head}")
+
+    def merged_task(self) -> tuple[Path, str, str]:
+        """Quest fix whose task t1 made the fix and its test, proven at the task's head with a plain job
+        and a mutant (the fix reverted on the task's head) at the task's State ready for review; the task
+        merged, the quest's line moved on, and the quest's State ready for review set at its head.
+        Returns the quest's worktree, the plain job and the mutant (probe_r4b)."""
+        wt = self.started("fix", files="app.py,check.py,lib/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        set_state(self, wt, "fix", "working")
+        self.ok(self.home, "start", "fix", "--task", "t1", "--files", "app.py,check.py")
+        task = self.wt("fix--t1")
+        head = self.commit(task, {"app.py": "print(2)\n", "check.py": CHECK})
+        cut = self.commit(task, {"app.py": "print(1)\n"}, "mutant: revert the fix")
+        self.git(task, "reset", "-q", "--hard", head)
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-t1-a1", cut)
+        set_state(self, task, "fix--t1", "ready for review")
+        args = ("--quest", "fix", "--task", "t1", "--for", "A1")
+        mutant = self.submit(
+            task, *args, "--fails-without", "--commit", "refs/campaign/demo/fix-t1-a1", "--", "python3 check.py"
+        )
+        plain = self.submit(task, *args, "--", "python3 check.py")
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "90", timeout=120)
+        time.sleep(1.1)  # the head a mutant ran at is read by commit time, to the second
+        self.ok(self.home, "task", "merge", "fix", "t1")
+        quest_head = self.commit(wt, {"lib/util.py": "X = 5\n"})[:12]
+        set_state(self, wt, "fix", f"ready for review at {quest_head}")
+        return wt, plain, mutant
+
+    def test_row_1_a_merged_task_s_job_reruns_at_the_quest_s_state(self) -> None:
+        """Correctness C31 (probe_r4b): a merged task's jobs answer to the quest's journal; its tagged
+        job's rerun queues at the quest's State ready for review."""
+        _, plain, _ = self.merged_task()
+        before = self.jobs()
+        r = self.ok(self.home, "job", "rerun", plain)
+        self.assertNotIn("held:", r.text)
+        self.assertEqual(self.jobs(), before + 1)
+
+    def test_row_9_a_merged_task_s_still_valid_mutant(self) -> None:
+        """Correctness C31 (probe_r4b): a merged task's mutant, still met at the quest's head, reruns with
+        and without --commit as still valid, queuing nothing."""
+        _, _, mutant = self.merged_task()
+        before = self.jobs()
+        for extra in ((), ("--commit", "quest/demo/fix")):
+            self.assertIn(f"{mutant} still holds at ", self.ok(self.home, "job", "rerun", mutant, *extra).out, extra)
+        self.assertEqual(self.jobs(), before)
 
 
 class Mutants(CampaignCase):
@@ -462,6 +662,11 @@ CHECK = (
     "assert out.split()[0] == '2', out\n"
 )
 LONG_CHECK = "".join(f"# the regression test, line {n}: app.py prints two\n" for n in range(12)) + CHECK
+UNIT_CHECK = (
+    "import subprocess, sys, unittest\n\n\nclass T(unittest.TestCase):\n    def test_two(self):\n"
+    "        out = subprocess.run([sys.executable, 'app.py'], capture_output=True, text=True).stdout\n"
+    "        self.assertEqual(out.split()[0], '2')\n"
+)
 MUTATE = "from pathlib import Path\np = Path('app.py')\np.write_text(p.read_text().replace('print(2)', 'print(1)'))\n"
 
 
@@ -578,6 +783,41 @@ class MutantFootprint(CampaignCase):
         self.assertIn("R0", self.git(wt, "diff", "--name-status", "-M", "HEAD~1", "HEAD"))  # git reads a rename
         self.assertFalse(self.at_head(wt, "python3 test_check.py"))
 
+    def test_a_task_s_base_plus_test_mutant_holds_across_its_task_merge(self) -> None:
+        """Correctness C30 (probe_r4): the task's new test on the task's base, proven at the task; the
+        task merges, leaving its fix and test as they were where the mutant was proven: still met."""
+        wt = self.started("fix", files="app.py,check.py,lib/**")
+        brief = self.home / ".campaign/demo/quests/fix.md"
+        brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
+        self.git(self.home, "commit", "-qam", "criteria")
+        self.ok(self.home, "start", "fix", "--task", "t1", "--files", "app.py,check.py")
+        task = self.wt("fix--t1")
+        base = self.git(task, "rev-parse", "HEAD")
+        self.commit(task, {"app.py": "print(2)\n", "check.py": CHECK})
+        self.git(task, "checkout", "-q", "--detach", base)
+        cut = self.commit(task, {"check.py": CHECK}, "mutant: the task's test on its base")
+        self.git(task, "checkout", "-q", "quest/demo/fix--t1")
+        args = self.mutant_ref(cut)
+        mutant = self.submit(task, *args[:2], "--task", "t1", *args[2:], "--", "python3 check.py")
+        plain = self.submit(task, "--quest", "fix", "--task", "t1", "--for", "A1", "--", "python3 check.py")
+        self.ok(self.home, "wait", plain, mutant, "--timeout", "90", timeout=120)
+        time.sleep(1.1)  # the head a mutant ran at is read by commit time, to the second
+        self.ok(self.home, "task", "merge", "fix", "t1")
+        self.assertTrue(self.at_head(wt, "python3 check.py"))
+
+    def test_a_mutant_commit_goes_stale_when_the_test_module_it_names_changes(self) -> None:
+        """Correctness C33: a command that names its test by module id (`-m unittest test_check.T`)
+        names the test's file: weakening the test stales the mutant."""
+        wt = self.fixed()
+        self.commit(wt, {"test_check.py": UNIT_CHECK})
+        self.commit(wt, {"app.py": "print(1)\nprint('tail')\n"}, "mutant: revert the fix")
+        mutant_commit = self.git(wt, "rev-parse", "HEAD")
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")
+        cmd = "python3 -m unittest test_check.T.test_two"
+        self.proven(wt, self.submit(wt, *self.mutant_ref(mutant_commit), "--", cmd))
+        self.commit(wt, {"test_check.py": UNIT_CHECK.replace("self.assertEqual(out.split()[0], '2')", "pass")})
+        self.assertFalse(self.at_head(wt, cmd))
+
     def on_the_base(self, change: dict[str, str], cmd: str = "python3 check.py") -> bool:
         """The quest's new test applied to its base, proven; then CHANGE at the head: whether A1, by the
         head's test CMD, is still met. It holds while the quest's files are as it ran them (correctness
@@ -679,7 +919,7 @@ class Guard(CampaignCase):
         self.fake_jobs("proving", self.heads(5), 5, "cancelled", started=False, tag="")  # probes: never counted
         spin = (
             "spin queued evidence at 3 heads in the last 24 h: 3 rounds were cancelled before any job started, 0 ran "
-            "and newly met no criterion, 0 criteria newly met; 24 job-hours waiting. Lead: tell its contributor"
+            "and newly met no criterion while a job failed or none passed, 0 criteria newly met; 24 job-hours waiting. Lead: tell its contributor"
         )
         churn = (
             "churn queued evidence at 4 heads in the last 24 h: 0 rounds were cancelled before any job started, 4 ran"
@@ -730,7 +970,10 @@ class Guard(CampaignCase):
             self.fake_jobs("fix", self.heads(1), 2, "done", started=True, age_h=10 - k)
         self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
         self.fake_jobs("fix", self.heads(4), 1, "failed", started=True, age_h=1)
-        self.assertIn("4 ran and newly met no criterion, 1 criterion newly met", self.run_cli(self.home, "status").out)
+        self.assertIn(
+            "4 ran and newly met no criterion while a job failed or none passed, 1 criterion newly met",
+            self.run_cli(self.home, "status").out,
+        )
 
     def test_re_proving_one_criterion_while_another_fails_is_barren(self) -> None:
         """Design D8 (probe G4): six rounds, A1 re-proved and A2 failed in each. After the first, none
@@ -740,7 +983,10 @@ class Guard(CampaignCase):
             head = self.heads(1)
             self.fake_jobs("fix", head, 1, "done", started=True, age_h=12 - 2 * k, tag="A1")
             self.fake_jobs("fix", head, 1, "failed", started=True, age_h=12 - 2 * k, tag="A2")
-        self.assertIn("5 ran and newly met no criterion, 1 criterion newly met", self.run_cli(self.home, "status").out)
+        self.assertIn(
+            "5 ran and newly met no criterion while a job failed or none passed, 1 criterion newly met",
+            self.run_cli(self.home, "status").out,
+        )
 
     def test_a_round_meets_a_criterion_by_its_passed_test_never_its_mutant(self) -> None:
         """Correctness C22: five rounds whose test of A1 failed while its mutant "failed without the fix"
@@ -750,7 +996,23 @@ class Guard(CampaignCase):
             head = self.heads(1)
             self.fake_jobs("fix", head, 1, "failed", started=True, age_h=10 - k)
             self.fake_jobs("fix", head, 1, "done", started=True, age_h=10 - k, mutant=True)
-        self.assertIn("5 ran and newly met no criterion, 0 criteria newly met", self.run_cli(self.home, "status").out)
+        self.assertIn(
+            "5 ran and newly met no criterion while a job failed or none passed, 0 criteria newly met",
+            self.run_cli(self.home, "status").out,
+        )
+
+    def test_a_round_whose_test_timed_out_is_barren(self) -> None:
+        """Correctness C32, design D11 (G4t): six rounds, A1 re-proved and A2's job timed out in each. A
+        timeout is a failure (core.FAILED): barren, flagged."""
+        self.started("fix", files="app.py")
+        for k in range(6):
+            head = self.heads(1)
+            self.fake_jobs("fix", head, 1, "done", started=True, age_h=12 - 2 * k, tag="A1")
+            self.fake_jobs("fix", head, 1, "timeout", started=True, age_h=12 - 2 * k, tag="A2")
+        self.assertIn(
+            "5 ran and newly met no criterion while a job failed or none passed, 1 criterion newly met",
+            self.run_cli(self.home, "status").out,
+        )
 
 
 class ExaminedJobs(CampaignCase):

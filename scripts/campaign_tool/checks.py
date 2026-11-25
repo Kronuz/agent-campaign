@@ -201,6 +201,7 @@ def landing_reruns(c: Campaign, pid: str) -> tuple[str, set[str], set[str]]:
 
 
 HINT = re.compile(r":? \(?`campaign [^`]*`\)?")  # a gap's command, which `land` ran itself
+HELD = re.compile(r"(?::| \() ?(?:reruns|verify) held: .*$", re.S)  # a held gap's why, which `land` ran past
 
 
 def landing_refusal(c: Campaign, pid: str, gaps: list[Gap], *, merged: bool) -> str:
@@ -213,7 +214,7 @@ def landing_refusal(c: Campaign, pid: str, gaps: list[Gap], *, merged: bool) -> 
             return bool(g.jobs) and set(g.jobs) <= reran
         return g.kind == "check" and (m := re.match(r"check (\S+) is not green", g.text)) is not None and m[1] in checks
 
-    shown = [HINT.sub("", g.text) + " (queued below)" if answered(g) else g.text for g in gaps]
+    shown = [HELD.sub("", HINT.sub("", g.text)) + " (queued below)" if answered(g) else g.text for g in gaps]
     return f"{pid} cannot land yet:\n  " + "\n  ".join(shown) + queued
 
 

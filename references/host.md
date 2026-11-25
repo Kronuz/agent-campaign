@@ -169,6 +169,11 @@ when a commit at or after the head's code changed it, so a code commit holds aga
 commit changes the State. The hold reads it in every status but landed (active, review, blocked,
 planned, dropped); a landed quest holds nothing, and `land` queues what its merge from main voided.
 
+One State decision (`iterating`) reads the committed State at the head and answers the hold, the
+to-do and the hints of `status` and `land` alike: where it holds, the to-do says resume with its
+reason, never finish, and a hint names the hold, not a command it refuses. A merged or dropped
+task's jobs answer to the quest's journal and table.
+
 Every command that queues evidence asks one hold decision (`evidence_hold`). What queues nothing
 passes first, at any State: a result an earlier job answers is handed back, and a passed mutant that
 still holds is still valid. Then the table:
@@ -177,7 +182,7 @@ still holds is still valid. Then the table:
 |---|---|---|
 | ready for review, or waiting on jobs, set at the head | `job submit --for`, `job rerun` (plain, mutant or gate check, any `--commit`), `verify` | queues |
 | ready for review, or waiting on jobs, set before the head | the same | held: "set State at <head>" |
-| any other State | the same | held |
+| any other State | the same | held: "set State ready for review at <head>" |
 | any, in a tasked quest whose tasks all merged or were dropped | `verify`, `job rerun` of a gate check | queues |
 | any | `land` queueing what its merge from main voided | queues, named once as queued |
 | any | a probe or measurement without `--for` | queues |

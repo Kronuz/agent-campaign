@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from .ci import check_evidence, ci_carried, ci_covers, ci_gate
 from .core import FAILED, CampaignError, Json, csv, die, git, jobs_dir, plural, section, table_cells, warm_fingerprint
-from .evidence import criteria_evidence, evidence_shape, job_problem, rerun_hint, unmet_why
+from .evidence import criteria_evidence, evidence_shape, iterating, job_problem, rerun_hint, unmet_why
 from .jobs import job_summary, load_job, quest_jobs
 from .journals import id_ranges, journal_gaps, journal_state, journals_at, landing_journals
 from .mail import answered, inbox
@@ -297,12 +297,13 @@ def landing_gap_kinds(
             )
         )
     stale = sorted({w.split()[0] for x in unproven for e in rows[x] for w in e["why"] if w.endswith("ran other code")})
-    if stale:
-        text = f"evidence jobs ran other code than {target[:12]}: {rerun_hint(repo, stale)}"
-        gaps.append(Gap("stale", text, tuple(stale)))
+    if stale:  # the hint is what the hold allows (`iterating`, the one State decision)
+        hint = f"reruns held: {why}" if (why := iterating(c, pid)) else rerun_hint(repo, stale)
+        gaps.append(Gap("stale", f"evidence jobs ran other code than {target[:12]}: {hint}", tuple(stale)))
     for missing in check_evidence(c, p, target, ci=ci and ci_covers(c))[0]:
         name, _, why = missing.partition(": ")
-        gaps.append(Gap("check", f"check {name} is not green at {target[:12]}: {why} (`campaign verify {pid}`)"))
+        hint = f"verify held: {hold}" if (hold := iterating(c, pid, verify=True)) else f"`campaign verify {pid}`"
+        gaps.append(Gap("check", f"check {name} is not green at {target[:12]}: {why} ({hint})"))
     gaps += [Gap("review", x) for x in review_gaps(c, pid, target, main_head)] if final else []
     if ci and c.state.get("ci") == "github":
         gate = ci_gate(c, p, target)
@@ -425,15 +426,23 @@ def task_gaps(c: Campaign, pid: str, task: str, jobs: list[Json]) -> list[str]:
             f"no jobs of its own at its head: run its tests as `campaign job submit --quest {pid} --task {task} -- CMD`"
         ]
     gaps: list[str] = []
+    hold = iterating(c, pid, task)  # the one State decision: a held rerun's hint says why
     for j in newest.values():
         twin = None
         with contextlib.suppress(CampaignError, KeyError):
             twin = job_at(j["spec"], head, merged=True, files=p["files"])
         state = twin["state"].get("state") if twin else None
         if twin is None:
-            gaps.append(f"{j['id']} ran other code than {head[:12]}: `campaign job rerun {j['id']}`")
+            gaps.append(
+                f"{j['id']} ran other code than {head[:12]}: "
+                + (f"rerun held: {hold}" if hold else f"`campaign job rerun {j['id']}`")
+            )
         elif state != "done":
-            out = f"`campaign job rerun {twin['id']}`, or, if it must fail, submit it again with --fails-without"
+            out = (
+                f"rerun held: {hold}"
+                if hold
+                else f"`campaign job rerun {twin['id']}`, or, if it must fail, submit it again with --fails-without"
+            )
             gap = f"{twin['id']} {state} at {head[:12]}: {twin['spec'].get('what', '')}"
             gaps.append(gap + (f" ({out})" if state in FAILED else ""))
     return gaps

@@ -15,7 +15,8 @@ import report
 
 from .campaign import JOB_WAIT, READY, Campaign, activity, critical_path, duration, hunt_open, overview, park_met
 from .ci import forget_ci
-from .core import CampaignError, Json, atomic_write, git, plural, section
+from .core import CampaignError, Json, atomic_write, plural, section
+from .evidence import committed_state, iterating, journal_states, ready, set_at_head
 from .jobs import quest_jobs
 from .journals import journal_text, state_of
 from .mail import leave_message, recorded_lead, surface_spaces, todo_mail, todo_mail_file
@@ -43,56 +44,6 @@ def first_command(gaps: list[str], fallback: str) -> str:
         if m := re.search(r"`(campaign [^`]+)`", gap):
             return m.group(1)
     return fallback
-
-
-ROUND_END = re.compile(r"(?:ready for review|waiting on jobs)\b", re.I)
-
-
-def ready(state: str) -> bool:
-    """A journal State that ends a round, the table's two: "ready for review" or "waiting on jobs",
-    each with any detail after it."""
-    return bool(ROUND_END.match(state))
-
-
-State = tuple[int, str, str]  # a journal commit's time, its State, and the commit
-_states: dict[tuple[str, ...], tuple[str, list[State], str]] = {}
-
-
-def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[State], str]:
-    """The head's code commit; the State (the journal's first State line) at each journal commit at or
-    after it, newest first, with its commit time; and the State the code found. In one repository
-    "after" is by ancestry, across two (a quest in another repository) by commit time. Read once per
-    command and head."""
-    repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
-    if not (branch and has_ref(repo, branch) and has_ref(c.home, branch)):
-        return "", [], ""  # a quest not started, or its branch gone: no State
-    key = (str(repo), str(c.home), path, rev(repo, branch), rev(c.home, branch))
-    if key not in _states:
-        _states[key] = read_states(c.home, repo, path, key[3], key[4])
-    return _states[key]
-
-
-def read_states(home: Path, repo: Path, path: str, head: str, journal: str) -> tuple[str, list[State], str]:
-    """`journal_states` at the code's HEAD and the journal's JOURNAL commit. In one repository it walks
-    only the commits since the code; across two, the journal's history back to the code's time."""
-    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", head, "--", ".", ":(exclude).campaign")
-    k, k_at = code.split() if code else ("", "0")
-    mine = same_repo(repo, home)
-    base = f"{k}^" if mine and k and has_ref(home, f"{k}^") else ""  # the code's parent bounds the walk
-    after: list[State] = []
-    for line in git(home, "log", "--format=%H %ct", f"{base}..{journal}" if base else journal, "--", path).splitlines():
-        commit, at = line.split()
-        shown = git(home, "show", f"{commit}:{path}", check=False)
-        if k and (ancestor(repo, commit, k) and commit != k if mine else int(at) < int(k_at)):
-            return k, after, state_of(shown)
-        after.append((int(at), state_of(shown), commit))
-    return k, after, state_of(git(home, "show", f"{base}:{path}", check=False) if base else "")
-
-
-def set_at_head(states: list[State], found: str) -> bool:
-    """Whether the State was set at the head: a commit after the head's code changed its value
-    (`journal_states`' STATES and FOUND)."""
-    return bool(states) and any(s != states[0][1] for s in [found, *(x[1] for x in states)])
 
 
 def round_at_head(c: Campaign, k: str, p: Json, jobs: list[Json]) -> bool:
@@ -151,19 +102,17 @@ def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None
                     item("resume", k, f"resume {k}'s task {task}: {why}", f"campaign status {k}", f"resume {name}")
                 )
         missing = gaps[k] if k in gaps else landing_gaps(c, k, rev(repo, p["branch"]), final=True, ci=True, jobs=jobs)
-        state = state_of(journal_text(c, k, p["branch"]))
+        state, hold = committed_state(c, k), iterating(c, k)  # the one State decision, as the hold reads it
         if not missing:
             items.append(item("land", k, f"land {k}: nothing keeps it from landing", f"campaign land {k}"))
-        elif p["status"] == "active" and ready(state) and p["lenses"] and round_at_head(c, k, p, jobs):
+        elif p["status"] == "active" and not hold and p["lenses"] and round_at_head(c, k, p, jobs):
             lenses = " and ".join(p["lenses"])
             text = f"review {k}: its journal says {state}; then launch its {lenses} review"
             items.append(item("review", k, text, f"campaign set {k} status=review"))
         elif doing.get(k, ("",))[0] == "lead":
             why = doing[k][1]
-            code, states, found = journal_states(c, p, k, p["branch"])
-            if READY.match(state) and not set_at_head(states, found):  # the hold keeps the round open
-                why = f"State {state!r} was set before the head {code[:12]}: set State at {code[:12]}"
-                items.append(item("resume", k, f"resume {k}: {why}", f"campaign status {k}"))
+            if READY.match(state) and hold:  # it says ready, and the hold keeps its round open
+                items.append(item("resume", k, f"resume {k}: {hold}", f"campaign status {k}"))
             elif READY.match(state):
                 items.append(
                     item(

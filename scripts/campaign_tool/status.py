@@ -98,7 +98,8 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     """Why a quest's last GUARD_HOURS of evidence (jobs tagged `--for`) look queued at every commit,
     counted in rounds (one per head): at least GUARD_NEVER cancelled before any job started, or
     GUARD_UNPROVEN that ran and are barren: they newly met no criterion (one a passed plain job, never a
-    mutant, met at the round's head and the round before did not), and a job failed or none passed;
+    mutant, met at the round's head and the round before did not), and a job failed (core.FAILED: failed,
+    timeout, interrupted) or none passed;
     re-proving with every job passing is not barren. "" otherwise. Names the counts, the job-hours waited, and the lead's step."""
     since = now - GUARD_HOURS * 3600
     mine = (c.ident, pid)
@@ -129,7 +130,7 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
         if recent:
             if not any(j["state"].get("started") for j in group):
                 never += any(j["state"].get("state") == "cancelled" for j in group)
-            elif not met - before and ("failed" in ended or "done" not in ended):
+            elif not met - before and (any(x in FAILED for x in ended) or "done" not in ended):
                 barren += 1
             newly += len(met - before)
         if any(j["state"].get("started") for j in group):
@@ -140,7 +141,7 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     return (
         f"{pid} queued evidence at {heads} heads in the last {GUARD_HOURS} h: {never} "
         f"{'round was' if never == 1 else 'rounds were'} cancelled before any job started, {barren} ran and "
-        f"newly met no criterion, {newly} {'criterion' if newly == 1 else 'criteria'} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
+        f"newly met no criterion while a job failed or none passed, {newly} {'criterion' if newly == 1 else 'criteria'} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
         "contributor to iterate in its worktree under `quiet light` and submit one round per State ready for review"
     )
 

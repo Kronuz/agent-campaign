@@ -33,7 +33,7 @@ from .core import (
     stamp,
     write_json,
 )
-from .evidence import criteria_for, fails_without_met, mutant_holds
+from .evidence import READY, criteria_for, fails_without_met, iterating, journal_of, mutant_holds
 from .jobs import (
     FAILS_WITHOUT,
     all_jobs,
@@ -54,7 +54,6 @@ from .reviews import EVIDENCE_GAPS, Gap, landing_gap_kinds
 from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
 from .status import JOB_MARKS
-from .todo import journal_states, ready, set_at_head
 from .wait import wait_for
 from .worker import slot_cores
 
@@ -141,35 +140,6 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
                 digest = hashlib.file_digest(f, "sha256") if sys.version_info >= (3, 11) else hashlib.sha256(f.read())
                 out[token] = digest.hexdigest()[:24]
     return out
-
-
-READY = "ready for review"  # the journal State that ends a round: its evidence runs then
-
-
-def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) -> str:
-    """Why the lifecycle table (references/host.md, "When evidence runs") holds a quest's (or task's)
-    evidence and gate checks, in every status but landed; "" when they queue: a landed quest, a tasked
-    quest's `verify` once every task merged or was dropped, or a State that ends a round (`ready`) set
-    at the head (a commit at or after the head's code changed it)."""
-    if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
-        return ""
-    p = c.quests[pid]
-    tasks = p.get("tasks", {})
-    if p.get("status") == "landed":
-        return ""
-    if verify and tasks and all(t.get("merged") or t.get("status") == "dropped" for t in tasks.values()):
-        return ""
-    t = tasks.get(task) if task else None
-    name, branch = (f"{pid}--{task}", t["branch"]) if t else (pid, p.get("branch", ""))
-    code, states, found = journal_states(c, p, name, branch)
-    state = states[0][1] if states else found
-    if not ready(state):
-        return f"the journal State is {state!r}"
-    return (
-        ""
-        if set_at_head(states, found)
-        else f"State {state!r} was set before the head {code[:12]}: set State at {code[:12]}"
-    )
 
 
 def held(why: str, force: str = "pass --force") -> str:
@@ -629,13 +599,13 @@ def held_rerun(job: Json, why: str, gate: bool) -> str:
 
 
 def mutant_head(c: Campaign, spec: Json) -> str:
-    """The head of the quest a fails-without job ran for, where its result may still hold; "" when
-    it has none."""
+    """The head of the quest (or live task) a fails-without job ran for, where its result may still
+    hold; a merged or dropped task's answers at the quest's head. "" when it has none."""
     with contextlib.suppress(CampaignError, KeyError):
         if spec.get("quest") in c.quests and spec.get("commit"):
-            p = c.quests[spec["quest"]]
-            task = p.get("tasks", {}).get(spec.get("task", ""), {})
-            return rev(Path(spec["repo"]), task.get("branch") or p["branch"])
+            repo, p = Path(spec["repo"]), c.quests[spec["quest"]]
+            branch = journal_of(p, spec["quest"], spec.get("task", ""))[1]
+            return rev(repo, branch if has_ref(repo, branch) else p["branch"])
     return ""
 
 
@@ -693,8 +663,8 @@ def rerun_jobs(
         with contextlib.suppress(CampaignError):
             quest = c.quest(spec["quest"])
             home = c.repo(quest)
-            task = quest.get("tasks", {}).get(spec.get("task", ""), {})
-            branch = task["branch"] if task.get("branch") and has_ref(home, task["branch"]) else quest.get("branch", "")
+            branch = journal_of(quest, spec["quest"], spec.get("task", ""))[1]
+            branch = branch if has_ref(home, branch) else quest.get("branch", "")
             return branch, home, [b for _, b, _, _ in branches(c, spec["quest"])] + [main_branch(home)]
         return "", None, []
 

@@ -189,6 +189,7 @@ class TodoMail(CampaignCase):
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 one: a test\n- A2 two: a test"))
         self.git(self.home, "commit", "-qam", "criteria")
         self.journal("fin", "ready for review")
+        self.git(self.wt("fin"), "commit", "-qam", "State: ready for review")  # the to-do reads it committed
         self.look(0)
         (first,) = self.todo_mail()
         self.assertRegex(first["text"], r"todo: finish fin .*A1", first["text"])
