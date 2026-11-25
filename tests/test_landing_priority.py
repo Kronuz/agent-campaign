@@ -47,9 +47,9 @@ class LandingPriority(CampaignCase):
     def test_land_merge_main_queues_the_voided_evidence_at_landing_priority(self) -> None:
         self.ready()
         refused = self.fails(self.home, "land", "b", "--merge-main", match="merged main into quest/demo/b at ")
-        queued = re.search(r"queued its reruns at landing priority 3: (.+)", refused.text)
+        queued = re.search(r"queued at landing priority 3: reruns (\S+); landing checks (\S+)", refused.text)
         assert queued is not None, refused.text
-        ids = queued.group(1).split()
+        ids = list(queued.groups())
         self.assertEqual(sorted(str(self.spec(j)["cmd"]) for j in ids), sorted([PROBE, "true"]))
         self.assertEqual([self.priority(j) for j in ids], [3, 3])
         self.ok(self.home, "wait", *ids, "--timeout", "60")
@@ -98,7 +98,7 @@ class LandingPriority(CampaignCase):
     def test_a_quest_with_other_gaps_keeps_its_priority(self) -> None:
         wt, probe = self.ready(criteria="\n- A2 the docs say so: a probe")  # A2 never met
         refused = self.fails(self.home, "land", "b", "--merge-main", match="merged main into quest/demo/b at ")
-        self.assertNotIn("queued its reruns", refused.text)
+        self.assertNotIn("queued at landing priority", refused.text)
         (rerun,) = self.rerun(probe)
         self.assertEqual(self.priority(rerun), 1)
         wt, probe = self.ready("c", risk="normal", lenses="correctness")  # its review is pending

@@ -185,11 +185,13 @@ def landing_reruns(c: Campaign, pid: str) -> str:
     p = c.quests[pid]
     stale = [jid for g in gaps for jid in g.jobs if not resolve_job(jid)["spec"].get("fails_without")]  # no mutant here
     try:
-        ids = rerun_jobs(stale, c=c) if stale else []
-        ids += submit_checks(c, pid, gates(p), rev(c.repo(p), p["branch"]), priority=LANDING_PRIORITY)
+        reruns = rerun_jobs(stale, c=c) if stale else []
+        checks = submit_checks(c, pid, gates(p), rev(c.repo(p), p["branch"]), priority=LANDING_PRIORITY)
     except CampaignError as e:
-        return f"\n  its reruns were not queued: {e}"
-    return f"\n  queued its reruns at landing priority {LANDING_PRIORITY}: {' '.join(dict.fromkeys(ids))}"
+        return f"\n  its landing jobs were not queued: {e}"
+    said = [f"reruns {' '.join(dict.fromkeys(reruns))}"] if reruns else []
+    said += [f"landing checks {' '.join(dict.fromkeys(checks))}"] if checks else []  # never passed at this code
+    return f"\n  queued at landing priority {LANDING_PRIORITY}: {'; '.join(said)}"
 
 
 def verify_deferred(a: argparse.Namespace) -> int:
