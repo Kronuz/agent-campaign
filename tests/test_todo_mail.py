@@ -209,11 +209,11 @@ class TodoMail(CampaignCase):
         self.journal("deep", "ready for review")
         review = "todo: review deep: its journal says"
         self.assertNotIn(review, self.ok(self.home, "status").out)
-        old = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "true")
+        old = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "python3 deep.py")
         self.ok(self.home, "wait", old, "--timeout", "60")
         self.commit(self.wt("deep"), {"deep.py": "x = 2\n"})  # new code: that job is the last round's
         self.assertNotIn(review, self.ok(self.home, "status").out)
-        jid = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "true")
+        jid = self.submit(self.wt("deep"), "--quest", "deep", "--for", "A1", "--", "python3 deep.py")
         self.journal("deep", f"waiting on jobs {jid}")
         self.assertIn(f"{review} waiting on jobs {jid}; then launch its", self.ok(self.home, "status").out)
 

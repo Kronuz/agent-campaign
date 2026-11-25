@@ -4,6 +4,7 @@ mails it to the lead until each item is done (`lead_todo`)."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from .journals import journal_text, state_of
 from .mail import leave_message, recorded_lead, surface_spaces, todo_mail, todo_mail_file
 from .map import first_paragraph
 from .repo import ancestor, frozen, has_ref, rev
+from .reuse import job_at
 from .reviews import landing_gaps, task_gaps
 from .state import registry
 from .worker import light_slots, light_weight
@@ -52,18 +54,23 @@ def ready(state: str) -> bool:
 
 def round_at_head(c: Campaign, k: str, p: Json, jobs: list[Json]) -> bool:
     """Whether quest K's round exists at its head's code: a job tagged for it, or a gate check of it, at
-    or after the head's last code commit. Only then is it worth a review."""
+    or after the head's last code commit, or one whose result holds there (its inputs unchanged, so a
+    submit reuses it). Only then is it worth a review."""
     repo = c.repo(p)
-    code = git(repo, "log", "-1", "--first-parent", "--format=%H", p["branch"], "--", ".", ":(exclude).campaign")
+    head = rev(repo, p["branch"])
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H", head, "--", ".", ":(exclude).campaign")
     check = re.compile(rf"{re.escape(k)} (?:deferred )?check ")
+    earlier = []
     for j in quest_jobs(jobs, c.ident, k):
         commit = j["spec"].get("commit") or ""
-        if (
-            commit
-            and (j.get("tags") or check.match(j["spec"].get("what", "")))
-            and (not code or ancestor(repo, code, commit))
-        ):
-            return True
+        if commit and (j.get("tags") or check.match(j["spec"].get("what", ""))):
+            if not code or ancestor(repo, code, commit):
+                return True
+            earlier.append(j)
+    for j in earlier:
+        with contextlib.suppress(CampaignError, KeyError):
+            if (twin := job_at(j["spec"], head, merged=True)) and twin["state"].get("state") == "done":
+                return True
     return False
 
 

@@ -163,7 +163,9 @@ class Mutants(CampaignCase):
     def moved_on(self, wt: Path, plain: str, mutant: str, files: dict[str, str]) -> None:
         """Commits FILES and reruns the plain test there: the mutant still holds, and nothing asks for it."""
         self.commit(wt, files)
-        rerun = self.ok(self.home, "job", "rerun", plain).out.split(":")[0]
+        rerun = (
+            self.ok(self.home, "job", "rerun", plain).out.split()[0].rstrip(":")
+        )  # new, or reused where inputs are traced
         self.ok(self.home, "wait", rerun, "--timeout", "60")
         self.assertTrue(self.met(), "a fails-without result went stale though its mutated code is unchanged")
         brief = self.ok(wt, "brief").out
