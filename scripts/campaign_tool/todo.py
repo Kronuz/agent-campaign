@@ -50,7 +50,10 @@ def ready(state: str) -> bool:
     return bool(READY.match(state) or JOB_WAIT.search(state))
 
 
-def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[tuple[int, str]], str]:
+State = tuple[int, str, str]  # a journal commit's time, its State, and the commit
+
+
+def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[State], str]:
     """The head's code commit; the State (the journal's first State line) at each journal commit at or
     after it, newest first, with its commit time; and the State the code found. In one repository
     "after" is by ancestry, across two (a quest in another repository) by commit time."""
@@ -58,39 +61,47 @@ def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, l
     code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
     k, k_at = code.split() if code else ("", "0")
     mine = same_repo(repo, c.home)
-    after: list[tuple[int, str]] = []
+    after: list[State] = []
     for line in git(c.home, "log", "--format=%H %ct", branch, "--", path).splitlines():
         commit, at = line.split()
         shown = git(c.home, "show", f"{commit}:{path}", check=False)
         if k and (ancestor(repo, commit, k) and commit != k if mine else int(at) < int(k_at)):
             return k, after, state_of(shown)
-        after.append((int(at), state_of(shown)))
+        after.append((int(at), state_of(shown), commit))
     return k, after, state_of("")
 
 
-def set_at_head(states: list[tuple[int, str]], found: str) -> bool:
+def set_at_head(states: list[State], found: str) -> bool:
     """Whether the State was set at the head: a commit after the head's code changed its value
     (`journal_states`' STATES and FOUND)."""
-    return bool(states) and any(s != states[0][1] for s in [found, *(s for _, s in states)])
+    return bool(states) and any(s != states[0][1] for s in [found, *(x[1] for x in states)])
 
 
 def round_at_head(c: Campaign, k: str, p: Json, jobs: list[Json]) -> bool:
     """Whether quest K's round exists at its head: State ready for review (or waiting on jobs) set at
     the head, and a job tagged for it, or a gate check of it, submitted since that State; a reused job
-    was submitted before, so it does not count. Only then is it worth a review."""
+    was submitted before, so it does not count. In one repository "since" is by ancestry (the job ran
+    at code that holds the State's commit), across two by time. Only then is it worth a review."""
+    repo = c.repo(p)
     _, states, found = journal_states(c, p, k, p["branch"])
     if not set_at_head(states, found) or not ready(states[0][1]):
         return False
-    since = states[0][0]
-    for at, state in states[1:]:  # the oldest State of the run that ended the round
+    since, setter = states[0][0], states[0][2]
+    for at, state, commit in states[1:]:  # the oldest State of the run that ended the round
         if not ready(state):
             break
-        since = at
+        since, setter = at, commit
+    mine = same_repo(repo, c.home)
+
+    def after(j: Json) -> bool:
+        commit = j["spec"].get("commit") or ""
+        if mine:
+            return bool(commit) and ancestor(repo, setter, commit)
+        return float(j["spec"].get("submitted") or 0) >= since
+
     check = re.compile(rf"{re.escape(k)} (?:deferred )?check ")
-    return any(
-        float(j["spec"].get("submitted") or 0) >= since and (j.get("tags") or check.match(j["spec"].get("what", "")))
-        for j in quest_jobs(jobs, c.ident, k)
-    )
+    jobs = [j for j in quest_jobs(jobs, c.ident, k) if j.get("tags") or check.match(j["spec"].get("what", ""))]
+    return any(after(j) for j in jobs)
 
 
 def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None) -> Json:
