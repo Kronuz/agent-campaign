@@ -34,15 +34,27 @@ from .core import (
     write_json,
 )
 from .evidence import criteria_for, fails_without_met, mutant_holds
-from .jobs import FAILS_WITHOUT, all_jobs, attempt_dir, claim, finish, load_job, matches_inputs, resolve_job, tag
-from .journals import journal_state
+from .jobs import (
+    FAILS_WITHOUT,
+    all_jobs,
+    attempt_dir,
+    claim,
+    finish,
+    job_key,
+    key_links,
+    load_job,
+    matches_inputs,
+    resolve_job,
+    tag,
+)
 from .mail import announce, inbox, leave_message, mailbox, peers, send_message
 from .repo import ancestor, changed, ever_on, frozen, has_ref, is_meta, main_branch, rev, same_repo, toplevel
-from .reuse import job_at, job_with_key, submit, supersede
+from .reuse import job_at, submit, supersede
 from .reviews import EVIDENCE_GAPS, Gap, landing_gap_kinds
 from .runner import ensure_worker, reap, spawn
 from .state import branches, campaigns
 from .status import JOB_MARKS
+from .todo import journal_states, ready, set_at_head
 from .wait import wait_for
 from .worker import slot_cores
 
@@ -132,41 +144,32 @@ def script_digests(command: str, repo: str) -> dict[str, str]:
 
 
 READY = "ready for review"  # the journal State that ends a round: its evidence runs then
-RELEASED = (READY, "waiting on jobs")  # the States that let a round's evidence queue, set at the head
 
 
 def iterating(c: Campaign, pid: str, task: str = "", *, verify: bool = False) -> str:
-    """Why the hold keeps a quest's (or task's) evidence and gate checks from queuing, by the quest's
-    lifecycle table (SKILL.md, "Run a quest"); "" when they queue: a quest past active, a tasked
-    quest's `verify` once every task merged, or State ready for review or waiting on jobs set at the
-    head (the commit that set it is newer than the head's code)."""
+    """Why the lifecycle table (references/review.md, "When evidence runs") holds a quest's (or
+    task's) evidence and gate checks; "" when they queue: a quest neither active nor in review, a
+    tasked quest's `verify` once every task merged or was dropped, or a State that ends a round
+    (`ready`) set at the head (a commit after the head's code changed it)."""
     if os.environ.get("CAMPAIGN_EVIDENCE_HOLD") == "0":
         return ""
     p = c.quests[pid]
     tasks = p.get("tasks", {})
-    if p.get("status") != "active" or (verify and tasks and all(t.get("merged") for t in tasks.values())):
+    if p.get("status") not in ("active", "review"):
+        return ""
+    if verify and tasks and all(t.get("merged") or t.get("status") == "dropped" for t in tasks.values()):
         return ""
     t = tasks.get(task) if task else None
     name, branch = (f"{pid}--{task}", t["branch"]) if t else (pid, p.get("branch", ""))
-    state = journal_state(c, name, branch)
-    if not state.startswith(RELEASED):
+    code, states, found = journal_states(c, p, name, branch)
+    state = states[0][1] if states else found
+    if not ready(state):
         return f"the journal State is {state!r}"
-    head = state_before_head(c, p, name, branch)
-    return f"State {state!r} was set before the head {head[:12]}: set State at {head[:12]}" if head else ""
-
-
-def state_before_head(c: Campaign, p: Json, name: str, branch: str) -> str:
-    """The head's code commit when the journal's State line last changed before it, else "": in one
-    repository by ancestry, across two (a quest in another repository) by commit time."""
-    repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
-    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
-    state = git(c.home, "log", "-1", "--format=%H %ct", "-G", "^State:", branch, "--", path)
-    if not code or not state:
-        return code.split()[0] if code else ""
-    (k, k_at), (s, s_at) = code.split(), state.split()
-    if same_repo(repo, c.home):
-        return "" if ancestor(repo, k, s) else k
-    return "" if int(s_at) >= int(k_at) else k
+    return (
+        ""
+        if set_at_head(states, found)
+        else f"State {state!r} was set before the head {code[:12]}: set State at {code[:12]}"
+    )
 
 
 def held(why: str, force: str = "pass --force") -> str:
@@ -178,14 +181,40 @@ def held(why: str, force: str = "pass --force") -> str:
     )
 
 
-def reusable(spec: Json, commit: str, exact: bool) -> bool:
-    """Whether `submit` hands back an earlier job for SPEC at COMMIT instead of queuing one: the same
-    code tree, or unless EXACT a passed twin. A reused job queues nothing, so a hold lets it through."""
-    old = job_with_key(spec)
-    if old is not None and old["state"].get("state") in ("queued", "running", "done"):
-        return not old["state"].get("slimmed")
-    twin = None if exact else job_at(spec, commit, merged=True)
-    return twin is not None and twin["state"].get("state") == "done" and not twin["state"].get("slimmed")
+def reused_by(spec: Json, exact: bool = False) -> str:
+    """The earlier job `submit` hands back for SPEC instead of queuing one (its test, the order of
+    its `after` included), else "": the same code tree, or unless EXACT a passed twin."""
+    spec = {"refs": {}, "env": {}, "after": [], "quest": "", **spec}
+    after = sorted(spec["after"])
+    for jid in key_links(job_key(spec)):
+        old = load_job(jobs_dir() / jid)
+        st = old["state"]
+        same = sorted(old["spec"].get("after", [])) == after
+        if same and st.get("state") in ("queued", "running", "done") and not st.get("slimmed"):
+            return str(old["id"])
+    twin = None if exact else job_at(spec, spec["commit"], merged=bool(spec["quest"]))
+    ok = twin is not None and twin["state"].get("state") == "done" and not twin["state"].get("slimmed")
+    return str(twin["id"]) if ok and twin is not None else ""
+
+
+Holder = tuple[Campaign, str, bool]  # a lifecycle table that governs a job: campaign, quest, a gate check
+
+
+def evidence_hold(
+    c: Campaign | None, spec: Json, holders: list[Holder], job: Json | None = None, *, exact: bool = False
+) -> tuple[str, str]:
+    """The one hold decision, for every entry point that queues evidence SPEC (a rerun of JOB, when
+    given). What queues nothing passes at any State: ("valid", head) for a passed fails-without job
+    that still holds at its quest's head, ("reused", id) for an earlier job that answers SPEC. Then
+    HOLDERS' lifecycle tables: ("held", why), else ("", "") and it queues."""
+    if job is not None and (head := still_holds(c, job)):
+        return "valid", head
+    why = next((w for h, pid, gate in holders if (w := iterating(h, pid, spec.get("task", ""), verify=gate))), "")
+    if not why:
+        return "", ""
+    if spec.get("commit") and (old := reused_by(spec, exact)):
+        return "reused", old  # submit hands it back, so nothing queues
+    return "held", why
 
 
 SUBMIT_FLAGS = (
@@ -333,8 +362,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
             )
     if ids and not spec.get("commit"):
         die("an unversioned job is never evidence: drop --for")
-    why = iterating(c, a.quest, a.task or "") if c is not None and ids and not a.force else ""
-    if why and not reusable(spec, spec["commit"], False):
+    kind, why = evidence_hold(c, spec, [(c, a.quest, False)] if c is not None and ids and not a.force else [])
+    if kind == "held":
         print(f"campaign: --for {','.join(ids)} {held(why)}", file=sys.stderr)
         return 1
     print(parsed_submit(spec, a, ids), file=sys.stderr)
@@ -542,16 +571,59 @@ def cmd_job_rerun(a: argparse.Namespace) -> int:
     c: Campaign | None = None
     with contextlib.suppress(CampaignError):
         c = find_campaign(Path.cwd())
-    for j in map(resolve_job, a.jobs) if c is not None else ():
-        for t in [t for t in j.get("tags", []) if t["campaign"] == c.ident and t["quest"] in c.quests]:
-            if (why := iterating(c, t["quest"], j["spec"].get("task", ""))) and not still_holds(c, j):
-                mutant = j["spec"].get("fails_without")
-                force = (
-                    "submit a new mutant at the round's end" if mutant else "submit it again with `job submit --force`"
-                )
-                die(f"{j['id']} is evidence for {t['quest']} {','.join(t['for'])}: {held(why, force)}")
     rerun_jobs(a.jobs, a.commit, a.minutes, c)
     return 0
+
+
+_campaigns: dict[str, Campaign | None] = {}
+
+
+def campaign_at(ident: str, c: Campaign | None) -> Campaign | None:
+    """The campaign whose directory is IDENT (how jobs and tags name it): C when it is that one."""
+    if c is not None and c.ident == ident:
+        return c
+    if ident and ident not in _campaigns:
+        _campaigns[ident] = None
+        with contextlib.suppress(CampaignError, OSError, IndexError):
+            _campaigns[ident] = Campaign(Path(ident).parents[1], Path(ident).name)
+    return _campaigns.get(ident)
+
+
+def gate_check(spec: Json, quest: Json) -> str:
+    """The name of QUEST's check that SPEC's job is (`verify` and `land` queue them), else ""."""
+    m = re.match(rf"{re.escape(spec.get('quest') or '')} (?:deferred )?check (\S+) at ", spec.get("what", ""))
+    return m[1] if m and any(x["name"] == m[1] for x in quest.get("checks", [])) else ""
+
+
+def holders_of(job: Json, c: Campaign | None) -> list[Holder]:
+    """The lifecycle tables a rerun of JOB answers to: each quest it is tagged as evidence for, in the
+    campaign its tag names, and the quest whose gate check it is."""
+    out: list[Holder] = []
+    for t in job.get("tags", []):
+        if (h := campaign_at(t["campaign"], c)) is not None and t["quest"] in h.quests:
+            out.append((h, t["quest"], False))
+    spec = job["spec"]
+    h = campaign_at(spec.get("campaign") or "", c)
+    if h is not None and spec.get("quest") in h.quests and gate_check(spec, h.quests[spec["quest"]]):
+        out.append((h, spec["quest"], True))
+    return out
+
+
+def held_rerun(job: Json, why: str) -> str:
+    """What a held rerun says: the job, what it proves, the hold, and its own way past it."""
+    spec, tags = job["spec"], job.get("tags", [])
+    if tags:
+        what = f"is evidence for {tags[0]['quest']} {','.join(tags[0]['for'])}"
+    else:
+        what = f"is {spec.get('quest')}'s gate check"
+    force = (
+        "submit a new mutant at the round's end"
+        if spec.get("fails_without")
+        else f"`campaign verify {spec.get('quest')} --force`"
+        if not tags
+        else "submit it again with `job submit --force`"
+    )
+    return f"{job['id']} {what}: {held(why, force)}"
 
 
 def mutant_head(c: Campaign | None, spec: Json) -> str:
@@ -575,23 +647,17 @@ def still_holds(c: Campaign | None, job: Json) -> str:
 
 
 def rerun_jobs(
-    jobs: list[str], at: str | None = None, minutes: int | None = None, c: Campaign | None = None
+    jobs: list[str], at: str | None = None, minutes: int | None = None, c: Campaign | None = None, *, hold: bool = True
 ) -> list[str]:
-    """`job rerun`: returns the new (or reused) job ids. A quest's light evidence rerun at its head
-    while it is `at_landing` runs at LANDING_PRIORITY; every other job keeps its priority."""
-    specs = {j["id"]: dict(j["spec"]) for j in map(resolve_job, jobs)}
+    """`job rerun`: returns the new (or reused) job ids. Every job passes `evidence_hold` before any
+    is queued (with HOLD off, `land`'s own reruns skip its tables): a fails-without job that still
+    holds queues nothing. A quest's light evidence rerun at its head while it is `at_landing` runs at
+    LANDING_PRIORITY; every other job keeps its priority."""
+    found = {j["id"]: j for j in map(resolve_job, jobs)}
+    specs = {jid: dict(j["spec"]) for jid, j in found.items()}
     if c is None:
         with contextlib.suppress(CampaignError):
             c = find_campaign(Path.cwd())
-    for jid in [x for x, s in specs.items() if s.get("fails_without")] if not at else ():
-        if head := still_holds(c, resolve_job(jid)):
-            print(f"{jid} still holds at {head[:12]}: the code its mutation reverts is unchanged, so it stays evidence")
-            del specs[jid]
-    if not at and (old := [jid for jid, s in specs.items() if s.get("fails_without")]):
-        die(
-            f"{', '.join(old)} must fail at the code without the fix: at the quest's head they run the fix; "
-            "name that code with --commit"
-        )
     if minutes is not None and minutes <= 0:
         die("--minutes is a positive number")
     minutes = minutes or 0  # 0: each job keeps its own
@@ -610,8 +676,10 @@ def rerun_jobs(
                     visit(x)
             order.append(jid)
 
-    for jid in specs:
+    for jid, spec in specs.items():
         visit(jid)
+        if not spec.get("commit"):
+            die(f"{jid} is unversioned: submit it again")
 
     def quest_code(spec: Json) -> tuple[str, Path | None, list[str]]:
         """The quest's branch, its repository and every branch its code is on (its tasks', main)."""
@@ -625,10 +693,56 @@ def rerun_jobs(
             return branch, home, [b for _, b, _, _ in branches(c, spec["quest"])] + [main_branch(home)]
         return "", None, []
 
+    def aimed(spec: Json) -> tuple[Json, list[str]]:
+        """SPEC at the commit it reruns at, and the predecessors that ended unpassed, which it drops."""
+        spec = dict(spec)
+        branch, home, _ = quest_code(spec)
+        commit = ""
+        if branch and home is not None and not same_repo(Path(spec["repo"]), home):
+            refs = {k: dict(r) for k, r in spec.get("refs", {}).items()}
+            for r in refs.values():
+                if same_repo(Path(r["repo"]), home):  # the quest's code is a ref: move it, keep the job's commit
+                    r["commit"], commit = rev(Path(r["repo"]), branch), spec["commit"]
+            spec["refs"] = refs
+            branch = ""  # the job's own repository does not hold the quest's branch
+        commit = commit or rev(Path(spec["repo"]), at or branch or "HEAD")
+        if spec.get("quest"):  # an evidence job's outside scripts as they are now
+            spec["scripts"] = script_digests(spec["cmd"], spec["repo"])
+        what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
+        ended = [x for x in spec.get("after", []) if x not in found and not job_ok_or_pending(x)]
+        spec.update(
+            commit=commit,
+            after=[x for x in spec.get("after", []) if x not in ended],
+            cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
+            what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
+        )
+        return spec, ended
+
+    aims = {jid: aimed(specs[jid]) for jid in order}
+    known: dict[str, str] = {}  # what each rerun's id will be, where the hold already knows it
+    refused: list[str] = []
+    for jid in order:  # every job passes the hold before any is queued
+        spec = aims[jid][0]
+        after = [known.get(x, "(new)") if x in found else x for x in spec["after"]]
+        kind, said = evidence_hold(c, {**spec, "after": after}, holders_of(found[jid], c) if hold else [], found[jid])
+        if kind == "valid":
+            print(f"{jid} still holds at {said[:12]}: the code its mutation reverts is unchanged, so it stays evidence")
+            known[jid] = jid
+            del specs[jid]
+        elif kind == "held":
+            refused.append(held_rerun(found[jid], said))
+        else:
+            known[jid] = said if kind == "reused" else "(new)"
+    if refused:
+        die("\n".join(refused))
+    order = [x for x in order if x in specs]
+    if not at and (old := [jid for jid in order if specs[jid].get("fails_without")]):
+        die(
+            f"{', '.join(old)} must fail at the code without the fix: at the quest's head they run the fix; "
+            "name that code with --commit"
+        )
     for jid in order:  # every job is checked before any is queued
         spec = specs[jid]
-        if not spec.get("commit"):
-            die(f"{jid} is unversioned: submit it again")
         branch, home, lines = quest_code(spec)
         if not branch or home is None:
             continue
@@ -652,29 +766,11 @@ def rerun_jobs(
     queued: list[str] = []
     ids: list[str] = []
     for jid in order:
-        spec = specs[jid]
-        branch, home, _ = quest_code(spec)
-        commit = ""
-        if branch and home is not None and not same_repo(Path(spec["repo"]), home):
-            refs = {k: dict(r) for k, r in spec.get("refs", {}).items()}
-            for r in refs.values():
-                if same_repo(Path(r["repo"]), home):  # the quest's code is a ref: move it, keep the job's commit
-                    r["commit"], commit = rev(Path(r["repo"]), branch), spec["commit"]
-            spec["refs"] = refs
-            branch = ""  # the job's own repository does not hold the quest's branch
-        commit = commit or rev(Path(spec["repo"]), at or branch or "HEAD")
-        if spec.get("quest"):  # an evidence job's outside scripts as they are now
-            spec["scripts"] = script_digests(spec["cmd"], spec["repo"])
-        what, old = spec.get("what", ""), f" at {spec['commit'][:12]}"
-        ended = [x for x in spec.get("after", []) if x not in renamed and not job_ok_or_pending(x)]
+        spec, ended = aims[jid]
+        home = quest_code(spec)[1]
         for x in ended:  # a predecessor that ended unpassed would skip the rerun again
             print(f"{jid}: no longer after {x}, which ended {resolve_job(x)['state'].get('state')}")
-        spec.update(
-            commit=commit,
-            after=[renamed.get(x, x) for x in spec.get("after", []) if x not in ended],
-            cmux=os.environ.get("CMUX_WORKSPACE_ID", ""),
-            what=(what[: -len(old)] if what.endswith(old) else what) + f" at {commit[:12]}",
-        )
+        spec["after"] = [renamed.get(x, x) for x in spec["after"]]
         lifted = (
             c is not None
             and spec.get("quest") in landing
@@ -687,7 +783,7 @@ def rerun_jobs(
         new, reused = submit(spec)
         if lifted and reused:  # a rerun queued before the quest reached landing moves up with it
             lift_queued(new, int(spec["priority"]))
-        for t in resolve_job(jid).get("tags", []):  # the rerun proves what the job proved
+        for t in found[jid].get("tags", []):  # the rerun proves what the job proved
             tag(new, t["campaign"], t["quest"], t["for"], t["fails_without"])
         renamed[jid] = new
         moved = "".join(
@@ -695,7 +791,7 @@ def rerun_jobs(
             for k, r in spec.get("refs", {}).items()
             if home and same_repo(Path(r["repo"]), home)
         )
-        print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {commit[:12]}{moved}")
+        print(f"{new}" + (" (reused)" if reused else "") + f": {jid} at {spec['commit'][:12]}{moved}")
         if not reused:
             queued.append(new)
         ids.append(new)

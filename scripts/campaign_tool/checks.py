@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -20,17 +21,17 @@ from .jobcmds import (
     PARALLEL,
     at_landing,
     ctest_warning,
+    evidence_hold,
     held,
-    iterating,
     quest_slot,
     rerun_jobs,
-    reusable,
 )
 from .jobs import all_jobs, load_job, matches_inputs, resolve_job, tag
 from .journals import journal_place
 from .leads import stuck_warnings
 from .repo import frozen, has_ref, main_branch, rev, same_repo
 from .reuse import build_test, check_spec, docs_note, job_at, submit
+from .reviews import Gap
 from .runner import LIGHT_BUILD_JOBS, ensure_worker, reap
 from .state import branches, ci_owned, deferred, gates, locate, select, validate
 from .status import print_problem, problems
@@ -132,10 +133,10 @@ def submit_checks(
     priority: int,
     fresh: bool = False,
     force: bool = False,
-    hold: str = "",
+    hold: bool = False,
 ) -> list[str]:
-    """Queues CHECKS at COMMIT; with HOLD (the journal State, while the quest iterates), only those an
-    earlier job answers, so nothing new is queued."""
+    """Queues CHECKS at COMMIT; with HOLD (the lead's `verify`), each passes `evidence_hold` first, so
+    while the quest iterates only those an earlier job answers come back, and nothing new is queued."""
     p = c.quests[qid]
     repo = c.repo(p)
     ids: list[str] = []
@@ -159,8 +160,9 @@ def submit_checks(
             print(f"{check['name']}: {earlier['id']} (reused: {docs_note(earlier)})")
             ids.append(earlier["id"])
             continue
-        if hold and not reusable(spec, commit, exact):
-            print(f"{check['name']}: {held(hold)}")
+        kind, why = evidence_hold(c, spec, [(c, qid, True)] if hold else [], exact=exact)
+        if kind == "held":
+            print(f"{check['name']}: {held(why)}")
             continue
         if spec.get("inputs") and not matches_inputs(repo, commit, spec["inputs"]):
             print(
@@ -176,22 +178,43 @@ def submit_checks(
     return ids
 
 
-def landing_reruns(c: Campaign, pid: str) -> str:
+def landing_reruns(c: Campaign, pid: str) -> tuple[str, set[str], set[str]]:
     """Queues what a merge from main left a landing quest to rerun (`at_landing`): its voided evidence
-    jobs and gate checks at its head, at LANDING_PRIORITY. Returns what it queued, for the refusal."""
+    jobs and gate checks at its head, at LANDING_PRIORITY, past the hold (row "land"). Returns what it
+    queued, for the refusal, with the jobs it reran and the checks it queued."""
     gaps = at_landing(c, pid)
     if gaps is None:
-        return ""
+        return "", set(), set()
     p = c.quests[pid]
     stale = [jid for g in gaps for jid in g.jobs if not resolve_job(jid)["spec"].get("fails_without")]  # no mutant here
+    since = time.time()
     try:
-        reruns = rerun_jobs(stale, c=c) if stale else []
+        reruns = rerun_jobs(stale, c=c, hold=False) if stale else []
         checks = submit_checks(c, pid, gates(p), rev(c.repo(p), p["branch"]), priority=LANDING_PRIORITY)
     except CampaignError as e:
-        return f"\n  its landing jobs were not queued: {e}"
+        return f"\n  its landing jobs were not queued: {e}", set(), set()
+    fresh = [x for x in dict.fromkeys(checks) if float(resolve_job(x)["spec"].get("submitted") or 0) >= since]
     said = [f"reruns {' '.join(dict.fromkeys(reruns))}"] if reruns else []
-    said += [f"landing checks {' '.join(dict.fromkeys(checks))}"] if checks else []  # never passed at this code
-    return f"\n  queued at landing priority {LANDING_PRIORITY}: {'; '.join(said)}"
+    said += [f"landing checks {' '.join(fresh)}"] if fresh else []  # never passed at this code
+    names = {x["name"] for x in gates(p) if not x["cmd"].startswith(CI_CHECK)}
+    return f"\n  queued at landing priority {LANDING_PRIORITY}: {'; '.join(said)}" if said else "", set(stale), names
+
+
+HINT = re.compile(r":? \(?`campaign [^`]*`\)?")  # a gap's command, which `land` ran itself
+
+
+def landing_refusal(c: Campaign, pid: str, gaps: list[Gap], *, merged: bool) -> str:
+    """What `land` refuses with: GAPS, each with its hint; after its merge from main, a gap the reruns
+    and landing checks it queues (`landing_reruns`) answer is named without its hint, as queued."""
+    queued, reran, checks = landing_reruns(c, pid) if merged else ("", set(), set())
+
+    def answered(g: Gap) -> bool:
+        if g.kind == "stale":
+            return bool(g.jobs) and set(g.jobs) <= reran
+        return g.kind == "check" and (m := re.match(r"check (\S+) is not green", g.text)) is not None and m[1] in checks
+
+    shown = [HINT.sub("", g.text) + " (queued below)" if answered(g) else g.text for g in gaps]
+    return f"{pid} cannot land yet:\n  " + "\n  ".join(shown) + queued
 
 
 def verify_deferred(a: argparse.Namespace) -> int:
@@ -221,8 +244,9 @@ def cmd_verify(a: argparse.Namespace) -> int:
         die(f"{a.id} has no branch")
     commit = rev(c.repo(p), a.commit or p["branch"])
     ids = criteria_for(c, a.id, a.criteria or "")
-    hold = "" if a.force else iterating(c, a.id, verify=True)
-    queued = submit_checks(c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force, hold=hold)
+    queued = submit_checks(
+        c, a.id, checks, commit, priority=GATE_PRIORITY, fresh=a.fresh, force=a.force, hold=not a.force
+    )
     for jid in queued:
         if ids:
             tag(jid, c.ident, a.id, ids, False)

@@ -22,12 +22,19 @@ def set_state(case: CampaignCase, wt: Path, pid: str, state: str) -> None:
         case.commit(wt, {f".campaign/demo/journal/{pid}.md": text})
 
 
+ID = r"\d{6}-\d{6}-[0-9a-f]{6}"
+
+
 class Hold(CampaignCase):
-    """The hold's lifecycle table (SKILL.md, "Run a quest"), a test per row, with the hold on."""
+    """The hold's lifecycle table (references/review.md, "When evidence runs"), with the hold on: a test
+    per row, each asking every entry point that queues evidence (`evidence_hold`)."""
+
+    n = itertools.count()
 
     def setUp(self) -> None:
         super().setUp()
         self.env.pop("CAMPAIGN_EVIDENCE_HOLD")
+        self.env.pop("CAMPAIGN", None)
 
     def iterating(self) -> Path:
         wt = self.started("fix", files="app.py,lib/**")
@@ -44,99 +51,218 @@ class Hold(CampaignCase):
     def queued(self, wt: Path, cmd: str = TEST) -> tuple[str, str]:
         """A contributor's `job submit --for` and the lead's `verify`, both queued: their job ids."""
         tagged = self.submit(wt, "--quest", "fix", "--for", "A1", "--", cmd)
-        gate = re.search(r"(?m)^unit: (\d{6}-\d{6}-[0-9a-f]{6})", self.ok(self.home, "verify", "fix").out)
+        gate = re.search(rf"(?m)^unit: ({ID})", self.ok(self.home, "verify", "fix").out)
         assert gate, "verify queued no unit check"
         return tagged, gate[1]
 
-    def held(self, wt: Path, why: str, rerun: str = "", *, verify: bool = True) -> None:
-        """Submit --for, the lead's verify (unless its check is reused) and (given a tagged job) its
-        rerun, all held for WHY."""
-        refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # held")
-        self.assertIn(f"--for A1 held: {why}. Evidence runs once per round", refused.err)
-        self.assertEqual(refused.out, "")  # no id: nothing was queued
-        self.assertNotIn("command:", refused.err)  # nothing reads as queued before the hold
-        out = self.ok(self.home, "verify", "fix").out
-        self.assertIn(f"unit: held: {why}." if verify else "(reused)", out)
-        if rerun:
-            self.fails(self.home, "job", "rerun", rerun, match=f"held: {why}")
+    def round(self) -> tuple[Path, str, str, str]:
+        """Quest fix after a round at State ready for review (its tagged job and gate check passed), then
+        new code: the worktree, the tagged job, the gate check's job, and the new head."""
+        wt = self.iterating()
+        set_state(self, wt, "fix", "ready for review")
+        tagged, unit = self.queued(wt)
+        self.ok(self.home, "wait", tagged, unit, "--timeout", "60")
+        return wt, tagged, unit, self.commit(wt, {"app.py": "print(2)  # round 2\n"})[:12]
+
+    def entries(self, wt: Path, tagged: str, unit: str, where: Path | None = None) -> dict[str, tuple[int, str]]:
+        """Every entry point that queues evidence, asked once at the head: (exit code, what it said)
+        for the contributor's submit --for, a rerun of its tagged job (and with --commit), a rerun of a
+        gate check, and the lead's verify. WHERE runs the reruns (default: the home)."""
+        lead = where or self.home
+        asked = {
+            "submit --for": self.run_cli(
+                wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # {next(self.n)}"
+            ),
+            "rerun": self.run_cli(lead, "job", "rerun", tagged),
+            "rerun --commit": self.run_cli(lead, "job", "rerun", tagged, "--commit", "quest/demo/fix"),
+            "rerun of a gate check": self.run_cli(lead, "job", "rerun", unit),
+            "verify": self.run_cli(self.home, "verify", "fix"),
+        }
+        return {k: (r.code, r.text) for k, r in asked.items()}
+
+    def all_held(self, said: dict[str, tuple[int, str]], why: str, before: int) -> None:
+        for entry, (code, text) in said.items():
+            if entry == "verify":
+                self.assertIn(f"unit: held: {why}. Evidence runs once per round", text, entry)
+            else:
+                self.assertNotEqual(code, 0, f"{entry} queued: {text}")
+                self.assertIn(f"held: {why}. Evidence runs once per round", text, entry)
+        self.assertEqual(self.jobs(), before, "a held entry point queued a job")
+
+    def all_queued(self, said: dict[str, tuple[int, str]]) -> None:
+        for entry, (code, text) in said.items():
+            self.assertEqual(code, 0, f"{entry}: {text}")
+            self.assertNotIn("held:", text, entry)
+            self.assertRegex(text, rf"(?m)^(?:unit: )?{ID}", entry)
 
     def test_row_1_ready_for_review_or_waiting_on_jobs_set_at_the_head_queues(self) -> None:
-        wt = self.iterating()
-        set_state(self, wt, "fix", "ready for review")
-        tagged, gate = self.queued(wt)
-        self.ok(self.home, "wait", tagged, gate, "--timeout", "60")
-        self.ok(self.home, "job", "rerun", tagged)
-        set_state(self, wt, "fix", f"waiting on jobs {tagged}")
-        again, _ = self.queued(wt, f"{TEST} && true")
-        self.assertNotEqual(again, tagged)
-
-    def test_row_2_a_state_set_before_the_head_holds_until_set_again(self) -> None:
-        wt = self.iterating()
-        set_state(self, wt, "fix", "ready for review")
-        tagged, gate = self.queued(wt)
-        self.ok(self.home, "wait", tagged, gate, "--timeout", "60")
-        head = self.commit(wt, {"app.py": "print(2)  # new code\n"})[:12]
-        self.held(wt, f"State 'ready for review' was set before the head {head}: set State at {head}", tagged)
+        wt, tagged, unit, head = self.round()
         set_state(self, wt, "fix", f"ready for review at {head}")
+        said = self.entries(wt, tagged, unit)
+        self.all_queued(said)
+        set_state(self, wt, "fix", f"waiting on jobs {said['submit --for'][1].split()[0]}")
+        self.all_queued(self.entries(wt, tagged, unit))
+
+    def test_row_1_the_hold_reads_the_state_as_the_to_do_does(self) -> None:
+        """One reader for a State that ends a round (todo.ready): its case and wording are free."""
+        wt, tagged, unit, head = self.round()
+        set_state(self, wt, "fix", f"Ready for review at {head}")
+        self.all_queued(self.entries(wt, tagged, unit))
+
+    def test_row_1_code_and_state_in_one_commit_queue(self) -> None:
+        wt = self.iterating()
+        rel = ".campaign/demo/journal/fix.md"
+        text = re.sub(r"^State:.*$", "State: ready for review", (wt / rel).read_text(), count=1, flags=re.M)
+        self.commit(wt, {"app.py": "print(2)  # with its State\n", rel: text})
         self.queued(wt)
 
+    def test_row_2_a_state_set_before_the_head_holds_until_set_again(self) -> None:
+        wt, tagged, unit, head = self.round()
+        why = f"State 'ready for review' was set before the head {head}: set State at {head}"
+        self.all_held(self.entries(wt, tagged, unit), why, self.jobs())
+        set_state(self, wt, "fix", f"ready for review at {head}")
+        self.all_queued(self.entries(wt, tagged, unit))
+
+    def test_row_2_a_note_line_starting_with_state_sets_nothing(self) -> None:
+        """Only the journal's own State line, the first, sets the State (correctness C13)."""
+        wt, tagged, unit, head = self.round()
+        rel = ".campaign/demo/journal/fix.md"
+        note = (wt / rel).read_text() + "\n## Session 2\n\nState: noted while fixing; the line above is unchanged.\n"
+        self.commit(wt, {rel: note})
+        why = f"State 'ready for review' was set before the head {head}: set State at {head}"
+        self.all_held(self.entries(wt, tagged, unit), why, self.jobs())
+
     def test_row_3_any_other_state_holds(self) -> None:
-        wt = self.iterating()
-        self.held(wt, "the journal State is 'working'")
-        self.assertEqual(self.jobs(), 0)
-        set_state(self, wt, "fix", "ready for review")
-        tagged, _ = self.queued(wt)
-        set_state(self, wt, "fix", "fixing D1")
-        self.held(wt, "the journal State is 'fixing D1'", tagged, verify=False)  # its unit check is reused
-        self.assertEqual(self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST), tagged)  # reused: not held
+        wt, tagged, unit, _ = self.round()
+        set_state(self, wt, "fix", "fixing D4")
+        self.all_held(self.entries(wt, tagged, unit), "the journal State is 'fixing D4'", self.jobs())
 
     def test_row_3_a_bold_or_missing_state_line_holds(self) -> None:
         wt = self.iterating()
         rel = ".campaign/demo/journal/fix.md"
         self.commit(wt, {rel: (wt / rel).read_text().replace("State: working", "**State:** working")})
-        self.held(wt, "the journal State is '(no State line)'")
+        refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", TEST)
+        self.assertIn(
+            "--for A1 held: the journal State is '(no State line)'. Evidence runs once per round", refused.err
+        )
+        self.assertEqual(refused.out, "")  # no id: nothing was queued
+        self.assertNotIn("command:", refused.err)  # nothing reads as queued before the hold
+        self.assertEqual(self.jobs(), 0)
 
-    def test_row_8_rerun_of_a_mutant_that_still_holds_queues_nothing_at_any_state(self) -> None:
+    def test_row_3_a_reran_job_from_outside_any_campaign_is_held(self) -> None:
+        """The rerun's tables come from the job's tags, not the directory it runs in (correctness C20)."""
+        wt, tagged, unit, _ = self.round()
+        set_state(self, wt, "fix", "working")
+        said = self.entries(wt, tagged, unit, where=self.root)
+        self.all_held(
+            {k: v for k, v in said.items() if k.startswith("rerun")}, "the journal State is 'working'", self.jobs()
+        )
+
+    def test_reused_or_still_valid_first_at_any_state(self) -> None:
+        """What an earlier job answers queues nothing, so no State holds it (design D4a): after a
+        docs-only commit at State working, each entry point hands back the round's job."""
+        wt, tagged, unit, _ = self.round()
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")  # back to the round's code
+        set_state(self, wt, "fix", "working")
+        self.commit(wt, {"README.md": "app, documented\n"})
+        before = self.jobs()
+        self.assertEqual(self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST), tagged)
+        for job in (tagged, unit):
+            for extra in ((), ("--commit", "quest/demo/fix")):
+                out = self.ok(self.home, "job", "rerun", job, *extra).out
+                self.assertIn(f"{job} (reused): {job} at ", out)
+        self.assertIn(f"unit: {unit} (reused", self.ok(self.home, "verify", "fix").out)
+        self.assertEqual(self.jobs(), before)
+
+    def test_reused_means_what_submit_reuses(self) -> None:
+        """A twin queued after another job is a different request to submit, so the hold holds it
+        (correctness C19)."""
+        wt = self.iterating()
+        set_state(self, wt, "fix", "ready for review")
+        blocker = self.submit(wt, "--quest", "fix", "--", "sleep 60")
+        behind = self.submit(wt, "--quest", "fix", "--for", "A1", "--after", blocker, "--", TEST)
+        set_state(self, wt, "fix", "working")  # the journal only: the code, and the job's key, are the same
+        before = self.jobs()
+        refused = self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", TEST)
+        self.assertIn("held: the journal State is 'working'", refused.err)
+        self.ok(self.home, "job", "cancel", blocker)
+        self.ok(self.home, "job", "cancel", behind)
+        self.assertEqual(self.jobs(), before)
+
+    def test_row_4_a_tasked_quest_s_verify_queues_once_every_task_merged_or_dropped(self) -> None:
+        """Correctness C12: a dropped task never merges, and counts as done."""
+        wt, _, unit, _ = self.round()
+        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
+        self.ok(self.home, "start", "fix", "--task", "app", "--files", "app.py")
+        task = self.wt("fix--lib")
+        self.commit(task, {"lib/util.py": "X = 2\n"})
+        self.assertIn("unit: held: ", self.ok(self.home, "verify", "fix").out)
+        own = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")  # row 7
+        self.ok(self.home, "wait", own, "--timeout", "60")
+        self.ok(self.home, "task", "merge", "fix", "lib")
+        self.assertIn("unit: held: ", self.ok(self.home, "verify", "fix").out)  # task app is still open
+        self.ok(self.home, "set", "fix", "--task", "app", "status=dropped", "reason=folded into lib")
+        self.assertRegex(self.ok(self.home, "job", "rerun", unit).out, rf"(?m)^{ID}: {unit} at ")
+        self.assertRegex(self.ok(self.home, "verify", "fix").out, rf"(?m)^unit: {ID}")
+        self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # 4", match="held: ")
+
+    def test_row_5_a_quest_in_review_holds_as_an_active_one(self) -> None:
+        """Design D6: review fix rounds' evidence is held by the journal State too."""
+        wt, tagged, unit, head = self.round()
+        self.ok(self.home, "set", "fix", "status=review")
+        why = f"State 'ready for review' was set before the head {head}: set State at {head}"
+        self.all_held(self.entries(wt, tagged, unit), why, self.jobs())
+        set_state(self, wt, "fix", f"ready for review at {head}")
+        self.all_queued(self.entries(wt, tagged, unit))
+
+    def test_row_6_land_queues_its_own_landing_checks_with_no_hint_for_them(self) -> None:
+        """Design D4b: after its merge from main, `land` queues the voided evidence past the hold, and
+        names those jobs once, as queued, not as commands to run."""
+        wt, tagged, unit, head = self.round()
+        set_state(self, wt, "fix", f"ready for review at {head}")
+        tagged, unit = self.queued(wt)
+        self.ok(self.home, "wait", tagged, unit, "--timeout", "60")
+        self.commit(self.home, {"lib/main.py": "Y = 1\n"})  # main changes a file in the quest's set
+        refused = self.fails(self.home, "land", "fix", "--merge-main", match="merged main into quest/demo/fix at ")
+        queued = re.search(rf"queued at landing priority 3: reruns ({ID}); landing checks ({ID})", refused.text)
+        assert queued is not None, refused.text
+        self.assertNotIn("campaign job rerun", refused.text)
+        self.assertNotIn("campaign verify", refused.text)
+        verify = self.ok(self.home, "verify", "fix").out  # what land queued answers the lead's verify
+        self.assertIn(f"unit: {queued[2]} (reused)", verify)
+        self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # 6", match="set State at ")
+        self.ok(self.home, "wait", *queued.groups(), "--timeout", "60")
+        self.ok(self.home, "land", "fix")
+
+    def test_row_7_a_probe_or_measurement_without_for_queues(self) -> None:
+        wt = self.iterating()
+        probe = self.submit(wt, "--quest", "fix", "--", TEST)
+        self.assertEqual(self.jobs(), 1)
+        self.ok(self.home, "wait", probe, "--timeout", "60")
+        self.assertRegex(self.ok(self.home, "job", "rerun", probe, "--commit", "quest/demo/fix").out, rf"^{ID}")
+
+    def test_row_8_force_queues(self) -> None:
+        wt = self.iterating()
+        self.submit(wt, "--quest", "fix", "--for", "A1", "--force", "--", TEST)
+        self.assertRegex(self.ok(self.home, "verify", "fix", "--force").out, rf"(?m)^unit: {ID}$")
+        self.assertEqual(self.jobs(), 2)
+
+    def test_row_9_rerun_of_a_mutant_that_still_holds_queues_nothing_at_any_state_or_commit(self) -> None:
+        """Correctness C10: with --commit too, a mutant that still holds is still valid."""
         wt = self.iterating()
         set_state(self, wt, "fix", "ready for review")
         args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "main")
         mutant = self.submit(wt, *args, "--", TEST)
         plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", TEST)
         self.ok(self.home, "wait", plain, mutant, "--timeout", "60")
-        set_state(self, wt, "fix", "fixing")
-        self.commit(wt, {"lib/util.py": "X = 5\n"})
-        before = self.jobs()
-        out = self.ok(self.home, "job", "rerun", mutant).out
-        self.assertIn(f"{mutant} still holds at ", out)
-        self.assertEqual(self.jobs(), before)
-
-    def test_row_4_a_tasked_quest_s_verify_queues_once_every_task_merged(self) -> None:
-        self.iterating()
-        self.ok(self.home, "start", "fix", "--task", "lib", "--files", "lib/**")
-        task = self.wt("fix--lib")
-        self.commit(task, {"lib/util.py": "X = 2\n"})
-        self.assertIn("unit: held: the journal State is 'working'", self.ok(self.home, "verify", "fix").out)
-        own = self.submit(task, "--quest", "fix", "--task", "lib", "--", "grep -q 'X = 2' lib/util.py")
-        self.ok(self.home, "wait", own, "--timeout", "60")
-        self.ok(self.home, "task", "merge", "fix", "lib")
-        self.assertRegex(self.ok(self.home, "verify", "fix").out, r"(?m)^unit: \d{6}-\d{6}-[0-9a-f]{6}")
-
-    def test_row_5_a_quest_in_review_or_landing_never_holds(self) -> None:
-        wt = self.iterating()
-        self.ok(self.home, "set", "fix", "status=review")
-        self.queued(wt)
-
-    def test_row_6_a_probe_or_measurement_without_for_queues(self) -> None:
-        wt = self.iterating()
-        probe = self.submit(wt, "--quest", "fix", "--", TEST)
-        self.assertEqual(self.jobs(), 1)
-        self.ok(self.home, "wait", probe, "--timeout", "60")
-
-    def test_row_7_force_queues(self) -> None:
-        wt = self.iterating()
-        self.submit(wt, "--quest", "fix", "--for", "A1", "--force", "--", TEST)
-        self.assertRegex(self.ok(self.home, "verify", "fix", "--force").out, r"(?m)^unit: \d{6}-\d{6}-[0-9a-f]{6}$")
-        self.assertEqual(self.jobs(), 2)
+        for state in ("fixing", "ready for review at {head}"):
+            head = self.commit(wt, {"lib/util.py": f"X = {next(self.n)}\n"})[:12]
+            set_state(self, wt, "fix", state.format(head=head))
+            before = self.jobs()
+            for extra in ((), ("--commit", "main"), ("--commit", "quest/demo/fix")):
+                out = self.ok(self.home, "job", "rerun", mutant, *extra).out
+                self.assertIn(f"{mutant} still holds at ", out)
+            self.assertEqual(self.jobs(), before)
 
 
 class Mutants(CampaignCase):
@@ -221,6 +347,7 @@ CHECK = (
     "import subprocess, sys\nout = subprocess.run([sys.executable, 'app.py'], capture_output=True, text=True).stdout\n"
     "assert out.split()[0] == '2', out\n"
 )
+LONG_CHECK = "".join(f"# the regression test, line {n}: app.py prints two\n" for n in range(12)) + CHECK
 MUTATE = "from pathlib import Path\np = Path('app.py')\np.write_text(p.read_text().replace('print(2)', 'print(1)'))\n"
 
 
@@ -229,7 +356,7 @@ class MutantFootprint(CampaignCase):
 
     def fixed(self) -> Path:
         """Quest fix: app.py prints 2 (the fix), check.py tests it, at State ready for review."""
-        wt = self.started("fix", files="app.py,check.py,mutate.py,lib/**")
+        wt = self.started("fix", files="app.py,check.py,check2.py,test_check.py,mutate.py,lib/**")
         brief = self.home / ".campaign/demo/quests/fix.md"
         brief.write_text(brief.read_text().replace("None in this test.", "- A1 prints two: a regression test"))
         self.git(self.home, "commit", "-qam", "criteria")
@@ -281,17 +408,63 @@ class MutantFootprint(CampaignCase):
         self.assertTrue(self.moved(wt, {"lib/util.py": "X = 5\n"}))  # another file: it holds
         self.assertFalse(self.moved(wt, {"check.py": "print('checked')\n"}))  # the test it ran changed
 
-    def test_a_mutant_commit_of_the_new_test_on_the_base_holds(self) -> None:
-        """The quest's new test applied to its base: the head adds the same test, so nothing moved."""
+    def at_head(self, wt: Path, cmd: str) -> bool:
+        """Proves the head's own test, CMD, at the head; says whether A1 is still met."""
+        plain = self.submit(wt, "--quest", "fix", "--for", "A1", "--", cmd)
+        self.ok(self.home, "wait", plain, "--timeout", "90", timeout=120)
+        return self.met()
+
+    def mutant_ref(self, commit: str) -> tuple[str, ...]:
+        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", commit)
+        return ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
+
+    def test_a_mutant_commit_goes_stale_when_its_test_is_renamed(self) -> None:
+        """Correctness C14: the test it ran, moved and weakened in one commit, is a change to it."""
+        wt = self.fixed()
+        self.commit(wt, {"check.py": LONG_CHECK})
+        self.commit(wt, {"app.py": "print(1)\nprint('tail')\n"}, "mutant: revert the fix")
+        mutant_commit = self.git(wt, "rev-parse", "HEAD")
+        self.git(wt, "reset", "-q", "--hard", "HEAD~1")
+        self.proven(wt, self.submit(wt, *self.mutant_ref(mutant_commit), "--", "python3 check.py"))
+        self.git(wt, "mv", "check.py", "test_check.py")
+        self.commit(wt, {"test_check.py": LONG_CHECK.replace("assert out.split()[0] == '2', out", "print(out)")})
+        self.assertIn("R0", self.git(wt, "diff", "--name-status", "-M", "HEAD~1", "HEAD"))  # git reads a rename
+        self.assertFalse(self.at_head(wt, "python3 test_check.py"))
+
+    def on_the_base(self, change: dict[str, str], cmd: str = "python3 check.py") -> bool:
+        """The quest's new test applied to its base, proven; then CHANGE at the head: whether A1, by the
+        head's test CMD, is still met. It holds while the quest's files are as it ran them (correctness
+        C15, by C4's rule: any change to them since stales it)."""
         wt = self.fixed()
         self.git(wt, "checkout", "-q", "--detach", "HEAD~2")  # the base: before the fix and its State
         self.commit(wt, {"check.py": CHECK}, "mutant: the test without the fix")
         mutant_commit = self.git(wt, "rev-parse", "HEAD")
         self.git(wt, "checkout", "-q", "quest/demo/fix")
-        self.git(self.home, "update-ref", "refs/campaign/demo/fix-a1", mutant_commit)
-        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "refs/campaign/demo/fix-a1")
-        self.proven(wt, self.submit(wt, *args, "--", "python3 check.py"))
-        self.assertTrue(self.moved(wt, {"lib/util.py": "X = 5\n"}))
+        self.proven(wt, self.submit(wt, *self.mutant_ref(mutant_commit), "--", "python3 check.py"))
+        time.sleep(1.1)  # the head it ran at is read by commit time, to the second
+        if "check.py" not in cmd:
+            self.git(wt, "rm", "-q", "check.py")
+        self.commit(wt, change)
+        return self.at_head(wt, cmd)
+
+    def test_a_mutant_commit_of_the_new_test_on_the_base_holds(self) -> None:
+        self.assertTrue(self.on_the_base({"README.md": "docs\n"}))
+
+    def test_a_mutant_commit_of_the_new_test_on_the_base_moves_with_the_quest_s_files(self) -> None:
+        self.assertFalse(self.on_the_base({"lib/util.py": "X = 5\n"}))
+
+    def test_a_mutant_commit_of_the_new_test_on_the_base_moves_when_its_test_is_replaced(self) -> None:
+        self.assertFalse(self.on_the_base({"check2.py": "print('checks nothing')\n"}, "python3 check2.py"))
+
+    def test_a_run_at_main_with_the_test_from_a_ref_moves_with_the_quest_s_files(self) -> None:
+        """Correctness C16: main's code with the quest's test copied from a ref of its head."""
+        wt = self.fixed()
+        head = self.git(wt, "rev-parse", "HEAD")
+        cmd = 'cp "$JOB_REF_NEW/check.py" . && python3 check.py'
+        args = ("--quest", "fix", "--for", "A1", "--fails-without", "--commit", "main", "--ref", f"NEW={head}")
+        self.proven(wt, self.submit(wt, *args, "--", cmd))
+        self.assertTrue(self.moved(wt, {"README.md": "docs\n"}))
+        self.assertFalse(self.moved(wt, {"check.py": CHECK.replace("assert out.split()[0] == '2', out", "print(out)")}))
 
 
 class Guard(CampaignCase):
@@ -327,9 +500,12 @@ class Guard(CampaignCase):
                     "repo": str(self.home),
                     **({"fails_without": 2} if mutant else {}),
                 }
-                st: dict[str, object] = {"state": state, "ended": submitted + 7200}
+                st: dict[str, object] = {"state": state}
+                if state != "running":
+                    st["ended"] = submitted + 7200
                 if started:
                     st["started"] = submitted + 3600
+                (d / "heartbeat").write_text("")  # a running one's: fresh, so no reaper ends it
                 (d / "spec.json").write_text(json.dumps(spec))
                 (d / "state.json").write_text(json.dumps(st))
                 if tag:
@@ -356,7 +532,7 @@ class Guard(CampaignCase):
         self.fake_jobs("proving", self.heads(5), 5, "cancelled", started=False, tag="")  # probes: never counted
         spin = (
             "spin queued evidence at 3 heads in the last 24 h: 3 rounds were cancelled before any job started, 0 ran "
-            "and newly met no criterion, 0 newly met; 24 job-hours waiting. Lead: tell its contributor"
+            "and newly met no criterion, 0 criteria newly met; 24 job-hours waiting. Lead: tell its contributor"
         )
         churn = (
             "churn queued evidence at 4 heads in the last 24 h: 0 rounds were cancelled before any job started, 4 ran"
@@ -380,6 +556,24 @@ class Guard(CampaignCase):
         self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
         self.fake_jobs("fix", self.heads(2), 3, "cancelled", started=False)  # 2 more rounds never ran: 3 in all
         self.assertIn("fix queued evidence at 4 heads", self.run_cli(self.home, "status").out)
+
+    def test_mutants_cut_from_one_head_with_no_plain_job_are_one_round(self) -> None:
+        """Design D5(a): keyed by their parent, not each its own commit."""
+        self.started("fix", files="app.py")
+        head = self.git(self.home, "rev-parse", "main")
+        self.fake_jobs("fix", self.heads(5, head), 1, "done", started=True, mutant=True)
+        self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
+
+    def test_a_round_still_in_flight_is_undecided(self) -> None:
+        """Design D5(b): a round with a job queued or running is neither barren nor the round before."""
+        self.started("fix", files="app.py")
+        self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=8)  # A1 met
+        for k in range(3):  # three rounds that re-prove A1: barren
+            self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=7 - k)
+        self.fake_jobs("fix", self.heads(1), 1, "running", started=True, age_h=0.5)
+        self.assertNotIn("fix queued evidence", self.run_cli(self.home, "status").out)
+        self.fake_jobs("fix", self.heads(1), 1, "done", started=True, age_h=0.2)  # a fourth barren round
+        self.assertIn("fix queued evidence at 6 heads", self.run_cli(self.home, "status").out)
 
 
 class ExaminedJobs(CampaignCase):

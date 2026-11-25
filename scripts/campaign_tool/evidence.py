@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import functools
 import json
 import os
 import re
@@ -18,7 +19,6 @@ from .journals import decisions
 from .repo import (
     SHA,
     ancestor,
-    changed,
     file_at,
     has_ref,
     main_branch,
@@ -230,30 +230,57 @@ def main_code(repo: Path, commit: str, head: str, quest: Json | None) -> bool:
     return commit not in line.split()
 
 
+def differ(repo: Path, a: str, b: str) -> list[str]:
+    """Paths that differ between the trees of A and B, a rename as its two paths."""
+    return list(
+        on_commits(
+            ("differ", str(repo), a, b),
+            lambda: [x for x in git(repo, "diff", "--name-only", "--no-renames", a, b).splitlines() if x],
+        )
+    )
+
+
+def set_moved(repo: Path, since: str, head: str, quest: Json | None) -> list[str]:
+    """The quest's files (its file set, else any code) that changed from SINCE to HEAD."""
+    files = (quest or {}).get("files") or []
+    moved = [x for x in differ(repo, since, head) if not x.startswith(".campaign/")]
+    return [x for x in moved if not files or any(fnmatch.fnmatch(x, g) for g in files)]
+
+
+@functools.cache
+def ran_at(repo: Path, head: str, at: int) -> str:
+    """The commit on HEAD's first-parent line that was the head at time AT (its newest commit by then)."""
+    return git(repo, "rev-list", "-1", "--first-parent", f"--before={at}", head) if at else ""
+
+
 def mutant_moved(spec: Json, head: str, quest: Json | None = None) -> list[str]:
     """Where a fails-without job's evidence changed by HEAD: [] while its result holds.
     - A mutant or revert commit (off HEAD's history) reverts the lines its diff from its parent
-      changes; the files its command names (the test it ran) count whole. A file the same at HEAD as
-      where it ran has not moved (the quest's new test applied to its base).
+      changes; the files its command names (the test it ran) count whole, a rename as a change.
+    - One whose change was the head's when it ran (the quest's new test on its base), or a run at main's code
+      with the quest's code from a ref, moves with any change to the quest's file set since it ran.
     - A run at the quest's own commit mutates, in its command, the files it names; a mutation the
       command does not show (a script, a binary) moves with any change to the quest's file set.
-    - A run at main's code lacks the whole fix, which the head's own runs test."""
+    - Any other run at main's code lacks the whole fix, which the head's own runs test."""
     repo, commit, cmd, cwd = Path(spec["repo"]), spec["commit"], spec["cmd"], spec.get("cwd") or ""
 
     def named(paths: Collection[str]) -> list[str]:
         return [x for x in paths if x in cmd or (cwd and os.path.relpath(x, cwd) in cmd)]
 
     if main_code(repo, commit, head, quest):
-        return []
+        cuts = [r["commit"] for r in spec.get("refs", {}).values() if same_repo(Path(r["repo"]), repo)]
+        return [x for k in cuts for x in set_moved(repo, k, head, quest)]
     if ancestor(repo, commit, head):
-        moved = [x for x in changed(repo, commit, head) if not x.startswith(".campaign/")]
+        moved = set_moved(repo, commit, head, None)
         if named(moved) or MUTATES.search(cmd):
             return named(moved)
-        files = (quest or {}).get("files") or []
-        return [x for x in moved if not files or any(fnmatch.fnmatch(x, g) for g in files)]
+        return set_moved(repo, commit, head, quest)
     parent = git(repo, "rev-parse", f"{commit}^")
     mutation, moved = hunks(repo, parent, commit), hunks(repo, parent, head)
-    moved = {x: r for x, r in moved.items() if x in changed(repo, commit, head)}  # same as it ran: unmoved
+    then = ran_at(repo, head, int(float(spec.get("submitted") or 0)))
+    unchanged = [x for x in mutation if x not in differ(repo, commit, then or head)]
+    if unchanged:  # its change was the head's own: the head's files at the base, as they were then
+        return set_moved(repo, then, head, quest) if then else unchanged
     lines = [
         x
         for x, ranges in mutation.items()

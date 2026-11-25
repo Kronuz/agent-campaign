@@ -4,7 +4,6 @@ mails it to the lead until each item is done (`lead_todo`)."""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -21,8 +20,7 @@ from .jobs import quest_jobs
 from .journals import journal_text, state_of
 from .mail import leave_message, recorded_lead, surface_spaces, todo_mail, todo_mail_file
 from .map import first_paragraph
-from .repo import ancestor, frozen, has_ref, rev
-from .reuse import job_at
+from .repo import ancestor, frozen, has_ref, rev, same_repo
 from .reviews import landing_gaps, task_gaps
 from .state import registry
 from .worker import light_slots, light_weight
@@ -52,26 +50,47 @@ def ready(state: str) -> bool:
     return bool(READY.match(state) or JOB_WAIT.search(state))
 
 
+def journal_states(c: Campaign, p: Json, name: str, branch: str) -> tuple[str, list[tuple[int, str]], str]:
+    """The head's code commit; the State (the journal's first State line) at each journal commit at or
+    after it, newest first, with its commit time; and the State the code found. In one repository
+    "after" is by ancestry, across two (a quest in another repository) by commit time."""
+    repo, path = c.repo(p), f"{c.meta}/journal/{name}.md"
+    code = git(repo, "log", "-1", "--first-parent", "--format=%H %ct", branch, "--", ".", ":(exclude).campaign")
+    k, k_at = code.split() if code else ("", "0")
+    mine = same_repo(repo, c.home)
+    after: list[tuple[int, str]] = []
+    for line in git(c.home, "log", "--format=%H %ct", branch, "--", path).splitlines():
+        commit, at = line.split()
+        shown = git(c.home, "show", f"{commit}:{path}", check=False)
+        if k and (ancestor(repo, commit, k) and commit != k if mine else int(at) < int(k_at)):
+            return k, after, state_of(shown)
+        after.append((int(at), state_of(shown)))
+    return k, after, state_of("")
+
+
+def set_at_head(states: list[tuple[int, str]], found: str) -> bool:
+    """Whether the State was set at the head: a commit after the head's code changed its value
+    (`journal_states`' STATES and FOUND)."""
+    return bool(states) and any(s != states[0][1] for s in [found, *(s for _, s in states)])
+
+
 def round_at_head(c: Campaign, k: str, p: Json, jobs: list[Json]) -> bool:
-    """Whether quest K's round exists at its head's code: a job tagged for it, or a gate check of it, at
-    or after the head's last code commit, or one whose result holds there (its inputs unchanged, so a
-    submit reuses it). Only then is it worth a review."""
-    repo = c.repo(p)
-    head = rev(repo, p["branch"])
-    code = git(repo, "log", "-1", "--first-parent", "--format=%H", head, "--", ".", ":(exclude).campaign")
+    """Whether quest K's round exists at its head: State ready for review (or waiting on jobs) set at
+    the head, and a job tagged for it, or a gate check of it, submitted since that State; a reused job
+    was submitted before, so it does not count. Only then is it worth a review."""
+    _, states, found = journal_states(c, p, k, p["branch"])
+    if not set_at_head(states, found) or not ready(states[0][1]):
+        return False
+    since = states[0][0]
+    for at, state in states[1:]:  # the oldest State of the run that ended the round
+        if not ready(state):
+            break
+        since = at
     check = re.compile(rf"{re.escape(k)} (?:deferred )?check ")
-    earlier = []
-    for j in quest_jobs(jobs, c.ident, k):
-        commit = j["spec"].get("commit") or ""
-        if commit and (j.get("tags") or check.match(j["spec"].get("what", ""))):
-            if not code or ancestor(repo, code, commit):
-                return True
-            earlier.append(j)
-    for j in earlier:
-        with contextlib.suppress(CampaignError, KeyError):
-            if (twin := job_at(j["spec"], head, merged=True)) and twin["state"].get("state") == "done":
-                return True
-    return False
+    return any(
+        float(j["spec"].get("submitted") or 0) >= since and (j.get("tags") or check.match(j["spec"].get("what", "")))
+        for j in quest_jobs(jobs, c.ident, k)
+    )
 
 
 def todo(c: Campaign, jobs: list[Json], gaps: dict[str, list[str]] | None = None) -> Json:

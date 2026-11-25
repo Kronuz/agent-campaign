@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .campaign import Campaign, blockers, close_hunt, find_campaign, landing_record, writing
-from .checks import landing_reruns, submit_checks
+from .checks import landing_refusal, submit_checks
 from .ci import check_evidence, ci_covers, ci_fresh, ci_landing, clean_merge
 from .core import (
     EXCLUDE_META,
@@ -50,7 +50,7 @@ from .repo import (
     same_repo,
 )
 from .reuse import submit
-from .reviews import landing_gaps, main_moved, repo_lock, review_gaps, task_gaps
+from .reviews import landing_gap_kinds, main_moved, repo_lock, review_gaps, task_gaps
 from .runner import drop_slot, spawn
 from .state import branches, deferred
 from .wait import wait_for
@@ -380,10 +380,9 @@ def cmd_land(a: argparse.Namespace) -> int:
         if merged:
             target = rev(repo, p["branch"])
         with frozen():  # the gaps only read
-            gaps = landing_gaps(c, a.id, target, final=final, ci=a.no_ci is None)
+            gaps = landing_gap_kinds(c, a.id, target, final=final, ci=a.no_ci is None)
         if gaps:
-            queued = landing_reruns(c, a.id) if merged else ""  # what the merge voided, ahead of the queue
-            die(merged + f"{a.id} cannot land yet:\n  " + "\n  ".join(gaps) + queued)
+            die(merged + landing_refusal(c, a.id, gaps, merged=bool(merged)))
         if merged:
             print(merged.rstrip("; "))
         evidence = check_evidence(c, p, target, ci=a.no_ci is None and ci_covers(c))[1]

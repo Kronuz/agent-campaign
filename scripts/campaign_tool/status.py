@@ -75,7 +75,8 @@ def parent(repo: str, commit: str) -> str:
 
 def rounds(jobs: list[Json]) -> dict[str, list[Json]]:
     """Jobs grouped by the quest head they ran against: a round. A fails-without job counts with the
-    head its mutant was cut from (its parent), else with the round submitted just before it."""
+    head its mutant was cut from (its parent), else with the round submitted just before it, else
+    (none before it) with its parent's."""
     out: dict[str, list[Json]] = {}
     order = sorted(jobs, key=lambda j: float(j["spec"].get("submitted") or 0))
     for j in order:
@@ -89,7 +90,7 @@ def rounds(jobs: list[Json]) -> dict[str, list[Json]]:
             continue
         commit = spec.get("commit") or ""
         up = parent(spec["repo"], commit) if commit and spec.get("repo") and commit not in out else commit
-        out.setdefault(up if up in out else last or commit, []).append(j)
+        out.setdefault(up if up in out else last or up or commit, []).append(j)
     return out
 
 
@@ -111,19 +112,19 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     before: set[str] = set()
     for group in order:
         met = {x for j in group if j["state"].get("state") == "done" for x in proves(j)}
-        if max(float(j["spec"].get("submitted") or 0) for j in group) >= since:
+        recent = max(float(j["spec"].get("submitted") or 0) for j in group) >= since
+        waited += recent * sum(
+            max(0.0, float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]))
+            for j in group
+        )
+        if any(j["state"].get("state") in ("queued", "running") for j in group):
+            continue  # undecided until its jobs end: neither barren nor the round the next one follows
+        if recent:
             if not any(j["state"].get("started") for j in group):
                 never += any(j["state"].get("state") == "cancelled" for j in group)
             elif not met - before:
                 barren += 1
             newly += len(met - before)
-            waited += sum(
-                max(
-                    0.0,
-                    float(j["state"].get("started") or j["state"].get("ended") or now) - float(j["spec"]["submitted"]),
-                )
-                for j in group
-            )
         if any(j["state"].get("started") for j in group):
             before = met
     if never < GUARD_NEVER and barren < GUARD_UNPROVEN:
@@ -132,7 +133,7 @@ def treadmill(c: Campaign, pid: str, jobs: list[Json], now: float) -> str:
     return (
         f"{pid} queued evidence at {heads} heads in the last {GUARD_HOURS} h: {never} "
         f"{'round was' if never == 1 else 'rounds were'} cancelled before any job started, {barren} ran and "
-        f"newly met no criterion, {newly} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
+        f"newly met no criterion, {newly} {'criterion' if newly == 1 else 'criteria'} newly met; {waited / 3600:.0f} job-hours waiting. Lead: tell its "
         "contributor to iterate in its worktree under `quiet light` and submit one round per State ready for review"
     )
 

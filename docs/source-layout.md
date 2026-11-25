@@ -50,7 +50,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `ci.py` (574 lines): GitHub CI: the runs and jobs at a commit, asked in the background and read
   once per command. Boundary: the tool's only conversation with GitHub (`gh`). Opened alone when CI
   evidence is missing or a command waits on GitHub.
-- `evidence.py` (588 lines): Criteria and their evidence: the quest file's criteria, journal rows,
+- `evidence.py` (615 lines): Criteria and their evidence: the quest file's criteria, journal rows,
   tagged jobs and checks. Boundary: what proves an acceptance criterion. Opened alone to change what
   counts as evidence or how the Evidence table is generated.
 - `reviews.py` (456 lines): Reviews and landing gaps: verdicts, acceptances, drift, and what keeps a
@@ -74,7 +74,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   health, and its loop, which also mails each lead its to-do. Boundary: scheduling, one unit: the plan, the charges it reads and the loop
   that runs it only make sense together. Opened alone to change who runs next, or to read why the
   queue is slow.
-- `todo.py` (328 lines): The lead's to-do list: what nothing moves without, critical path first,
+- `todo.py` (347 lines): The lead's to-do list: what nothing moves without, critical path first,
   each item with its command, which status, brief and every wait end with, and the worker mails to
   the lead until each item is done. Boundary: turning the
   overview, what moves each quest and the landing gaps into the lead's next commands. Opened alone
@@ -86,7 +86,7 @@ cycle; a name a module needs only for its annotations, from a module below it, i
   against the harness's own record, and the cmux workspace named the same. Boundary: reading a
   harness's record of a session's name and the one line that says how to fix it. Opened alone when a
   harness changes where or how it records a session's name.
-- `status.py` (824 lines): Status and brief: the problems status reports, a quest as status shows
+- `status.py` (825 lines): Status and brief: the problems status reports, a quest as status shows
   it, and both commands' output. Boundary: what the lead and agents read about the campaign's
   present. Opened alone to add a problem status reports or change what status or brief prints.
 - `usage.py` (608 lines): Usage: agents' token use and cost, read from what the harnesses and jobs
@@ -95,13 +95,13 @@ cycle; a name a module needs only for its annotations, from a module below it, i
 - `wait.py` (288 lines): Waiting: sleeping until a quest branch moves, a job ends, a message
   arrives, or the lead's to-do list has an item it has not been shown. Boundary: the wait command and what wakes it. Opened alone when a wait wakes too late or
   not at all.
-- `jobcmds.py` (728 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
+- `jobcmds.py` (824 lines): The job commands (submit, list, show, log, rerun, cancel, prune) and
   `message`. Boundary: the `job` and `message` command lines over the job store and mail. Opened
   alone to change a job command's options or output.
-- `checks.py` (231 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
+- `checks.py` (255 lines): `check` and `verify`: the campaign's consistency, housekeeping, and a
   quest's gate checks as jobs. Boundary: the two commands that audit a campaign and queue its gates.
   Opened alone to add a consistency check or change what verify queues.
-- `land.py` (575 lines): Landing: version pins, task merges, merging main, landing a quest, and
+- `land.py` (574 lines): Landing: version pins, task merges, merging main, landing a quest, and
   cleaning up after it. Boundary: the commands that move main and the branches. Opened alone to
   change how a quest or task lands, or what land leaves behind.
 - `quests.py` (568 lines): The quest commands: `init`, `config`, `new`, `get`, `set`, `start` and
@@ -139,7 +139,7 @@ The campaign tests:
   their files.
 - `test_evidence.py` (743): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
-- `test_evidence_once.py` (449): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
+- `test_evidence_once.py` (649): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
   round: what the hold queues while a quest iterates, when a fails-without result stops holding, the
   treadmill guard, and what an Evidence row may cite.
 - `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
