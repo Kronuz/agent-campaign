@@ -319,8 +319,11 @@ class Hold(CampaignCase):
         refused = self.fails(self.home, "land", "fix", "--merge-main", match="merged main into quest/demo/fix at ")
         queued = re.search(rf"queued at landing priority 3: reruns ({ID}); landing checks ({ID})", refused.text)
         assert queued is not None, refused.text
-        self.assertNotIn("campaign job rerun", refused.text)
-        self.assertNotIn("campaign verify", refused.text)
+        for hint in ("campaign job rerun", "campaign verify", "reruns held:", "verify held:"):
+            self.assertNotIn(hint, refused.text)  # what land queued is named as queued, with no hint
+        self.assertIn(
+            f"evidence jobs ran other code than {self.git(wt, 'rev-parse', 'HEAD')[:12]} (queued below)", refused.text
+        )
         verify = self.ok(self.home, "verify", "fix").out  # what land queued answers the lead's verify
         self.assertIn(f"unit: {queued[2]} (reused)", verify)
         self.fails(wt, "job", "submit", "--quest", "fix", "--for", "A1", "--", f"{TEST} # 6", match="set State at ")

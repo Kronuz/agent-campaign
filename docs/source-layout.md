@@ -140,7 +140,7 @@ The campaign tests:
   their files.
 - `test_evidence.py` (743): `Evidence`. Criteria and the jobs that prove them. One class of 700
   lines, so it is its own file.
-- `test_evidence_once.py` (1094): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
+- `test_evidence_once.py` (1097): `Hold` (the lifecycle table, a test per row), `Mutants`, `MutantFootprint`, `Guard`, `ExaminedJobs`, `CitedInFlight`, `RoundOrder`. Evidence once per
   round: what the hold queues while a quest iterates, when a fails-without result stops holding, the
   treadmill guard, and what an Evidence row may cite.
 - `test_landing.py` (650): `FeatureModel`, `Increments`, `DirectPath`, `Integration`, `Recovery`.
