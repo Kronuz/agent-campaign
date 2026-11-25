@@ -22,6 +22,7 @@ from harness import alone, scratch
 QUIET = Path(__file__).resolve().parent.parent / "scripts" / "quiet.py"
 LINUX = sys.platform == "linux"
 NCPU = os.cpu_count() or 1
+HANG = 120  # seconds that end a hung test only: under load, starved quiet processes take tens
 
 
 def affinity(pid: int) -> list[int]:
@@ -73,7 +74,7 @@ class Quiet(unittest.TestCase):
     def listed(self) -> str:
         return subprocess.run([sys.executable, str(QUIET), "list"], env=self.env, text=True, capture_output=True).stdout
 
-    def until(self, test: Callable[[], object], seconds: float = 20) -> None:
+    def until(self, test: Callable[[], object], seconds: float = HANG) -> None:
         end = time.time() + seconds
         while not test():
             self.assertLess(time.time(), end, "timed out waiting")
@@ -81,7 +82,7 @@ class Quiet(unittest.TestCase):
 
     def test_check_and_list_say_when_the_machine_is_free(self) -> None:
         p = self.quiet("check", QUIET_DISK_WARN_GB="0")
-        out, _ = p.communicate(timeout=30)
+        out, _ = p.communicate(timeout=HANG)
         self.assertEqual((p.returncode, out), (0, "free\n"))
         self.assertEqual(self.listed(), "no holds and no waiting requests\n")
 
@@ -89,19 +90,19 @@ class Quiet(unittest.TestCase):
         first = self.quiet("strict", "bench", "10", "first", "--", "sleep", "4")
         self.until(lambda: "bench [" in self.listed())
         second = self.quiet("strict", "bench", "1", "second", "--", "true")
-        _, err = second.communicate(timeout=20)
+        _, err = second.communicate(timeout=HANG)
         self.assertEqual(second.returncode, 2)  # refused at once, not run beside the first
         self.assertIn(f"bench is already held or awaited by pid {first.pid} (first)", err)
-        first.communicate(timeout=30)
+        first.communicate(timeout=HANG)
         self.assertEqual(first.returncode, 0)
 
     def test_quiet_inside_a_hold_runs_under_it_or_refuses(self) -> None:
-        inner = f"{sys.executable} {QUIET} strict inner 1 inner -- echo inner-ran"
-        p = self.quiet("strict", "outer", "1", "outer", "--", "bash", "-c", inner)
-        out, err = p.communicate(timeout=30)  # would wait behind its own parent until the deadline
+        inner = f"{sys.executable} {QUIET} strict inner 30 inner -- echo inner-ran"
+        p = self.quiet("strict", "outer", "30", "outer", "--", "bash", "-c", inner)
+        out, err = p.communicate(timeout=HANG)  # would wait behind its own parent until the deadline
         self.assertEqual((p.returncode, out), (0, "inner-ran\n"), err)
-        p = self.quiet("light", "build", "1", "build", "--", "bash", "-c", inner)
-        out, err = p.communicate(timeout=30)
+        p = self.quiet("light", "build", "30", "build", "--", "bash", "-c", inner)
+        out, err = p.communicate(timeout=HANG)
         self.assertEqual(p.returncode, 2)
         self.assertIn("runs inside build's light hold, so a strict request would wait for its own parent", err)
 
@@ -114,8 +115,8 @@ class Quiet(unittest.TestCase):
         first = self.quiet("strict", "a", "10", "first", "--", "sleep", "3", **env)
         self.until(lambda: "a [" in self.listed())
         second = self.quiet("strict", "b", "10", "second", "--", "true", **env)
-        second.communicate(timeout=30)
-        first.communicate(timeout=30)
+        second.communicate(timeout=HANG)
+        first.communicate(timeout=HANG)
         pills = (self.dir / "cmux.log").read_text()
         self.assertIn("set-status quiet-b queued (behind a strict hold): second --icon hourglass", pills)
         self.assertIn("set-status quiet-b strict: second --icon hammer", pills)
@@ -124,7 +125,7 @@ class Quiet(unittest.TestCase):
         # a starved shell may outlive its TERM until the KILL 10 s later, so `&&`: a run that was never
         # stopped prints "late" at 30 s, and how soon a stopped one ends depends on the CPU it gets
         p = self.quiet("exclusive", "m", "1", "measure", "--", "bash", "-c", "sleep 30 && echo late")
-        out, err = p.communicate(timeout=60)
+        out, err = p.communicate(timeout=HANG)
         self.assertEqual(p.returncode, 124)
         self.assertNotIn("late", out)
         self.assertIn("invalid", err)
@@ -151,18 +152,18 @@ class Quiet(unittest.TestCase):
         self.assertEqual(codes, [0] * 8)
 
     def test_exit_codes_pass_through(self) -> None:
-        p = self.quiet("strict", "s", "1", "ok", "--", "bash", "-c", "exit 3")
-        p.communicate(timeout=30)
+        p = self.quiet("strict", "s", "30", "ok", "--", "bash", "-c", "exit 3")
+        p.communicate(timeout=HANG)
         self.assertEqual(p.returncode, 3)
 
     def test_the_command_keeps_its_own_options(self) -> None:
-        p = self.quiet("light", "o", "1", "options", "--", "sh", "-c", 'echo "[$*]"', "sh", "-h", "--light", "--", "x")
-        out, err = p.communicate(timeout=30)
+        p = self.quiet("light", "o", "30", "options", "--", "sh", "-c", 'echo "[$*]"', "sh", "-h", "--light", "--", "x")
+        out, err = p.communicate(timeout=HANG)
         self.assertEqual((p.returncode, out), (0, "[-h --light -- x]\n"), err)
 
     def test_long_strict_holds_are_refused(self) -> None:
         p = self.quiet("strict", "s", "31", "too long", "--", "true")
-        _, err = p.communicate(timeout=30)
+        _, err = p.communicate(timeout=HANG)
         self.assertEqual(p.returncode, 2)
         self.assertIn("at most 30", err)
 
@@ -171,8 +172,8 @@ class Quiet(unittest.TestCase):
         first = self.quiet("exclusive", "t", "1", "stubborn", "--", "bash", "-c", stubborn)
         time.sleep(0.5)
         second = self.quiet("exclusive", "u", "1", "next", "--", "bash", "-c", f"echo U-start >> {self.log}")
-        first.communicate(timeout=60)
-        second.communicate(timeout=60)
+        first.communicate(timeout=HANG)
+        second.communicate(timeout=HANG)
         self.assertEqual(self.events(), ["T-term", "T-exit", "U-start"])
 
     def test_list_shows_requests_waiting_for_a_hold(self) -> None:
@@ -182,19 +183,22 @@ class Quiet(unittest.TestCase):
         time.sleep(1.5)
         listed = self.listed()
         for p in (a, b):
-            p.communicate(timeout=60)
+            p.communicate(timeout=HANG)
         self.assertIn("B.pending [waiting, strict]: the benchmark", listed)
 
     def test_a_starving_build_goes_before_a_queued_measurement(self) -> None:
-        # A outlasts the 4 s it takes L to become starving (QUIET_STARVE_MIN 2 x QUIET_MINUTE 2), plus a poll
-        a = self.quiet("exclusive", "A", "10", "A", "--", "bash", "-c", self.mark("A", 9))
-        time.sleep(1)
+        go = self.dir / "go"
+        hold_a = f"echo A-start >> {self.log}; until [ -e {go} ]; do sleep 0.1; done; echo A-end >> {self.log}"
+        a = self.quiet("exclusive", "A", "30", "A", "--", "bash", "-c", hold_a)
+        self.until(lambda: "A [" in self.listed())
         # the measurement polls faster, so only the fairness rule can let the build in first
-        light = self.quiet("light", "L", "10", "L", "--", "bash", "-c", self.mark("L", 1), QUIET_POLL="1")
-        time.sleep(1)
-        b = self.quiet("exclusive", "B", "10", "B", "--", "bash", "-c", self.mark("B", 1), QUIET_POLL="0.05")
+        light = self.quiet("light", "L", "30", "L", "--", "bash", "-c", self.mark("L", 1), QUIET_POLL="1")
+        self.until(lambda: "L.starving [" in self.listed())  # QUIET_STARVE_MIN 2 x QUIET_MINUTE 2
+        b = self.quiet("exclusive", "B", "30", "B", "--", "bash", "-c", self.mark("B", 1), QUIET_POLL="0.05")
+        self.until(lambda: "B.pending [" in self.listed())
+        go.touch()  # A ends only now, with L starving and B queued behind it
         for p in (a, light, b):
-            p.communicate(timeout=60)
+            p.communicate(timeout=HANG)
         self.assertEqual(self.events(), ["A-start", "A-end", "L-start", "L-end", "B-start", "B-end"])
 
     def test_a_stopped_run_stops_its_command_and_frees_the_hold(self) -> None:
@@ -204,7 +208,7 @@ class Quiet(unittest.TestCase):
         self.until(lambda: self.log.exists() and self.log.read_text().strip())
         group = int(self.log.read_text())
         p.send_signal(signal.SIGTERM)
-        out, _ = p.communicate(timeout=30)
+        out, _ = p.communicate(timeout=HANG)
         self.assertEqual(p.returncode, 128 + signal.SIGTERM)
         self.assertNotIn("late", out)
         with self.assertRaises(ProcessLookupError):
@@ -214,7 +218,7 @@ class Quiet(unittest.TestCase):
     def test_a_pausing_strict_hold_stops_light_work_and_resumes_it(self) -> None:
         ticks = self.dir / "ticks"
         ticker = f"import time\nwhile True:\n    open({str(ticks)!r}, 'a').write('.')\n    time.sleep(0.05)"
-        light = self.quiet("light", "L", "10", "ticker", "--", sys.executable, "-c", ticker)
+        light = self.quiet("light", "L", "30", "ticker", "--", sys.executable, "-c", ticker)
         self.until(ticks.exists)
         sizes = f"import os, time\na = os.path.getsize({str(ticks)!r})\ntime.sleep(1.5)\nprint(a, os.path.getsize({str(ticks)!r}))"
         # all the CPUs as the strict set: no partition, so on Linux too strict pauses instead
@@ -230,31 +234,29 @@ class Quiet(unittest.TestCase):
             QUIET_PAUSE="1",
             QUIET_STRICT_CPUS=f"0-{NCPU - 1}",
         )
-        out, err = strict.communicate(timeout=60)
+        out, err = strict.communicate(timeout=HANG)
         after = ticks.stat().st_size
-        time.sleep(0.5)
-        resumed = ticks.stat().st_size
+        self.until(lambda: ticks.stat().st_size > after)  # resumed
         light.terminate()
-        light.communicate(timeout=30)
+        light.communicate(timeout=HANG)
         self.assertEqual(strict.returncode, 0, err)
         before, during = map(int, out.split())
         self.assertEqual(before, during)
-        self.assertGreater(resumed, after)
 
     def test_where_cores_cannot_split_strict_runs_beside_light_work_and_names_it(self) -> None:
         whole = {"QUIET_STRICT_CPUS": f"0-{NCPU - 1}"}  # no partition, as on a Mac
         whole["QUIET_LIGHT_SLOTS"] = "2"  # L and M run together, even on a 3-core runner (one slot)
-        light = self.quiet("light", "L", "10", "a build", "--", "bash", "-c", self.mark("L", 6), **whole)
+        go = self.dir / "go"
+        build = f"echo L-start >> {self.log}; until [ -e {go} ]; do sleep 0.1; done; echo L-end >> {self.log}"
+        light = self.quiet("light", "L", "30", "a build", "--", "bash", "-c", build, **whole)
         self.until(lambda: "L [" in self.listed())
         beside = self.dir / "beside"
         # S ends once M has: a slow runner admits M late, and S must still run beside it
-        wait_m = (
-            f"echo S-start >> {self.log}; for i in $(seq 300); do grep -q M-end {self.log} && break; sleep 0.1; done"
-        )
+        wait_m = f"echo S-start >> {self.log}; until grep -q M-end {self.log}; do sleep 0.1; done"
         strict = self.quiet(
             "strict",
             "S",
-            "10",
+            "30",
             "measure",
             "--",
             "bash",
@@ -264,10 +266,12 @@ class Quiet(unittest.TestCase):
             **whole,
         )
         self.until(lambda: "S [strict, beside light holds]" in self.listed())
-        late = self.quiet("light", "M", "10", "a test", "--", "bash", "-c", self.mark("M", 1), **whole)  # 5 polls
-        _, err = strict.communicate(timeout=30)
-        late.communicate(timeout=30)
-        light.communicate(timeout=30)
+        late = self.quiet("light", "M", "30", "a test", "--", "bash", "-c", self.mark("M", 1), **whole)  # 5 polls
+        self.until(lambda: self.log.exists() and "M-end" in self.events())
+        go.touch()  # the build ends after M: S ran beside both
+        _, err = strict.communicate(timeout=HANG)
+        late.communicate(timeout=HANG)
+        light.communicate(timeout=HANG)
         self.assertEqual(strict.returncode, 0, err)
         events = self.events()
         self.assertLess(events.index("S-start"), events.index("L-end"))  # it never waited for the build
@@ -275,8 +279,8 @@ class Quiet(unittest.TestCase):
         self.assertIn("S starts beside light holds: L (a build", err)
         self.assertIn("S ran beside 2 light holds", err)
         self.assertEqual([x.split()[0] for x in beside.read_text().splitlines()], ["L", "M"])
-        p = self.quiet("exclusive", "X", "1", "alone", "--", "bash", "-c", self.mark("X", 0), **whole)
-        p.communicate(timeout=30)
+        p = self.quiet("exclusive", "X", "30", "alone", "--", "bash", "-c", self.mark("X", 0), **whole)
+        p.communicate(timeout=HANG)
         self.assertEqual(self.events()[-1], "X-end")  # exclusive still waits for every light hold
 
     @unittest.skipUnless(LINUX and NCPU >= 2, "cores are partitioned on Linux")
@@ -290,8 +294,8 @@ class Quiet(unittest.TestCase):
         )
         self.until(lambda: "[strict cpus" in self.listed())
         light = self.quiet("light", "L", "1", "build", "--", sys.executable, "-c", show, "0", QUIET_STRICT_CPUS=upper)
-        light_out, _ = light.communicate(timeout=30)
-        strict_out, _ = strict.communicate(timeout=30)
+        light_out, _ = light.communicate(timeout=HANG)
+        strict_out, _ = strict.communicate(timeout=HANG)
         self.assertEqual(json.loads(strict_out), list(range(NCPU // 2, NCPU)))
         self.assertEqual(json.loads(light_out), list(range(NCPU // 2)))
 
@@ -336,7 +340,7 @@ class Quiet(unittest.TestCase):
                 QUIET_STRICT_CPUS=strict_cpus,
                 QUIET_VM="fakevm-measured",
             )
-            out, err = p.communicate(timeout=60)
+            out, err = p.communicate(timeout=HANG)
             self.assertEqual(p.returncode, 0, err)
             during = json.loads(out)
             self.assertEqual(during[pids[0]], [[NCPU - 2, NCPU - 1]])
@@ -357,8 +361,8 @@ class Quiet(unittest.TestCase):
         self.assertIsNone(p.poll(), "a light hold started without the memory it needs")
         p.kill()
         p.communicate()
-        done = self.quiet("light", "mem2", "1", "build", "--", "true", QUIET_MIN_MEM_GB="0")
-        self.assertEqual(done.wait(timeout=30), 0)
+        done = self.quiet("light", "mem2", "30", "build", "--", "true", QUIET_MIN_MEM_GB="0")
+        self.assertEqual(done.wait(timeout=HANG), 0)
 
 
 class ExclusiveIsolation(unittest.TestCase):
