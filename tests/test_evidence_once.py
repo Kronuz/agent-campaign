@@ -371,7 +371,7 @@ class Hold(CampaignCase):
     def test_row_2_the_to_do_says_resume_never_finish(self) -> None:
         """Design D9 (R15): a round passed at State ready for review, then new code: the to-do tells the
         lead to resume the contributor (set State at the head), never to finish with what the hold refuses."""
-        wt, tagged, unit, head = self.round()
+        _, _, _, head = self.round()
         self.env["CAMPAIGN_IDLE"] = "0"  # the contributor stopped: nothing moves the quest but the lead
         todo = [x.strip() for x in self.ok(self.home, "status").out.splitlines() if x.strip().startswith("todo:")]
         line = f"todo: resume fix: State 'ready for review' was set before the head {head}: set State at {head}: `campaign status fix`"
